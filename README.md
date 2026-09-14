@@ -1,19 +1,31 @@
 # sim-lab-basic — R770 offline deployment kit
 
-The R770 side of the air gap. The build repo (`simlab-build`) designs the lab
-and cuts the supply bundle on an internet-connected staging host; **this kit
-takes that bundle onto the air-gapped Dell PowerEdge R770 and stands the
-services up** — verified, gated, idempotent, and with evidence for every step.
-Nothing in it reaches the internet. Nothing in it carries a version pin.
+Both sides of the air gap, in one clone. The build repo (`simlab-build`)
+designs the lab and owns the bundle pipeline; this kit carries that pipeline
+**verbatim** under `staging/` for the internet-connected staging host, and
+**takes the bundle onto the air-gapped Dell PowerEdge R770 and stands the
+services up** with `scripts/` — verified, gated, idempotent, and with evidence
+for every step. Nothing under `scripts/` reaches the internet, and the only
+version pins in the kit are in the fetch script's pin block, their one owner.
 
 ```
-Staging host (internet)      simlab-build: r770-build-bundle.sh → bundle-YYYYMMDD/
+Staging host (internet)      staging/r770-build-bundle.sh → bundle-YYYYMMDD/   (carried from simlab-build)
         │  checksummed ext4 media, carrying the bundle AND this kit side by side
         ▼
-R770 (air-gapped, Ubuntu 24.04)   this kit: r770-deploy.sh → 13 stages, each gated and evidenced
+R770 (air-gapped, Ubuntu 24.04)   scripts/r770-deploy.sh → 13 stages, each gated and evidenced
         ▲
 iDRAC (out-of-band)               recovery path — verified before any networking phase, by the build repo's rules
 ```
+
+## Cutting a bundle (staging host)
+
+```bash
+./staging/r770-build-bundle.sh          # preflight → fetch → manual-items pause → manifest → verify --strict
+```
+
+Exit **0** gated clean · **2** built with warnings to disposition · **1**
+failed, do not move the media. `staging/README.md` says what each of the four
+scripts does and why they are never edited here.
 
 ## Quick start
 
@@ -51,6 +63,7 @@ that depend on it will refuse rather than guess).
 | `scripts/r770-monitoring-deploy.sh` | Prometheus/Alertmanager/Grafana/cAdvisor/blackbox on loopback, images from the bundle's list, `--pull never` |
 | `scripts/r770-airgap-check.sh` | Read-only posture report: no APT source, resolver, mirror, proxy, snap or pip index points outside |
 | `scripts/r770-validate.sh` | The success-criteria suite as a check · expected · observed · verdict · evidence table; SKIP with a reason, never silence |
+| `staging/` | The build repo's bundle pipeline, byte-identical (`staging/PROVENANCE.txt`): preflight, fetch (the pin owner), the one-command builder, and the verifier the fetch places inside every bundle. Runs on the staging host only |
 | `scripts/lib/common.sh` | The one set of seams (`KIT_ROOT`, `KIT_DRY_RUN`, `KIT_YES`, `KIT_NON_INTERACTIVE`, `KIT_EVIDENCE_DIR`), gates, rendering, image-list handling, the call into the bundle's verifier |
 | `config/` | nginx vhosts, monitoring compose, GNS3 template + unit, Malcolm config template, portal page, mkdocs — carried from the build repo with the deltas in `config/README.md` |
 | `docs/deployment-runbook.md` | The R770-side procedure, one step per stage, with the gate you will see and the failure each step prevents |
@@ -59,7 +72,7 @@ that depend on it will refuse rather than guess).
 | `docs/kit-sync.md` | How this kit relates to the build repo: copied vs referenced, the sync checklist, the no-pins rule |
 | `docs/secrets-locations.md` | Where every generated credential lives, by location and mode only |
 | `docs/wiki/` | The analyst wiki source (copied from the build repo), built into `docs.lab` on the R770 |
-| `tests/` | `./tests/run.sh` — shellcheck with no exclusions, and bats suites that stub every host tool and write into a fake root. Offline, read-only, never a real bundle |
+| `tests/` | `./tests/run.sh` — shellcheck with no exclusions (one carried file keeps the build repo's accepted list), and bats suites that stub every host tool and write into a fake root. Offline, read-only, never a real bundle |
 | `.claude/settings.json` | Agent guardrails for a session opened in this kit: destructive disk commands, `curl`/`wget`/`pip install`/`docker pull`/`snap` denied; every deploy script asks |
 | `CLAUDE.md` | Operating rules for an agent working in this kit |
 
@@ -70,11 +83,13 @@ that depend on it will refuse rather than guess).
   and ships none of its own. A hand-rolled checksum gate cannot see files added
   after the manifest was written, and `tests/no-legacy-manifest.bats` refuses
   one.
-- **No version pins.** Image tags are read from the bundle's `*/image-list.txt`;
+- **One pin owner.** `staging/r770-offline-fetch.sh` carries the pin block,
+  as it does in the build repo; nothing else in the kit may restate a version.
+  Image tags on the R770 side are read from the bundle's `*/image-list.txt`,
   the Malcolm installer is found by glob and its version derived from its
-  filename; the config templates carry tokens. `tests/no-pins.bats` fails on
-  any `x.y.z` that is not an address or a `0.0.0-fixture`. What this bundle
-  carries is in its own `BUNDLE_NOTES.md`.
+  filename, the config templates carry tokens. `tests/no-pins.bats` fails on
+  any `x.y.z` outside the owner that is not an address or a `0.0.0-fixture`.
+  What a bundle carries is in its own `BUNDLE_NOTES.md`.
 
 ## Evidence
 

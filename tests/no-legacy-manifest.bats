@@ -21,10 +21,16 @@ setup() { cd "$BATS_TEST_DIRNAME/.."; }
     grep -q '"\$d/r770-bundle.sh" verify "\$d"' scripts/lib/common.sh
 }
 
-@test "the kit ships no verifier of its own" {
+@test "the verifier exists only under staging/ (the copy the fetch places into the bundle)" {
     run find . -path ./.git -prune -o -name 'r770-bundle.sh' -print
     echo "$output"
-    [ -z "$output" ]
+    [ "$output" = "./staging/r770-bundle.sh" ]
+}
+
+@test "the R770 side never reaches for the staging copy" {
+    run grep -rn 'staging/' scripts/
+    echo "$output"
+    [ "$status" -ne 0 ]
 }
 
 @test "the import script's gate goes through the library, never around it" {

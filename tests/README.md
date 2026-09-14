@@ -1,7 +1,9 @@
 # tests/
 
 One command: `./tests/run.sh`. shellcheck over every script with **no
-exclusions**, then every bats suite. Everything is offline and read-only —
+exclusions** (the one carried file `staging/r770-offline-fetch.sh` keeps the
+exclusion list the build repo accepted for it; nothing else may use one), then
+every bats suite. Everything is offline and read-only —
 every host tool is a stub in a replacement PATH, every write lands in a fake
 root under `KIT_ROOT`, every version is `0.0.0-fixture`. Never a real bundle,
 never a daemon, never the R770.
@@ -12,7 +14,8 @@ Requires `shellcheck` and `bats` (>= 1.10): `sudo apt-get -y install shellcheck 
 
 | Suite | Covers |
 |---|---|
-| `lint.bats` | shellcheck (no exclusions) and `bash -n` over every script and helper; scripts executable |
+| `lint.bats` | shellcheck (no exclusions; the carried fetch script with its accepted list) and `bash -n` over every script and helper; scripts executable |
+| `staging.bats` | `staging/` is byte-identical to its provenance record; the four scripts run as a set from here (`--help`, `--pack`, a manifest/verify round-trip); the pack output is gitignored |
 | `common.bats` | the library's contract: `KIT_ROOT`, dry-run, gates, `render`, `assert_edit`, image lists, `bundle_verify` calling the bundle's own verifier, secrets |
 | `import-bundle.bats` | gate on the bundle's verifier, refusals, the APT rewrite and its automatic restore, docker assertions, the incomplete-load regression, file routing |
 | `malcolm-deploy.bats` | the seven cases ported from the build repo, plus flag assertion, rendered-config replay, the rebind's idempotence and drift refusal, secrets never printed, start via Malcolm's script |
@@ -23,9 +26,9 @@ Requires `shellcheck` and `bats` (>= 1.10): `sudo apt-get -y install shellcheck 
 | `validate.bats` | one row per check, SKIP with reason, FAIL diagnosis, arguments-not-facts, interfaces never guessed, indexing lag as WARN |
 | `deploy.bats` | the runner's order and refusals, `--from/--to/--only`, warnings carried to exit 2, `--yes` reaching children |
 | `config.bats` | the carried config stays deployable as measured: http2 form, no staging leftovers, known tokens, images from variables, SANs match blackbox |
-| `no-pins.bats` | no version pin anywhere in the kit |
+| `no-pins.bats` | no version pin anywhere outside its one owner, `staging/r770-offline-fetch.sh` |
 | `no-credentials.bats` | `.gitignore` covers evidence, secrets and bundles; no credential-shaped string tracked |
-| `no-legacy-manifest.bats` | no checksum gate of the kit's own; the bundle's verifier referenced by name and invoked from the library; no `r770-bundle.sh` shipped |
+| `no-legacy-manifest.bats` | no checksum gate of the kit's own; the bundle's verifier referenced by name and invoked from the library; `r770-bundle.sh` exists only under `staging/`, and `scripts/` never reaches for it |
 | `no-internet.bats` | no external URL in scripts or config; `pip` always `--no-index`; `docker run` always `--network none` |
 | `references.bats` | every kit path named in the docs exists; every `config/` file is installed by some script; every runner stage resolves |
 

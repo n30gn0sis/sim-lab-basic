@@ -1,10 +1,12 @@
 # CLAUDE.md — sim-lab-basic (R770 offline deployment kit)
 
-You are working in the **R770-side** deployment kit for an air-gapped Ubuntu
-24.04 network-lab server. The design, the bundle pipeline, the hardware
-inventory and the phase tracker live in the build repo (`simlab-build`);
-this kit only takes a finished bundle onto the box and stands the services
-up. Read `README.md` and `docs/deployment-runbook.md` before doing anything.
+You are working in the deployment kit for an air-gapped Ubuntu 24.04
+network-lab server. `scripts/` is the **R770 side**: it takes a finished
+bundle onto the box and stands the services up. `staging/` is the **staging
+side**: the build repo's bundle pipeline, carried byte for byte, run only on
+the internet-connected staging host. The design, the hardware inventory and
+the phase tracker live in the build repo (`simlab-build`). Read `README.md`
+and `docs/deployment-runbook.md` before doing anything.
 
 ## Run context
 
@@ -12,6 +14,10 @@ up. Read `README.md` and `docs/deployment-runbook.md` before doing anything.
   install`, `docker pull`, `curl` or `wget` anything outside `127.0.0.1` or a
   `.lab` name. Software reaches the box only through the bundle; the kit's
   scripts are the only sanctioned way to install it.
+- **Two directories, two hosts.** `staging/` never runs on the R770 and
+  `scripts/` never calls `staging/` (a test proves it). Cutting a bundle is
+  `./staging/r770-build-bundle.sh` on the staging host, gated by its own
+  preflight. Check which box you are on before assuming either.
 - **Run the kit's scripts, not hand-typed commands.** Each subcommand encodes a
   trap the staging rehearsal hit. If a script refuses, the refusal is the
   finding — fix the cause, don't route around the script.
@@ -31,9 +37,10 @@ up. Read `README.md` and `docs/deployment-runbook.md` before doing anything.
    `--yes` stops at the gate. Never bypass a gate to make a run "go".
 3. **The verifier is the bundle's** (`<bundle>/r770-bundle.sh verify`). Never
    add a checksum routine to this kit, never gate on a raw checksum command.
-4. **No version pins in this kit.** Tags come from the bundle's image lists,
-   filenames by glob, config values by token. `tests/no-pins.bats` enforces
-   it; do not weaken it.
+4. **One pin owner.** `staging/r770-offline-fetch.sh` holds the pin block and
+   is edited only in the build repo, then resynced. Nothing else restates a
+   version: tags come from the bundle's image lists, filenames by glob,
+   config values by token. `tests/no-pins.bats` enforces it; do not weaken it.
 5. **No secrets in git.** Credentials are generated once under
    `/etc/lab/secrets/` and printed never. Evidence directories are gitignored.
 6. **Never fabricate results.** A stage is done when its transcript under
@@ -54,7 +61,9 @@ up. Read `README.md` and `docs/deployment-runbook.md` before doing anything.
   bats suite, a row in `README.md`, and an `ask` entry in `.claude/settings.json`.
 - Config changes go through `config/README.md`'s delta table and
   `docs/kit-sync.md`; the build repo remains the source those files are synced
-  from.
+  from. The four files under `staging/` are never edited here: change them in
+  the build repo, resync, and regenerate `staging/PROVENANCE.txt`
+  (`tests/staging.bats` fails on a local edit).
 - Cite repo files as backticked bare paths; `tests/references.bats` checks
   that every kit path named in the docs exists.
 

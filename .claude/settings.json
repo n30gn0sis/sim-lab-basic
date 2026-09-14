@@ -16,7 +16,8 @@
       "Bash(./tests/run.sh:*)",
       "Bash(./scripts/r770-deploy.sh --list:*)",
       "Bash(./scripts/r770-validate.sh --list:*)",
-      "Bash(./scripts/r770-airgap-check.sh:*)"
+      "Bash(./scripts/r770-airgap-check.sh:*)",
+      "Bash(./staging/r770-bundle.sh:*)"
     ],
     "deny": [
       "Bash(mkfs*)",
@@ -58,7 +59,10 @@
       "Bash(./scripts/r770-gns3-deploy.sh:*)",
       "Bash(./scripts/r770-portal-deploy.sh:*)",
       "Bash(./scripts/r770-monitoring-deploy.sh:*)",
-      "Bash(./scripts/r770-validate.sh:*)"
+      "Bash(./scripts/r770-validate.sh:*)",
+      "Bash(./staging/r770-build-bundle.sh:*)",
+      "Bash(./staging/r770-staging-preflight.sh:*)",
+      "Bash(./staging/r770-offline-fetch.sh:*)"
     ]
   }
 }

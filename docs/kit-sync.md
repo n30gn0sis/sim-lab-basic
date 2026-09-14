@@ -6,8 +6,9 @@
 ```
 simlab-build (design + build side)            sim-lab-basic (R770 side — this kit)
   PRD, buildout plan, hardware of record        deployment runbook, rollback, validation
-  r770-offline-fetch.sh  -> the bundle          r770-import-bundle.sh   <- the bundle
-  r770-bundle.sh         -> travels IN it       lib/common.sh calls the bundle's copy
+  simlab-build/scripts/ (4 files)  ======>  staging/  (byte-identical; PROVENANCE.txt)
+  r770-offline-fetch.sh  -> the bundle          scripts/r770-import-bundle.sh <- the bundle
+  r770-bundle.sh         -> travels IN it       scripts/lib/common.sh calls the bundle's copy
   r770-malcolm-deploy.sh (load, assert-tags)    r770-malcolm-deploy.sh  (same two + the rest)
   config/                (proven on staging)    config/                 (carried, deltas listed)
   simlab-build/docs/analyst-wiki/               docs/wiki/              (carried verbatim)
@@ -18,8 +19,9 @@ simlab-build (design + build side)            sim-lab-basic (R770 side — this 
 
 | Thing | Relationship | Rule |
 |---|---|---|
-| The verifier (`r770-bundle.sh verify`, run as `<bundle>/r770-bundle.sh verify <bundle>`) | **referenced** — the copy inside the bundle root, covered by its manifest | the kit ships no file by that name (`tests/no-legacy-manifest.bats`) |
-| Version pins | **neither** — read from the bundle (`*/image-list.txt`, filenames, `BUNDLE_NOTES.md`) | no `x.y.z` in the kit (`tests/no-pins.bats`) |
+| The bundle pipeline (`staging/`: preflight, fetch, one-command builder, verifier) | **copied byte for byte** from `simlab-build/scripts/`; identity guarded by `staging/PROVENANCE.txt` | never edited here; `tests/staging.bats` fails on a local change |
+| The verifier the R770 side runs (`r770-bundle.sh verify`, as `<bundle>/r770-bundle.sh verify <bundle>`) | **referenced** — the copy the fetch places inside the bundle root, covered by its manifest | `scripts/` never reaches for `staging/r770-bundle.sh` (`tests/no-legacy-manifest.bats`) |
+| Version pins | **one owner** — `staging/r770-offline-fetch.sh`'s pin block, as in the build repo; the R770 side reads pins from the bundle (`*/image-list.txt`, filenames, `BUNDLE_NOTES.md`) | no `x.y.z` anywhere else (`tests/no-pins.bats`) |
 | `load` / `assert-tags` | **copied** behaviour from the build repo's `r770-malcolm-deploy.sh` | its tests ported into `tests/malcolm-deploy.bats` |
 | `config/` | **copied**, with the deltas in `config/README.md` | every hunk of `diff -r` is a listed delta or a change to port |
 | `docs/wiki/` | **copied** verbatim from `simlab-build/docs/analyst-wiki/` | resync whenever the wiki changes; it becomes `docs.lab` |
@@ -28,6 +30,7 @@ simlab-build (design + build side)            sim-lab-basic (R770 side — this 
 
 ## Sync checklist (on the staging host, both checkouts present)
 
+- [ ] `( cd staging && for f in r770-*.sh; do diff -q "$f" <simlab-build>/scripts/"$f"; done )` — empty; if not, copy the four files over, then regenerate the record: `( cd staging && { grep -v '^[0-9a-f]\{64\}  \|^commit:' PROVENANCE.txt; echo "commit: $(git -C <simlab-build> rev-parse HEAD)"; sha256sum r770-*.sh; } > PROVENANCE.new && mv PROVENANCE.new PROVENANCE.txt )`
 - [ ] `diff -r <simlab-build>/config config/` — every hunk is in `config/README.md`'s delta table, or is a change to port (port it, then add its row if it is a new delta)
 - [ ] `diff -r <simlab-build>/docs/analyst-wiki docs/wiki` — empty
 - [ ] `diff <simlab-build>/scripts/r770-malcolm-deploy.sh scripts/r770-malcolm-deploy.sh` — the `load`/`assert-tags` behaviour still matches (the kit's version is a superset)
@@ -35,15 +38,16 @@ simlab-build (design + build side)            sim-lab-basic (R770 side — this 
 - [ ] `./tests/run.sh` green here; the build repo's suite green there
 - [ ] Tag the kit with the bundle date it was rehearsed against, and name that tag in the build repo's cycle log
 
-## The no-pins rule, and why the kit is stricter than the build repo
+## The no-pins rule
 
-The build repo keeps one owner per fact and lets `state/` restate values as
-evidence. The kit has no owner for any pin and no evidence tree, so it carries
-**none**: a pin here would be a copy nothing updates on the next bump, and it
-would break at the air gap, where there is no way to look the value up.
-Anything that needs a value reads it from the bundle at run time, or takes it
-as an argument, and the flag set the kit passes to Malcolm's tools is asserted
-against those tools' `--help` before use.
+The build repo keeps one owner per fact (`OWNERS.md` there): every version pin
+lives in the fetch script's pin block. The kit carries that script verbatim
+under `staging/`, so the owner is the same file in both repos, and nothing
+else in the kit may restate a value: a copy would be one nothing updates on
+the next bump, and it would break at the air gap, where there is no way to
+look the value up. The R770 side reads what it needs from the bundle at run
+time or takes it as an argument, and the flag set it passes to Malcolm's tools
+is asserted against those tools' `--help` before use.
 
 ## Follow-ups recorded here, not silently added
 

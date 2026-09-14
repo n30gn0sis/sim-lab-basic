@@ -1,6 +1,9 @@
 #!/usr/bin/env bats
-# The R770 has no internet, ever. Nothing in the kit may name an external
-# host, pull an image, reach for an index, or let a build container out.
+# The R770 has no internet, ever. Nothing on the R770 side (scripts/, config/)
+# may name an external host, pull an image, reach for an index, or let a build
+# container out. staging/ is exempt by design: it is the side that downloads,
+# and it never runs on the R770 (tests/no-legacy-manifest.bats proves scripts/
+# never reaches for it).
 
 setup() { cd "$BATS_TEST_DIRNAME/.."; }
 
