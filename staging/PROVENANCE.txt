@@ -1,0 +1,9 @@
+# staging/PROVENANCE.txt — the four bundle-building scripts are copied VERBATIM from the
+# build repo. tests/staging.bats fails if a file here no longer matches its hash: a change
+# is made in the build repo, then resynced (docs/kit-sync.md), never edited here.
+source: https://github.com/n30gn0sis/simlab-build scripts/
+commit: b7ba5e675de3972914c544159af9893bccd9b945
+b896a954fd8a0881aa162048974939646181a09cad4a4ce21fe243c3e0429705  r770-build-bundle.sh
+ed56097343e8d31ca3be4969c360cee30ac36d1e4065b47a201b252500ecba90  r770-bundle.sh
+228eef3ff0648877c8a86ddfd487817f8895c655f81eda4d0c932f9eb962dcbc  r770-offline-fetch.sh
+a146a89173f3732850afedc676c4fea67dd0c78678ffe5b112d64bbec90d996a  r770-staging-preflight.sh

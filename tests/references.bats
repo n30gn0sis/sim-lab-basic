@@ -10,16 +10,16 @@ setup() { cd "$BATS_TEST_DIRNAME/.."; }
     while read -r p; do
         case "$p" in *'<'*) continue ;; esac
         [ -e "$p" ] || missing="$missing $p"
-    done < <(grep -rhoP '(?<![\w/.-])(scripts|config|docs|tests)/[A-Za-z0-9_./-]+' README.md CLAUDE.md docs/*.md config/README.md tests/README.md \
+    done < <(grep -rhoP '(?<![\w/.-])(scripts|config|docs|tests|staging)/[A-Za-z0-9_./-]+' README.md CLAUDE.md docs/*.md config/README.md tests/README.md staging/README.md \
              | sed 's/[.,)`:]*$//' | sort -u)
     echo "missing:$missing"
     [ -z "$missing" ]
 }
 
 @test "every script is executable and every doc-named script exists" {
-    for f in scripts/*.sh tests/run.sh; do [ -x "$f" ] || { echo "not executable: $f"; false; }; done
+    for f in scripts/*.sh staging/*.sh tests/run.sh; do [ -x "$f" ] || { echo "not executable: $f"; false; }; done
     while read -r s; do [ -x "$s" ] || { echo "named but missing: $s"; false; }; done \
-        < <(grep -rhoP '(?<![\w/.-])scripts/r770-[a-z-]+\.sh' README.md CLAUDE.md docs/*.md .claude/settings.json | sort -u)   # docs/wiki is the build repo's content
+        < <(grep -rhoP '(?<![\w/.-])(scripts|staging)/r770-[a-z-]+\.sh' README.md CLAUDE.md docs/*.md staging/README.md .claude/settings.json | sort -u)   # docs/wiki is the build repo's content
 }
 
 @test "every config file is installed or rendered by some script" {
@@ -51,5 +51,5 @@ setup() { cd "$BATS_TEST_DIRNAME/.."; }
 
 @test "every script named in .claude/settings.json exists" {
     while read -r s; do [ -x "$s" ] || { echo "settings names missing script: $s"; false; }; done \
-        < <(grep -oE '\./scripts/r770-[a-z-]+\.sh' .claude/settings.json | sed 's|^\./||' | sort -u)
+        < <(grep -oE '\./(scripts|staging)/r770-[a-z-]+\.sh' .claude/settings.json | sed 's|^\./||' | sort -u)
 }
