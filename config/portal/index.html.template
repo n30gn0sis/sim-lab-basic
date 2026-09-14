@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>R770 Lab Portal</title>
+<style>
+  body { font: 16px/1.5 system-ui, sans-serif; max-width: 42rem; margin: 3rem auto; padding: 0 1rem; color: #222; }
+  h1 { font-size: 1.6rem; } li { margin: .4rem 0; } code { background: #f2f2f2; padding: 0 .3rem; }
+  .note { border-left: 4px solid #999; padding: .5rem 1rem; background: #fafafa; margin-top: 2rem; }
+</style>
+</head>
+<body>
+<h1>R770 Lab Portal</h1>
+<ul>
+  <li><a href="https://malcolm.lab/">malcolm.lab</a> — capture &amp; analysis: <a href="https://malcolm.lab/arkime/">Arkime</a> · <a href="https://malcolm.lab/dashboards/">Dashboards</a> · <a href="https://malcolm.lab/netbox/">NetBox</a> · <a href="https://malcolm.lab/upload/">PCAP upload</a></li>
+  <li><a href="https://gns3.lab/">gns3.lab</a> — GNS3 server (web UI; login <code>admin</code>)</li>
+  <li><a href="https://monitoring.lab/">monitoring.lab</a> — Grafana (login <code>admin</code>) · <a href="https://monitoring.lab/prometheus/">Prometheus</a> · <a href="https://monitoring.lab/alertmanager/">Alertmanager</a></li>
+  <li><a href="https://docs.lab/">docs.lab</a> — Analyst Guide</li>
+</ul>
+<div class="note">
+  <p><strong>First visit:</strong> import the lab CA certificate (ask the operator for <code>/etc/nginx/ssl/ca.crt</code> from the server) so every site shows a clean lock,
+  and add one hosts line on your machine until the lab DNS is published to you: <code>__MGMT_IP__ portal.lab malcolm.lab gns3.lab monitoring.lab docs.lab</code>.</p>
+  <p><strong>Passwords</strong> are issued by the lab operator and are never in this page or in git. The shared analyst login covers Malcolm, this portal, docs, Prometheus and Alertmanager; Grafana and GNS3 have their own <code>admin</code> logins.</p>
+</div>
+</body>
+</html>

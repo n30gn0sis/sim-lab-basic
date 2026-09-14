@@ -1,0 +1,21 @@
+# Installed by r770-gns3-deploy.sh service. The server binds 127.0.0.1:3080
+# only; nginx at gns3.lab is the way in. A server left running from a shell
+# outlived its tmux session on the staging VM (2026-09-12) -- hence a unit.
+[Unit]
+Description=GNS3 server (lab simulation controller)
+After=network-online.target docker.service libvirtd.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=gns3
+Group=gns3
+ExecStart=/opt/gns3/bin/gns3server --config /etc/gns3/gns3_server.conf --logfile /var/log/gns3/server.log
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+# No internet, ever: pip and the GNS3 registry are unreachable by design.
+Environment=PIP_NO_INDEX=1
+
+[Install]
+WantedBy=multi-user.target

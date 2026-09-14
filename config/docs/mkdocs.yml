@@ -1,0 +1,21 @@
+# Built ON the R770 by `r770-portal-deploy.sh docs` with the bundled mkdocs-material
+# image, --network none: the kit's docs/wiki/ is mounted as /docs/docs and this
+# file as /docs/mkdocs.yml (MkDocs refuses a config inside docs_dir).
+site_name: Analyst Guide — R770 Network Lab
+site_url: https://docs.lab/
+docs_dir: docs
+site_dir: site
+use_directory_urls: true
+theme:
+  name: material
+  font: false            # no Google Fonts -- the R770 has no internet, and neither should this page
+  features: [navigation.sections, search.highlight]
+plugins: [search]
+markdown_extensions: [admonition, tables, toc]
+nav:
+  - Home: index.md
+  - Access & workspaces: access.md
+  - Malcolm: malcolm.md
+  - GNS3: gns3.md
+  - WAN impairment: wan.md
+  - CLI tools: cli-tools.md
