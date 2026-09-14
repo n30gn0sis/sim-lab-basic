@@ -1,0 +1,25 @@
+# Evidence written on the R770 by every kit script (transcripts, validation
+# reports). It travels back to the build repo's state/inventory/ by hand; a
+# copy here would be a second evidence tree nothing keeps in step.
+r770-evidence/
+
+# Anything a `secrets` subcommand could ever write, should a KIT_ROOT ever be
+# pointed inside the checkout. Secrets live in /etc/lab/secrets on the box.
+*.pw
+*.env
+!config/**/*.env
+
+# Rendered templates land on the host, never here.
+*.rendered
+
+# A bundle is never inside the kit: the kit sits BESIDE the bundle on the media.
+bundle-*/
+*.tar.gz
+*.part
+
+# Machine-local agent settings may carry credentials in permission entries.
+.claude/settings.local.json
+
+# Editor / OS noise
+*.swp
+.DS_Store
