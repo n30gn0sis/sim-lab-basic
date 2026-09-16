@@ -47,9 +47,9 @@ Every gate prints *current · proposed · rollback* and waits for a `y`, or for
 first gate on purpose: a gate is a question, and a run that cannot answer must
 not assume. `--dry-run` prints every command instead of executing it.
 
-Read `docs/deployment-runbook.md` before the first run; it says where the
-runbook stops today (Phase 5 in the build repo is BLOCKED, and the stages
-that depend on it will refuse rather than guess).
+Read `docs/deployment-runbook.md` before the first run; it shows which stages
+are ready today and which still wait on their own build-repo phase — iDRAC
+and the build repo's Phase 5 don't gate anything in this kit.
 
 ## What's here
 

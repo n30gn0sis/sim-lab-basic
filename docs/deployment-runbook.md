@@ -21,15 +21,20 @@ The install is **not** a single sitting.
 |---|---|---|
 | 1–3 preflight, gate, copy | 4 | — ready (needs the Phase 3 volumes mounted) |
 | 4–8 apt, phone-home, docker, images, files | 4, 6 | needs stages 1–3 |
-| 9 gns3 | 8 | **Phase 5** (management networking) |
-| 10 malcolm | 10 | **Phase 5**, capture-port prep (Phase 9) |
-| 11–12 portal, monitoring | 13, 14 | **Phase 5** |
+| 9 gns3 | 8 | needs Phase 8 built |
+| 10 malcolm | 10 | needs Phase 10 built, capture-port prep (Phase 9) |
+| 11–12 portal, monitoring | 13, 14 | needs Phase 13 / 14 built |
 | 13 validate | 16 | runs at any point; SKIPs what is not built |
 
-Phase 5 is BLOCKED in the build repo until iDRAC is proven as a recovery path.
-Stages 1–8 can run now and are worth running now: they are the long ones, and
-they prove the bundle before the networking work begins. Run them with
-`--to files`.
+None of stages 9–12 touch a network interface, an IP address, or SSH — gns3,
+Malcolm and the portal's nginx all bind to `127.0.0.1` only, and the
+monitoring stack's ports are loopback too. Proving iDRAC as a recovery path
+is a prerequisite for the build repo's **own** management-networking work,
+not for anything these stages do — it does not gate stages 9–12 here. What
+still gates them is whether their own build-repo phase (8, 9, 10, 13, 14) is
+built; check `state/BUILD-STATE.md` in the build repo before assuming one is
+ready. Stages 1–8 can run now regardless: they are the long ones, and they
+prove the bundle before anything else begins. Run them with `--to files`.
 
 ---
 
@@ -170,7 +175,8 @@ sudo ./scripts/r770-import-bundle.sh files --bundle /srv/bundles/bundle-YYYYMMDD
 
 The GNS3 wheelhouse stays in the bundle; Step 9 reads it from there.
 
-**Stop here (`--to files`) until Phase 5 is VERIFIED in the build repo.**
+**Stop here (`--to files`) until stages 9–12's own build-repo phases (8, 9,
+10, 13, 14) are built — none of them need iDRAC or Phase 5 proven first.**
 
 ---
 
