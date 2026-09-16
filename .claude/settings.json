@@ -17,7 +17,7 @@
       "Bash(./scripts/r770-deploy.sh --list:*)",
       "Bash(./scripts/r770-validate.sh --list:*)",
       "Bash(./scripts/r770-airgap-check.sh:*)",
-      "Bash(./staging/r770-bundle.sh:*)"
+      "Bash(./staging/r770-bundle.sh:*)",
       "Bash(sudo:*)",
       "Bash(docker:*)",
       "Bash(apt-get:*)",
