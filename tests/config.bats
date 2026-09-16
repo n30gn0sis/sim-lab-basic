@@ -22,7 +22,7 @@ setup() { cd "$BATS_TEST_DIRNAME/.."; }
 }
 
 @test "every __TOKEN__ in config/ is one the kit renders" {
-    known='MGMT_IP SECRETS_DIR ADMIN_PW PCAP_NODE_NAME OS_MEMORY LS_MEMORY ARKIME_MANAGE_PCAP ARKIME_FREE_SPACE_G MALCOLM_VER'
+    known='MGMT_IP SECRETS_DIR ADMIN_PW PCAP_NODE_NAME OS_MEMORY LS_MEMORY ARKIME_MANAGE_PCAP ARKIME_FREE_SPACE_G MALCOLM_VER NETWORK_INDEX_PATTERN_ID'
     bad=""
     while read -r t; do
         n=${t#__}; n=${n%__}

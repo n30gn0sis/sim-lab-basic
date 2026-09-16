@@ -208,6 +208,49 @@ sudo ./scripts/r770-malcolm-deploy.sh rebind                   # 0.0.0.0:443 -> 
 sudo ./scripts/r770-malcolm-deploy.sh start                    # Malcolm's ./scripts/start, then wait for health
 ```
 
+Once the stack is healthy, the lab's own saved objects and views go on top.
+These are **not** part of the runner's malcolm stage on purpose: they need a
+started stack, and a dashboard that failed to import is not a reason to fail a
+deployment that otherwise stood every service up.
+
+```bash
+sudo ./scripts/r770-malcolm-deploy.sh inventory                # read-only: what this Dashboards actually holds
+sudo ./scripts/r770-malcolm-deploy.sh dashboards               # the lab's IPsec saved searches and dashboard
+sudo ./scripts/r770-malcolm-deploy.sh arkime-views             # the same protocols, as Arkime views
+```
+
+`inventory` is the only honest answer to "what does this Malcolm ship?" — it
+reads the saved objects off the running stack and prints them by type, and the
+transcript is the record. Run it before the other two: `dashboards` attaches
+the kit's objects to an index pattern it *reads* from the stack, and if the
+stack carries more than one it refuses and lists them rather than choosing —
+name the one you want with `--index-pattern <id|title>`.
+
+`dashboards` then imports `config/malcolm/dashboards/ipsec.ndjson.template`
+and **asserts every object id back**, because the import API reports success
+for a partial import exactly as it reports a whole one — the same lie
+`docker load` tells about tags. A `MISSING` line names the object that did not
+land. `arkime-views` does the same for
+`config/malcolm/arkime-views/ipsec.views`, reading each view back by name.
+
+Both are idempotent: the import overwrites, and the views are posted by name.
+
+### Authoring a new dashboard
+
+The kit cannot design a dashboard; OpenSearch Dashboards can. The loop:
+
+1. Build it in the UI on the running stack.
+2. Export it: **Stack Management → Saved Objects → Export**, with related
+   objects included.
+3. Strip the version fields (`coreMigrationVersion`, `migrationVersion`) and
+   replace the index-pattern id in every `references` entry with
+   `__NETWORK_INDEX_PATTERN_ID__`. Both matter: a literal version trips
+   `tests/no-pins.bats`, and a literal index-pattern id imports broken on any
+   other stack.
+4. Put each object on one line, ordered `{"id":…,"type":…,…}` — the verify step
+   refuses a line it cannot read, rather than skipping it silently.
+5. Drop it in `config/malcolm/dashboards/`, commit, rerun `dashboards`.
+
 `configure` asserts every flag it passes against the bundled installer's
 `--help` and dies naming a missing one — a version bump fails by name, not by
 surprise. The template pins PCAP to `/data/pcap/raw` and indexes to

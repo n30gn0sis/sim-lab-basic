@@ -17,11 +17,19 @@
 #   start         Malcolm's own ./scripts/start, then wait for health
 #   stop          Malcolm's own ./scripts/stop
 #   status        what is in place
+#   inventory     what saved objects Dashboards holds NOW, read-only — the
+#                 only honest source for what this Malcolm actually ships
+#   dashboards    install the kit's saved objects, then assert every id back
+#   arkime-views  install the kit's Arkime views, then read every one back
 #
 #   --bundle <dir>             the bundle copied to /srv/bundles
 #   --arkime-free-space-g N    let Arkime delete oldest raw PCAP below N GB free
 #                              (Phase 10 sets this from measured feed rates;
 #                              default: no automatic deletion)
+#   --index-pattern <id|title> which Dashboards index pattern the saved objects
+#                              attach to. Needed only when the stack carries
+#                              more than one: the kit refuses to pick for you,
+#                              it does not guess (run `inventory` to see them)
 #   --yes / --non-interactive / --dry-run / --force   as everywhere in the kit
 #
 #   MALCOLM_HOME        /opt/malcolm        MALCOLM_ADMIN_USER   analyst
@@ -42,7 +50,7 @@ set -uo pipefail
 # shellcheck source=lib/common.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
 
-BUNDLE=""; FREE_G=""
+BUNDLE=""; FREE_G=""; IDX=""; OSD_NETRC=""
 MALCOLM_HOME="${MALCOLM_HOME:-/opt/malcolm}"
 ADMIN_USER="${MALCOLM_ADMIN_USER:-analyst}"
 WAIT_SECS="${MALCOLM_WAIT_SECS:-600}"
@@ -56,7 +64,7 @@ REBIND_FROM='^    - 0.0.0.0:443:443/tcp$'
 REBIND_TO='    - 127.0.0.1:8443:443/tcp'
 SECRET="/etc/lab/secrets/malcolm-admin.pw"
 
-usage() { usage_from_header 3 34; exit 0; }
+usage() { usage_from_header 3 40; exit 0; }
 home()      { p "$MALCOLM_HOME"; }
 installer() { printf '%s/scripts/install.py' "$(home)"; }
 stack()     { printf '%s/malcolm' "$(home)"; }
@@ -283,12 +291,224 @@ cmd_status() {
     return 0
 }
 
+# ── dashboards and arkime views ──────────────────────────────────────────────
+# Everything below reaches the stack through the rebound proxy on
+# 127.0.0.1:8443 — the entry point `rebind` guarantees, and the only one the
+# air gap admits. The admin credential never reaches argv or the transcript:
+# curl reads it from a 0600 netrc that lives only for the length of the run.
+# There is no jq on this box, so every response is read with sed and grep, and
+# any shape this kit was not written for is a refusal, never a guess.
+osd_cleanup() {
+    if [ -n "$OSD_NETRC" ]; then rm -f "$OSD_NETRC"; fi
+    OSD_NETRC=""
+}
+osd_auth_file() {
+    local pw
+    pw=$(secret_read "$(p "$SECRET")") || exit 1
+    OSD_NETRC=$(mktemp) || die "mktemp failed"
+    chmod 600 "$OSD_NETRC"
+    printf 'machine 127.0.0.1 login %s password %s\n' "$ADMIN_USER" "$pw" > "$OSD_NETRC"
+    trap osd_cleanup EXIT
+}
+osd_api() {  # osd_api <method> <path> [extra args...]
+    local m=$1 path=$2; shift 2
+    curl -sS -k --max-time 60 --netrc-file "$OSD_NETRC" -X "$m" -H 'osd-xsrf: true' "https://127.0.0.1:8443/dashboards${path}" "$@"
+}
+arkime_api() {  # arkime_api <method> <path> [extra args...]
+    local m=$1 path=$2; shift 2
+    curl -sS -k --max-time 60 --netrc-file "$OSD_NETRC" -X "$m" -H 'Content-Type: application/json' "https://127.0.0.1:8443/arkime${path}" "$@"
+}
+# osd_reachable — a named SKIP beats a wall of curl errors when the stack is
+# simply not up yet.
+osd_reachable() { osd_api GET "/api/status" --fail >/dev/null 2>&1; }
+
+# osd_objects <find-query> — "<type> <id> <title>" per line. Each object is put
+# on a line of its own first; that is as much JSON as bash should ever parse.
+osd_objects() {
+    local q=$1
+    # `|| [ -n "$line" ]`: an API response has no trailing newline, and a plain
+    # `while read` drops its last line — which would report an empty stack.
+    osd_api GET "/api/saved_objects/_find?${q}" | sed 's/},{/}\n{/g' | while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in *'"type":"'*) ;; *) continue ;; esac
+        local id type title
+        id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+        type=$(printf '%s' "$line" | sed -n 's/.*"type":"\([^"]*\)".*/\1/p')
+        title=$(printf '%s' "$line" | sed -n 's/.*"title":"\([^"]*\)".*/\1/p')
+        [ -n "$id" ] || continue
+        printf '%s %s %s\n' "${type:-unknown}" "$id" "${title:-<untitled>}"
+    done
+}
+
+# resolve_index_pattern — the id the kit's saved objects attach to. Given
+# --index-pattern it takes that (by id or by title); given nothing it accepts
+# exactly one and refuses to choose between several. Zero and many are both
+# refusals, as in image_ref_from_list: the kit never picks for the operator.
+resolve_index_pattern() {
+    local all hits n
+    all=$(osd_objects 'type=index-pattern&per_page=1000&fields=title')
+    n=$(printf '%s' "$all" | grep -c . || true)
+    [ "$n" -gt 0 ] || die "Dashboards holds no index pattern — Malcolm has not finished its first-run import yet, or this is not the stack you think it is"
+    if [ -n "$IDX" ]; then
+        hits=$(printf '%s\n' "$all" | awk -v want="$IDX" '{ t=$0; sub(/^[^ ]+ [^ ]+ /,"",t); if ($2==want || t==want) print $2 }')
+        [ -n "$hits" ] || die "no index pattern with id or title '$IDX' — run 'inventory' to see what this stack carries"
+        printf '%s\n' "$hits" | head -1
+        return 0
+    fi
+    if [ "$n" -ne 1 ]; then
+        printf '%s\n' "$all" | sed 's/^/      /' >&2
+        die "${n} index patterns on this stack — name one with --index-pattern <id|title>; the kit does not choose for you"
+    fi
+    printf '%s\n' "$all" | awk '{print $2}'
+}
+
+# assert_saved_objects <ndjson> — every object the file declares is really
+# there afterwards. The import API reports success for a partial import exactly
+# as it reports a whole one, which is the lie `docker load` also tells.
+assert_saved_objects() {
+    local f=$1 bn line id type missing=0 total=0
+    bn=$(basename "$f")
+    while IFS= read -r line || [ -n "$line" ]; do
+        [ -n "$line" ] || continue
+        id=$(printf '%s' "$line" | sed -n 's/^{"id":"\([^"]*\)","type":"\([^"]*\)".*/\1/p')
+        type=$(printf '%s' "$line" | sed -n 's/^{"id":"\([^"]*\)","type":"\([^"]*\)".*/\2/p')
+        if [ -z "$id" ] || [ -z "$type" ]; then
+            die "refusing to verify ${bn}: a line does not begin {\"id\":...,\"type\":...} — the file's shape is not the one this check was written for"
+        fi
+        total=$((total + 1))
+        if osd_api GET "/api/saved_objects/${type}/${id}" | grep -qF "\"id\":\"${id}\""; then
+            echo "ok      ${type}/${id}"
+        else
+            echo "MISSING ${type}/${id}"
+            missing=$((missing + 1))
+        fi
+    done < "$f"
+    [ "$total" -gt 0 ] || die "no saved objects declared in $f"
+    if [ "$missing" -gt 0 ]; then
+        fail "${missing} of ${total} object(s) absent after import — the import reported success but did not land them"
+        return 1
+    fi
+    pass "all ${total} saved object(s) present"
+}
+
+cmd_inventory() {
+    banner "inventory — what this Dashboards holds now"
+    need_root
+    osd_auth_file
+    if ! osd_reachable; then
+        skip "Dashboards did not answer on 127.0.0.1:8443 — start the stack first; nothing was read or changed"
+        footer "inventory"
+    fi
+    local all n t
+    all=$(osd_objects 'type=index-pattern&type=search&type=visualization&type=dashboard&per_page=1000&fields=title')
+    n=$(printf '%s' "$all" | grep -c . || true)
+    if [ "$n" -eq 0 ]; then
+        fail "Dashboards answered but reported no saved objects at all"
+        footer "inventory"
+    fi
+    for t in index-pattern search visualization dashboard; do
+        banner "$t"
+        printf '%s\n' "$all" | awk -v k="$t" '$1 == k { id=$2; $1=""; $2=""; sub(/^  /,""); printf "      %-46s %s\n", id, $0 }'
+    done
+    pass "${n} saved object(s) listed — this transcript is the inventory"
+    footer "inventory"
+}
+
+cmd_dashboards() {
+    banner "dashboards — install the kit's saved objects"
+    need_root
+    local dir tpl rendered idx base
+    dir="$KIT_CONFIG_DIR/malcolm/dashboards"
+    [ -d "$dir" ] || die "no dashboards directory at $dir"
+    if [ "$DRY" = "1" ]; then
+        for tpl in "$dir"/*.ndjson.template; do
+            [ -e "$tpl" ] || die "no *.ndjson.template under $dir"
+            echo "DRY-RUN: render $(basename "$tpl"), import it, then assert every id it declares"
+        done
+        footer "dashboards"
+    fi
+    osd_auth_file
+    if ! osd_reachable; then
+        skip "Dashboards did not answer on 127.0.0.1:8443 — start the stack first; nothing was changed"
+        footer "dashboards"
+    fi
+    idx=$(resolve_index_pattern) || exit 1
+    note "index pattern: $idx"
+    for tpl in "$dir"/*.ndjson.template; do
+        [ -e "$tpl" ] || die "no *.ndjson.template under $dir"
+        base=$(basename "${tpl%.template}")
+        rendered="$(home)/$base"
+        render "$tpl" "$rendered" "NETWORK_INDEX_PATTERN_ID=$idx"
+        echo "+ POST /api/saved_objects/_import?overwrite=true   ($base)"
+        osd_api POST "/api/saved_objects/_import?overwrite=true" -F "file=@${rendered}" > "${rendered}.result" \
+            || die "the import call failed — ${rendered}.result holds what came back"
+        grep -q '"success":true' "${rendered}.result" \
+            || die "import did not report success for ${base} — read ${rendered}.result"
+        assert_saved_objects "$rendered" || true
+    done
+    footer "dashboards"
+}
+
+cmd_arkime_views() {
+    banner "arkime-views — install the kit's Arkime views"
+    need_root
+    local dir f bn line name vexpr listed total=0 missing=0
+    dir="$KIT_CONFIG_DIR/malcolm/arkime-views"
+    [ -d "$dir" ] || die "no arkime views directory at $dir"
+    if [ "$DRY" = "1" ]; then
+        for f in "$dir"/*.views; do
+            [ -e "$f" ] || die "no *.views under $dir"
+            echo "DRY-RUN: post each view in $(basename "$f"), then read them all back"
+        done
+        footer "arkime-views"
+    fi
+    osd_auth_file
+    arkime_api GET "/api/user/views" --fail >/dev/null 2>&1 \
+        || die "Arkime did not answer GET /api/user/views on 127.0.0.1:8443 — the stack is down, or this Arkime's view API moved; read the bundle's BUNDLE_NOTES.md before changing the kit"
+    for f in "$dir"/*.views; do
+        [ -e "$f" ] || die "no *.views under $dir"
+        bn=$(basename "$f")
+        while IFS= read -r line; do
+            case "$line" in ''|'#'*) continue ;; esac
+            case "$line" in *'|'*) ;; *) die "refusing ${bn}: '$line' is not <name>|<expression>" ;; esac
+            name=${line%%|*}; vexpr=${line#*|}
+            if [ -z "$name" ] || [ -z "$vexpr" ]; then
+                die "refusing ${bn}: '$line' has an empty name or expression"
+            fi
+            case "${name}${vexpr}" in *'"'*|*\\*) die "refusing ${bn}: '${name}' carries a quote or backslash, which this format cannot encode without a JSON writer" ;; esac
+            total=$((total + 1))
+            echo "+ POST /api/user/views   (${name})"
+            arkime_api POST "/api/user/views" -d "$(printf '{"name":"%s","expression":"%s"}' "$name" "$vexpr")" >/dev/null 2>&1 || true
+        done < "$f"
+    done
+    listed=$(arkime_api GET "/api/user/views" 2>/dev/null || true)
+    for f in "$dir"/*.views; do
+        while IFS= read -r line; do
+            case "$line" in ''|'#'*) continue ;; esac
+            case "$line" in *'|'*) ;; *) continue ;; esac
+            name=${line%%|*}
+            if printf '%s' "$listed" | grep -qF "\"${name}\""; then
+                echo "ok      ${name}"
+            else
+                echo "MISSING ${name}"
+                missing=$((missing + 1))
+            fi
+        done < "$f"
+    done
+    if [ "$missing" -gt 0 ]; then
+        fail "${missing} of ${total} view(s) absent after the call — Arkime accepted the post but did not store them"
+    else
+        pass "all ${total} view(s) present"
+    fi
+    footer "arkime-views"
+}
+
 # ── dispatch ─────────────────────────────────────────────────────────────────
 SUB="${1:-}"; [ $# -gt 0 ] && shift
 while [ $# -gt 0 ]; do
     case "$1" in
         --bundle)              BUNDLE="${2:-}"; shift ;;
         --arkime-free-space-g) FREE_G="${2:-}"; shift ;;
+        --index-pattern)       IDX="${2:-}"; shift ;;
         -h|--help)             usage ;;
         *)
             if common_flag "$1"; then :
@@ -310,6 +530,9 @@ case "$SUB" in
     start)       cmd_start ;;
     stop)        cmd_stop ;;
     status)      cmd_status ;;
+    inventory)    cmd_inventory ;;
+    dashboards)   cmd_dashboards ;;
+    arkime-views) cmd_arkime_views ;;
     -h|--help|help|"") usage ;;
     *)           die "unknown subcommand: $SUB (try --help)" ;;
 esac

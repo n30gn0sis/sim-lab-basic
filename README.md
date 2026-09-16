@@ -57,7 +57,7 @@ and the build repo's Phase 5 don't gate anything in this kit.
 |---|---|
 | `scripts/r770-deploy.sh` | The runner: 13 stages in order, `--from/--to/--only`, stops at the first refusal. Holds no logic of its own |
 | `scripts/r770-import-bundle.sh` | Bundle in: preflight, gate (the verifier **that travels in the bundle**), copy, local APT repo, phone-home neutralised, Docker, image loads with every tag asserted, payload into place |
-| `scripts/r770-malcolm-deploy.sh` | Malcolm: load/assert-tags (as in the build repo), unpack, configure by replaying the kit's config template through the installer, secrets, auth, the port rebind, start with Malcolm's own script |
+| `scripts/r770-malcolm-deploy.sh` | Malcolm: load/assert-tags (as in the build repo), unpack, configure by replaying the kit's config template through the installer, secrets, auth, the port rebind, start with Malcolm's own script; then `inventory` (read-only, what Dashboards holds), `dashboards` and `arkime-views` (the lab's IPsec saved searches and views, each asserted back after install) |
 | `scripts/r770-gns3-deploy.sh` | GNS3: venv from the wheelhouse (`--no-index`), service user, config owned by that user, systemd unit on 127.0.0.1 |
 | `scripts/r770-portal-deploy.sh` | Portal: easy-rsa CA generated here, one five-SAN cert, vhosts (`nginx -t` before reload, probe after), landing page, analyst wiki built offline |
 | `scripts/r770-monitoring-deploy.sh` | Prometheus/Alertmanager/Grafana/cAdvisor/blackbox on loopback, images from the bundle's list, `--pull never` |

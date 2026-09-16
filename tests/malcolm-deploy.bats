@@ -272,3 +272,168 @@ STUB
     [ "$status" -eq 1 ]
     [[ "$output" == *"1 of 2 services not ready"* ]]
 }
+
+# ── dashboards and arkime views ─────────────────────────────────────────────
+# The stack is a curl stub: these prove the kit's side of the contract — that
+# it reads the index pattern rather than assuming one, that it asserts every
+# saved object back after an import that claims success, and that the admin
+# credential reaches curl through a netrc and never through argv.
+
+malcolm_secret() {  # the admin credential the API calls authenticate with
+    mkdir -p "$ROOT/etc/lab/secrets"
+    printf 'fixture-credential\n' > "$ROOT/etc/lab/secrets/malcolm-admin.pw"
+}
+
+stub_curl_osd() {  # a stack that answers; $1.. are the object ids that exist
+    printf '%s\n' "$@" > "$BATS_TEST_TMPDIR/present-objects.txt"
+    : > "$BATS_TEST_TMPDIR/views.json"
+    [ -s "$BATS_TEST_TMPDIR/index-patterns.json" ] || \
+        printf '{"saved_objects":[{"type":"index-pattern","id":"idx-net","attributes":{"title":"lab-sessions-*"}}]}' \
+            > "$BATS_TEST_TMPDIR/index-patterns.json"
+    stub curl '
+echo "curl $*" >> "$STUB_LOG"
+url=""; method=GET
+while [ $# -gt 0 ]; do
+  case "$1" in -X) method="$2"; shift ;; https://*) url="$1" ;; esac
+  shift
+done
+case "$url" in
+  */api/status*)               echo "{\"status\":{\"overall\":{\"state\":\"green\"}}}" ;;
+  */_find*type=search*)        cat "$BATS_TEST_TMPDIR/objects.json" 2>/dev/null || echo "{\"saved_objects\":[]}" ;;
+  */_find*type=index-pattern*) cat "$BATS_TEST_TMPDIR/index-patterns.json" ;;
+  */_find*)                    cat "$BATS_TEST_TMPDIR/objects.json" 2>/dev/null || echo "{\"saved_objects\":[]}" ;;
+  */_import*)                  echo "{\"success\":true}" ;;
+  */api/user/views*)           cat "$BATS_TEST_TMPDIR/views.json" 2>/dev/null || echo "[]" ;;
+  */saved_objects/*)
+      id="${url##*/}"
+      if grep -qxF "$id" "$BATS_TEST_TMPDIR/present-objects.txt" 2>/dev/null; then
+        echo "{\"id\":\"$id\"}"
+      else
+        echo "{\"statusCode\":404}"
+      fi ;;
+esac
+exit 0'
+}
+
+stub_curl_down() { stub curl 'echo "curl $*" >> "$STUB_LOG"; exit 7'; }
+
+ipsec_ids() {  # every id the shipped template declares
+    sed -n 's/^{"id":"\([^"]*\)".*/\1/p' config/malcolm/dashboards/ipsec.ndjson.template
+}
+
+@test "inventory SKIPs with a reason when Dashboards does not answer, and changes nothing" {
+    make_malcolm_tree "$ROOT"; malcolm_secret
+    stub_curl_down
+    run malcolm inventory
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"SKIP"* ]]
+    [[ "$output" == *"did not answer on 127.0.0.1:8443"* ]]
+}
+
+@test "inventory lists what the stack holds, grouped by type" {
+    make_malcolm_tree "$ROOT"; malcolm_secret
+    printf '{"saved_objects":[{"type":"index-pattern","id":"idx-net","attributes":{"title":"lab-sessions-*"}},{"type":"dashboard","id":"malcolm-overview","attributes":{"title":"Malcolm Overview"}}]}' \
+        > "$BATS_TEST_TMPDIR/objects.json"
+    stub_curl_osd
+    run malcolm inventory
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"idx-net"* ]]
+    [[ "$output" == *"malcolm-overview"* ]]
+    [[ "$output" == *"Malcolm Overview"* ]]
+}
+
+@test "dashboards refuses to choose between several index patterns, and names them" {
+    make_malcolm_tree "$ROOT"; malcolm_secret
+    printf '{"saved_objects":[{"type":"index-pattern","id":"idx-net","attributes":{"title":"lab-sessions-*"}},{"type":"index-pattern","id":"idx-other","attributes":{"title":"lab-other-*"}}]}' \
+        > "$BATS_TEST_TMPDIR/index-patterns.json"
+    stub_curl_osd
+    run malcolm dashboards
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"2 index patterns"* ]]
+    [[ "$output" == *"--index-pattern"* ]]
+    [[ "$output" == *"does not choose for you"* ]]
+}
+
+@test "dashboards takes the index pattern it is given, by title, and renders it in" {
+    make_malcolm_tree "$ROOT"; malcolm_secret
+    printf '{"saved_objects":[{"type":"index-pattern","id":"idx-net","attributes":{"title":"lab-sessions-*"}},{"type":"index-pattern","id":"idx-other","attributes":{"title":"lab-other-*"}}]}' \
+        > "$BATS_TEST_TMPDIR/index-patterns.json"
+    stub_curl_osd $(ipsec_ids)
+    run malcolm dashboards --index-pattern 'lab-sessions-*'
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"index pattern: idx-net"* ]]
+    grep -q '"id":"idx-net"' "$ROOT/opt/malcolm/ipsec.ndjson"
+    run grep -c '__NETWORK_INDEX_PATTERN_ID__' "$ROOT/opt/malcolm/ipsec.ndjson"
+    [ "$status" -ne 0 ]
+}
+
+@test "dashboards asserts every saved object back and PASSes when they all landed" {
+    make_malcolm_tree "$ROOT"; malcolm_secret
+    stub_curl_osd $(ipsec_ids)
+    run malcolm dashboards
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"lab-ipsec-overview"* ]]
+    [[ "$output" == *"saved object(s) present"* ]]
+}
+
+@test "dashboards regression: an import that claims success with an object missing is a FAIL that names it" {
+    make_malcolm_tree "$ROOT"; malcolm_secret
+    # the import reports {"success":true} but the dashboard never landed
+    stub_curl_osd lab-ipsec-esp lab-ipsec-ah lab-ipsec-ike lab-ipsec-natt lab-ipsec-all
+    run malcolm dashboards
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"MISSING dashboard/lab-ipsec-overview"* ]]
+    [[ "$output" == *"absent after import"* ]]
+}
+
+@test "dashboards sends the credential through a netrc, never through argv" {
+    make_malcolm_tree "$ROOT"; malcolm_secret
+    stub_curl_osd $(ipsec_ids)
+    run malcolm dashboards
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"fixture-credential"* ]]
+    run grep -c 'fixture-credential' "$STUB_LOG"
+    [ "$status" -ne 0 ]
+    grep -q -- '--netrc-file' "$STUB_LOG"
+}
+
+@test "arkime-views posts every view in the kit's file and reads them all back" {
+    make_malcolm_tree "$ROOT"; malcolm_secret
+    stub_curl_osd
+    sed -n 's/^\([^#|][^|]*\)|.*/{"name":"\1"}/p' config/malcolm/arkime-views/ipsec.views \
+        | paste -sd, - | sed 's/^/[/;s/$/]/' > "$BATS_TEST_TMPDIR/views.json"
+    run malcolm arkime-views
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"IPsec - ESP payload"* ]]
+    [[ "$output" == *"view(s) present"* ]]
+    grep -q 'ip.protocol == 50' "$STUB_LOG"
+}
+
+@test "arkime-views FAILs, naming the view, when Arkime accepted the post but stored nothing" {
+    make_malcolm_tree "$ROOT"; malcolm_secret
+    stub_curl_osd
+    printf '[]' > "$BATS_TEST_TMPDIR/views.json"
+    run malcolm arkime-views
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"MISSING IPsec - ESP payload"* ]]
+    [[ "$output" == *"did not store them"* ]]
+}
+
+@test "arkime-views dies naming the endpoint when Arkime's view API does not answer" {
+    make_malcolm_tree "$ROOT"; malcolm_secret
+    stub_curl_down
+    run malcolm arkime-views
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"/api/user/views"* ]]
+    [[ "$output" == *"BUNDLE_NOTES.md"* ]]
+}

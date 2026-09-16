@@ -1,0 +1,22 @@
+# Arkime views for IPsec — the packet-side counterpart to the Dashboards
+# saved searches in config/malcolm/dashboards/ipsec.ndjson.template.
+#
+# Format: <name>|<arkime expression>, one per line. Not JSON: the R770 has no
+# jq, and a delimited file is the one shape bash can read without a parser.
+# Names are what the analyst sees in Arkime's view picker.
+#
+# Every expression here is built from protocol facts — IANA protocol numbers
+# and the registered IKE ports — not from Malcolm's index mapping, so they do
+# not drift when the bundled Malcolm moves.
+#
+#   ESP    IP protocol 50    the encrypted payload
+#   AH     IP protocol 51    integrity only, rare
+#   IKE    UDP 500           negotiation and rekey
+#   NAT-T  UDP 4500          IKE and ESP wrapped for NAT traversal
+
+IPsec - all traffic|ip.protocol == 50 || ip.protocol == 51 || port == 500 || port == 4500
+IPsec - ESP payload|ip.protocol == 50
+IPsec - AH authenticated|ip.protocol == 51
+IPsec - IKE negotiation|port == 500
+IPsec - NAT-T encapsulated|port == 4500
+IPsec - negotiation without payload|(port == 500 || port == 4500) && ip.protocol != 50

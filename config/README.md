@@ -22,6 +22,8 @@ bundled installer's filename. `tests/no-pins.bats` enforces this.
 | `systemd/gns3.service` | new | — | a server started from a shell outlived its tmux session |
 | `config/docs/mkdocs.yml` | `config/docs/mkdocs.yml` | header comment names the kit's build path | built on the R770, not the VM |
 | `portal/index.html.template` | `portal/index.html` | `(staging rehearsal)` title removed; staging IP → `__MGMT_IP__`; staging password paths → "issued by the operator" | host-specific |
+| `malcolm/dashboards/ipsec.ndjson.template` | new | — | IPsec saved searches and a dashboard for server-bound and GNS3 traffic. Queries are built from IANA protocol numbers and the registered IKE ports, so they do not drift when the bundled Malcolm moves; the index pattern is a token read off the running stack |
+| `malcolm/arkime-views/ipsec.views` | new | — | the packet-side counterpart, as Arkime expressions. `<name>\|<expression>` per line, not JSON: there is no `jq` on the R770 |
 | `malcolm/malcolm-config.json.template` | `malcolm/malcolm-config-rehearsal.json` | `pcapDir=/data/pcap/raw`, `indexDir=/data/index`, `useDefaultStorageLocations=false`, `autoSuricata=false`, `zeekPullIntelligenceFeeds=false`, `zeekIntelOnStartup=false`; tokens `__PCAP_NODE_NAME__ __OS_MEMORY__ __LS_MEMORY__ __ARKIME_MANAGE_PCAP__ __ARKIME_FREE_SPACE_G__ __MALCOLM_VER__` | R770 storage layout; Suricata disabled by decision; no feed pulls on an air gap; heaps sized from the host |
 
 Tokens the kit knows how to render (any other `__TOKEN__` fails the render):
@@ -35,6 +37,7 @@ Tokens the kit knows how to render (any other `__TOKEN__` fails the render):
 | `__OS_MEMORY__`, `__LS_MEMORY__` | `r770-malcolm-deploy.sh configure` | computed from `free -g` (OpenSearch capped at 31g) |
 | `__ARKIME_MANAGE_PCAP__`, `__ARKIME_FREE_SPACE_G__` | `r770-malcolm-deploy.sh configure` | `--arkime-free-space-g N` (else `false` / none: Phase 10 sets the floor from measured feed rates) |
 | `__MALCOLM_VER__` | `r770-malcolm-deploy.sh configure` | the bundled `malcolm-<ver>-docker_install.zip` filename |
+| `__NETWORK_INDEX_PATTERN_ID__` | `r770-malcolm-deploy.sh dashboards` | read off the running stack: the index pattern Dashboards actually holds, or `--index-pattern <id\|title>` when there is more than one (never guessed) |
 
 ## Keeping it in step with the build repo
 
