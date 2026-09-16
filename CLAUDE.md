@@ -1,12 +1,90 @@
-# CLAUDE.md — sim-lab-basic (R770 offline deployment kit)
+# CLAUDE.md
 
-You are working in the deployment kit for an air-gapped Ubuntu 24.04
-network-lab server. `scripts/` is the **R770 side**: it takes a finished
-bundle onto the box and stands the services up. `staging/` is the **staging
-side**: the build repo's bundle pipeline, carried byte for byte, run only on
-the internet-connected staging host. The design, the hardware inventory and
-the phase tracker live in the build repo (`simlab-build`). Read `README.md`
-and `docs/deployment-runbook.md` before doing anything.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## What this is
+
+The deployment kit for an air-gapped Ubuntu 24.04 network-lab server (a Dell
+PowerEdge R770). `scripts/` is the **R770 side**: it takes a finished bundle
+onto the box and stands the services up. `staging/` is the **staging side**:
+the build repo's bundle pipeline, carried byte for byte, run only on the
+internet-connected staging host. The design, the hardware inventory and the
+phase tracker live in the build repo (`simlab-build`). Read `README.md` and
+`docs/deployment-runbook.md` before doing anything.
+
+## Commands
+
+Everything here is bash + bats; there is no compiled build step. All of it is
+offline and read-only — no suite touches a real bundle, a real daemon, or the
+R770.
+
+```bash
+sudo apt-get install -y shellcheck bats   # once, on any Linux box (not the R770)
+
+./tests/run.sh                            # the whole gate: shellcheck + every tests/*.bats suite
+bats tests/common.bats                    # one suite
+bats tests/common.bats --filter '<name>'  # one test within a suite (bats-core >= 1.10)
+shellcheck scripts/*.sh scripts/lib/common.sh staging/*.sh   # lint alone, no exclusions
+                                           # (except the one carried file, staging/r770-offline-fetch.sh)
+```
+
+Running the kit itself requires root and real (or `KIT_ROOT`-faked) hardware —
+it is not something to invoke casually in this repo:
+
+```bash
+./scripts/r770-deploy.sh --list                              # print the 13 stages
+sudo ./scripts/r770-deploy.sh --bundle <dir> --media <mnt> \
+    --device /dev/<discovered> --mgmt-ip <address> --dry-run # print every command, run nothing
+./staging/r770-build-bundle.sh --dry-run                     # same, staging side
+```
+
+## Architecture
+
+- **Two hosts, enforced.** `staging/` (preflight → fetch → build → verify) is
+  the build repo's pipeline copied byte for byte — identity guarded by
+  `staging/PROVENANCE.txt` and `tests/staging.bats`, never edited here.
+  `scripts/` is the 13-stage R770 runtime. `tests/no-legacy-manifest.bats`
+  and friends prove `scripts/` never reaches into `staging/`.
+- **`r770-deploy.sh` holds no logic of its own.** It's a pure orchestrator:
+  `script_for(stage)` maps each of the 13 stages (`preflight gate copy apt
+  phone-home docker images files gns3 malcolm portal monitoring validate`) to
+  one of six scripts (`r770-import-bundle.sh`, `r770-gns3-deploy.sh`,
+  `r770-malcolm-deploy.sh`, `r770-portal-deploy.sh`,
+  `r770-monitoring-deploy.sh`, `r770-validate.sh`) and calls it as a
+  subcommand. `child()` applies one uniform exit contract (0 clean · 2 warned,
+  needs `--yes`/a prompt · 1 refused, stop) around every stage, which is what
+  makes `--from/--to/--only` and re-entry after a failure work the same way
+  everywhere.
+- **`scripts/lib/common.sh` is the one seam every script sources.** It owns:
+  `KIT_ROOT`/`KIT_DRY_RUN`/`KIT_YES`/`KIT_NON_INTERACTIVE`/`KIT_EVIDENCE_DIR`
+  (what makes every script dry-runnable and testable against a fake root);
+  `gate()` (prints current/proposed/rollback, the mechanism behind every
+  "GATED" change); `bundle_verify()` (shells out to the verifier that travels
+  *inside* the bundle — the kit ships none of its own); `assert_image_tags()`
+  (catches `docker load` reporting success on a tag set that's actually
+  incomplete); `render()` (token substitution that refuses to write if any
+  `__TOKEN__` survives); `secret_file()` (generate-once, print the path
+  never the value); `stamp()`/`stamped()` (idempotency markers under
+  `/srv/bundles/.kit-stamps`).
+- **A "bundle" is a contract, not a convention.** `bundle_dir()` only accepts
+  a directory that has `r770-bundle.sh`, `BUNDLE_NOTES.md` and
+  `MANIFEST.sha256` at its root. Version pins are never restated: they live
+  once in `staging/r770-offline-fetch.sh`'s pin block, and everything
+  downstream reads them back out of what the bundle itself carries
+  (`*/image-list.txt`, filenames, `BUNDLE_NOTES.md`) — enforced by
+  `tests/no-pins.bats`.
+- **`config/` holds templates, not config.** Files are carried from the build
+  repo with deltas tracked in `config/README.md`; each `__TOKEN__` is
+  rendered by exactly one script from exactly one source (also tabulated
+  there), and `render()` refuses a partial substitution rather than ship one.
+- **Evidence and vocabulary are uniform across the kit.** `kit_init()` tees
+  every script's transcript to `r770-evidence/<script>-<host>-<ts>.log`;
+  every check line is `PASS`/`WARN`/`FAIL`/`SKIP`, and `footer()` turns the
+  tally into the same 0/2/1 exit every stage and every runner uses.
+- **Tests never see the real host.** `tests/helpers/stubs.bash` builds a
+  synthetic `PATH` (`kit_test_env`/`kit_run`) so a script under test can
+  never reach CI's real `docker`/`apt-get`/`systemctl`, and every write goes
+  through `KIT_ROOT` into a fake root tree built by `tests/helpers/fixtures.bash`.
 
 ## Run context
 
