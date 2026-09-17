@@ -72,6 +72,7 @@ and the build repo's Phase 5 don't gate anything in this kit.
 | `docs/kit-sync.md` | How this kit relates to the build repo: copied vs referenced, the sync checklist, the no-pins rule |
 | `docs/secrets-locations.md` | Where every generated credential lives, by location and mode only |
 | `docs/wiki/` | The analyst wiki source (copied from the build repo), built into `docs.lab` on the R770 |
+| `docs/CODEMAPS/` | Token-lean maps for getting oriented fast: `architecture.md` (the two hosts, the three layers, what `common.sh` owns), `stages.md` (stage → script → subcommand → config, and which six are gated), `dependencies.md` (the bundle layout, packages required but never installed, the loopback port map). They name owners rather than restating them |
 | `tests/` | `./tests/run.sh` — shellcheck with no exclusions (one carried file keeps the build repo's accepted list), and bats suites that stub every host tool and write into a fake root. Offline, read-only, never a real bundle |
 | `.claude/settings.json` | Agent guardrails for a session opened in this kit: destructive disk commands, `curl`/`wget`/`pip install`/`docker pull`/`snap` denied; every deploy script asks |
 | `CLAUDE.md` | Operating rules for an agent working in this kit |
