@@ -64,7 +64,7 @@ REBIND_FROM='^    - 0.0.0.0:443:443/tcp$'
 REBIND_TO='    - 127.0.0.1:8443:443/tcp'
 SECRET="/etc/lab/secrets/malcolm-admin.pw"
 
-usage() { usage_from_header 3 40; exit 0; }
+usage() { usage_from_header 3; exit 0; }
 home()      { p "$MALCOLM_HOME"; }
 installer() { printf '%s/scripts/install.py' "$(home)"; }
 stack()     { printf '%s/malcolm' "$(home)"; }

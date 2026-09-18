@@ -23,7 +23,7 @@ set -uo pipefail
 
 MGMT_CIDR=""
 PHONE_HOME_UNITS="unattended-upgrades.service apt-daily.timer apt-daily-upgrade.timer ua-timer.timer motd-news.timer fwupd-refresh.timer"
-usage() { usage_from_header 3 13; exit 0; }
+usage() { usage_from_header 3; exit 0; }
 
 ip2int() { local a b c d; IFS=. read -r a b c d <<< "$1"; echo $(( (a << 24) | (b << 16) | (c << 8) | d )); }
 in_cidr() {  # in_cidr <ip> <cidr>

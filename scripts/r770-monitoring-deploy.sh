@@ -32,7 +32,7 @@ WAIT_SECS="${MON_WAIT_SECS:-120}"
 PORTS="9090 9093 3000 8080 9115"
 IMAGE_VARS=(PROMETHEUS_IMAGE=prometheus ALERTMANAGER_IMAGE=alertmanager GRAFANA_IMAGE=grafana-oss
             CADVISOR_IMAGE=cadvisor BLACKBOX_IMAGE=blackbox-exporter)
-usage() { usage_from_header 3 20; exit 0; }
+usage() { usage_from_header 3; exit 0; }
 mon() { p "$MON_DIR"; }
 
 grafana_secret() {  # GF_SECURITY_ADMIN_PASSWORD=<value>, generated once, 0600, never printed

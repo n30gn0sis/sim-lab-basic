@@ -44,7 +44,7 @@ PHONE_HOME_UNITS="unattended-upgrades.service apt-daily.timer apt-daily-upgrade.
 DOCKER_PKGS="docker-ce docker-ce-cli containerd.io docker-compose-plugin"
 
 BUNDLE=""; MEDIA=""; DEVICE=""
-usage() { usage_from_header 3 30; exit 0; }
+usage() { usage_from_header 3; exit 0; }
 
 # ── preflight ────────────────────────────────────────────────────────────────
 cmd_preflight() {

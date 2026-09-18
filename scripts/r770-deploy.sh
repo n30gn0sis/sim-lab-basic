@@ -38,7 +38,7 @@ set -uo pipefail
 
 STAGES=(preflight gate copy apt phone-home docker images files gns3 malcolm portal monitoring validate)
 BUNDLE=""; MEDIA=""; DEVICE=""; MGMT_IP=""; FROM=""; TO=""; ONLY=""
-usage() { usage_from_header 3 34; exit 0; }
+usage() { usage_from_header 3; exit 0; }
 
 stage_index() { local i; for i in "${!STAGES[@]}"; do [ "${STAGES[$i]}" = "$1" ] && { echo "$i"; return 0; }; done; return 1; }
 script_for() {  # script_for <stage> -> the script path, or the test override

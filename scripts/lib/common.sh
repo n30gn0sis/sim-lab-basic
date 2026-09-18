@@ -292,8 +292,16 @@ secret_read() {
 }
 
 # ── misc ─────────────────────────────────────────────────────────────────────
-usage_from_header() {  # usage_from_header <first-line> <last-line>
-    sed -n "${1},${2}p" "${BASH_SOURCE[1]}" | sed 's/^# \{0,1\}//'
+# usage_from_header <first-line> — the caller's header comment block, from
+# <first-line> to the last line before the first line that is not a comment.
+# The end is FOUND, never declared. A declared last line silently truncates
+# --help the moment a line is added above it, and it did: four scripts shipped
+# a help that stopped mid-sentence, one of them closing on `set -uo pipefail`.
+usage_from_header() {
+    local first=$1 src=${BASH_SOURCE[1]} last
+    last=$(awk -v s="$first" 'NR >= s && $0 !~ /^#/ { print NR - 1; exit }' "$src")
+    [ -n "$last" ] || last=$(wc -l < "$src")
+    sed -n "${first},${last}p" "$src" | sed 's/^# \{0,1\}//'
 }
 
 # glob_one <dir> <glob> — exactly one match, or die naming the count.

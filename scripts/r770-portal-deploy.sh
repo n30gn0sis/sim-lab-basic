@@ -40,7 +40,7 @@ EASYRSA_BIN="${EASYRSA_BIN:-/usr/share/easy-rsa/easyrsa}"
 MALCOLM_HOME="${MALCOLM_HOME:-/opt/malcolm}"
 SETTLE="${PORTAL_SETTLE_SECS:-2}"
 BUNDLE=""; MGMT_IP=""; WIKI=""
-usage() { usage_from_header 3 27; exit 0; }
+usage() { usage_from_header 3; exit 0; }
 easyrsa() { run env EASYRSA_PKI="$(p "$PKI")/pki" EASYRSA_BATCH=1 "$EASYRSA_BIN" "$@"; }
 
 cmd_ca() {

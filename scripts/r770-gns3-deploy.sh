@@ -35,7 +35,7 @@ GNS3_USER="${GNS3_USER:-gns3}"
 GNS3_ETC="${GNS3_ETC:-/etc/gns3}"
 WAIT_SECS="${GNS3_WAIT_SECS:-60}"
 SECRET="/etc/lab/secrets/gns3-admin.pw"
-usage() { usage_from_header 3 25; exit 0; }
+usage() { usage_from_header 3; exit 0; }
 venv() { p "$GNS3_HOME"; }
 
 cmd_venv() {

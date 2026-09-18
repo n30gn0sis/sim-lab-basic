@@ -37,7 +37,7 @@ LVS="/var/lib/docker /data/pcap /data/index /data/staging /srv/vms /srv/gns3 /sr
 SANS="portal.lab malcolm.lab gns3.lab monitoring.lab docs.lab"
 MALCOLM_HOME="${MALCOLM_HOME:-/opt/malcolm}"
 AIRGAP_CMD="${VALIDATE_AIRGAP_CMD:-$KIT_DIR/scripts/r770-airgap-check.sh}"
-usage() { usage_from_header 3 27; exit 0; }
+usage() { usage_from_header 3; exit 0; }
 
 ROWS=(); DIAGS=(); AREA=""
 cell() { printf '%s' "$1" | tr -d '\n' | tr '|' '/' ; }
