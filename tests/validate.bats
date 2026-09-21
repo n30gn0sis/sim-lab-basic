@@ -32,13 +32,13 @@ report() { cat "$OUT"/validation-*.md; }
 @test "--list prints every area" {
     run validate --list
     [ "$status" -eq 0 ]
-    for a in host cpu-ram storage network virtualization gns3 wan capture monitoring backup airgap portal; do
+    for a in host cpu-ram storage network virtualization gns3 wan capture backup airgap portal; do
         [[ "$output" == *"$a"* ]]
     done
 }
 
 @test "checks that cannot run are SKIPPED with a reason, present in the report, and do not change the exit code" {
-    run validate --area host --area cpu-ram --area gns3 --area wan --area backup --area monitoring --area portal
+    run validate --area host --area cpu-ram --area gns3 --area wan --area backup --area portal
     echo "$output"
     [ "$status" -eq 0 ]
     [[ "$output" == *"SKIP  host/chrony: chronyc not installed (Phase 5 not built)"* ]]

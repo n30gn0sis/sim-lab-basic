@@ -12,16 +12,13 @@ bundled installer's filename. `tests/no-pins.bats` enforces this.
 
 | Kit file | Build-repo source | Delta in the kit | Why |
 |---|---|---|---|
-| `nginx/{portal,docs,gns3,monitoring}.lab.conf` | same path | none | proven vhosts |
+| `nginx/{docs,gns3}.lab.conf` | same path | none | proven vhosts |
 | `nginx/malcolm.lab.conf` | same path | comments reworded (no version numbers, names the rebind subcommand) | no-pins rule |
 | `nginx/snippets/lab-tls.conf` | same path | comment no longer names the staging VM's CA path | the R770 issues its own CA |
 | `nginx/snippets/lab-auth.conf` | same path | none | |
-| `monitoring/docker-compose.yml` | same path | `env_file` → `__SECRETS_DIR__/grafana-admin.env`; Prometheus retention 30d (buildout §10; rehearsal ran 7d on a small VM); cAdvisor `--docker_only --housekeeping_interval=30s` | staging path removed; measured 1.3 GiB cAdvisor cost |
-| `monitoring/{prometheus,alertmanager,blackbox}.yml`, `grafana/provisioning/datasources/prometheus.yml` | same paths | none | |
 | `gns3/gns3_server.conf.template` | same path | `__PASSWORD__` → `__ADMIN_PW__`; `jwt_secret_key` line dropped (measured: not honoured) | fewer lies in the template |
 | `systemd/gns3.service` | new | — | a server started from a shell outlived its tmux session |
 | `config/docs/mkdocs.yml` | `config/docs/mkdocs.yml` | header comment names the kit's build path | built on the R770, not the VM |
-| `portal/index.html.template` | `portal/index.html` | `(staging rehearsal)` title removed; staging IP → `__MGMT_IP__`; staging password paths → "issued by the operator" | host-specific |
 | `malcolm/dashboards/ipsec.ndjson.template` | new | — | IPsec saved searches and a dashboard for server-bound and GNS3 traffic. Queries are built from IANA protocol numbers and the registered IKE ports, so they do not drift when the bundled Malcolm moves; the index pattern is a token read off the running stack |
 | `malcolm/arkime-views/ipsec.views` | new | — | the packet-side counterpart, as Arkime expressions. `<name>\|<expression>` per line, not JSON: there is no `jq` on the R770 |
 | `malcolm/malcolm-config.json.template` | `malcolm/malcolm-config-rehearsal.json` | `pcapDir=/data/pcap/raw`, `indexDir=/data/index`, `useDefaultStorageLocations=false`, `autoSuricata=false`, `zeekPullIntelligenceFeeds=false`, `zeekIntelOnStartup=false`; tokens `__PCAP_NODE_NAME__ __OS_MEMORY__ __LS_MEMORY__ __ARKIME_MANAGE_PCAP__ __ARKIME_FREE_SPACE_G__ __MALCOLM_VER__` | R770 storage layout; Suricata disabled by decision; no feed pulls on an air gap; heaps sized from the host |
@@ -30,8 +27,6 @@ Tokens the kit knows how to render (any other `__TOKEN__` fails the render):
 
 | Token | Rendered by | From |
 |---|---|---|
-| `__MGMT_IP__` | `r770-portal-deploy.sh portal` | `--mgmt-ip` (required; never discovered by guessing) |
-| `__SECRETS_DIR__` | `r770-monitoring-deploy.sh env` | `/etc/lab/secrets` |
 | `__ADMIN_PW__` | `r770-gns3-deploy.sh config` | `/etc/lab/secrets/gns3-admin.pw` |
 | `__PCAP_NODE_NAME__` | `r770-malcolm-deploy.sh configure` | `hostname -s` |
 | `__OS_MEMORY__`, `__LS_MEMORY__` | `r770-malcolm-deploy.sh configure` | computed from `free -g` (OpenSearch capped at 31g) |
