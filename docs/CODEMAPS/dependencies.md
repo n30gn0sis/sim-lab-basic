@@ -1,4 +1,4 @@
-<!-- Generated: 2026-09-17 | Files scanned: 9 scripts, 20 config files | Token estimate: ~650 -->
+<!-- Generated: 2026-09-21 | Files scanned: 8 scripts, 20 config files | Token estimate: ~650 -->
 
 # Dependencies
 
@@ -32,18 +32,20 @@ bundle-YYYYMMDD/
   dell/                   firmware (applied out-of-band via iDRAC)
 ```
 
-Three list/payload pairs, each loaded then **asserted tag by tag**
-(`assert_image_tags`, because `docker load` reports success on an incomplete
-tag set):
+**Each pipeline/script owns its own image loading** — `r770-import-bundle.sh`
+has no generic `images`/`load` subcommand of its own. Every load is followed
+by **asserting every tag** (`assert_image_tags`, because `docker load` reports
+success on an incomplete tag set):
 
-| List | Payload |
-|---|---|
-| `malcolm/image-list.txt` | `malcolm/malcolm-images-*.tar.gz` |
-| `docker/monitoring-image-list.txt` | `docker/monitoring-images.tar.gz` |
-| `gns3/docker-nodes/image-list.txt` | `gns3/docker-nodes/gns3-node-images.tar.gz` |
+| List | Payload | Loaded by |
+|---|---|---|
+| `malcolm/image-list.txt` | `malcolm/malcolm-images-*.tar.gz` | `r770-malcolm-deploy.sh load` |
+| `gns3/docker-nodes/image-list.txt` | `gns3/docker-nodes/gns3-node-images.tar.gz` | `r770-gns3-deploy.sh load` |
+| `docker/monitoring-image-list.txt` | `docker/monitoring-images.tar.gz` | `r770-portal-deploy.sh docs` (self-load; the list keeps its build-repo name but now carries only `mkdocs-material`, the offline wiki's build image) |
 
-A pair whose tags are already present is skipped, so the stage reruns safely.
-A missing tag means the tarball is incomplete: re-cut, never patch by hand.
+A pair whose tags are already present is skipped, so the load step reruns
+safely. A missing tag means the tarball is incomplete: re-cut, never patch by
+hand.
 
 ## Packages the kit requires but never installs
 
@@ -56,7 +58,6 @@ software reaches the box through the bundle and nowhere else.
 | `python3-ruamel.yaml`, `python3-dotenv` | `malcolm-deploy unpack` / `configure` (Malcolm's installer) |
 | `easy-rsa` | `portal-deploy ca` / `cert` |
 | `nginx` | `portal-deploy nginx` |
-| `prometheus-node-exporter` | `monitoring-deploy` |
 
 ## Runtime the kit itself assumes
 
@@ -69,26 +70,21 @@ executing, and are stubbed in the suites.
 Working on the kit needs `shellcheck` and `bats` — on any Linux box, never on
 the R770.
 
-## Services, all on loopback
+## Services, all on loopback except the front door
 
-The portal owns 443; everything else answers only on `127.0.0.1` and is
-reached through an nginx vhost.
+The front door owns `0.0.0.0:443`; everything else answers only on
+`127.0.0.1` and is reached through an nginx vhost.
 
 | Port | Service | Reached as |
 |---|---|---|
 | 8443 | Malcolm's nginx-proxy (rebound from `0.0.0.0:443`) | `malcolm.lab` |
 | 3080 | GNS3 server | `gns3.lab` |
-| 9090 | Prometheus | `monitoring.lab` |
-| 9093 | Alertmanager | `monitoring.lab` |
-| 3000 | Grafana | `monitoring.lab` |
-| 8080 | cAdvisor | `monitoring.lab` |
-| 9115 | blackbox exporter | `monitoring.lab` |
+| 443 (`0.0.0.0`) | the front door's nginx | `malcolm.lab`, `gns3.lab`, `docs.lab` |
 
-The five `.lab` names — `portal.lab`, `malcolm.lab`, `gns3.lab`,
-`monitoring.lab`, `docs.lab` — are a decision of record, literal in
-`config/nginx/`, and are exactly the SANs on the one certificate
-(`portal-deploy --print-sans`, asserted against the blackbox targets by
-`tests/config.bats`).
+The three `.lab` names — `malcolm.lab`, `gns3.lab`, `docs.lab` — are a
+decision of record, literal in `config/nginx/`, and are exactly the SANs on
+the one certificate (`portal-deploy --print-sans`, asserted by
+`tests/portal-deploy.bats`).
 
 ## Cross-repo
 

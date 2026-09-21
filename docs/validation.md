@@ -16,7 +16,7 @@ FAIL. SKIPPED checks never change the exit code, and are never omitted.
 
 | Area | Checks | Needs | Opt-in | Touches the host? |
 |---|---|---|---|---|
-| `host` | sshd active · chrony leap status Normal · the five `.lab` names resolve · APT sources are `file:` only | chrony and dnsmasq installed (else SKIP: Phase 5) | — | no |
+| `host` | sshd active · chrony leap status Normal · the three `.lab` names resolve · APT sources are `file:` only | chrony and dnsmasq installed (else SKIP: Phase 5) | — | no |
 | `cpu-ram` | `kvm-ok` · thread count · memory · EDAC error counters zero | `--expect-threads N --expect-ram-gb N` (else SKIP: expectations are arguments, never hard-coded) | — | no |
 | `storage` | every layout volume is its own mount point, with its size · SMART health per NVMe · PERC virtual disk optimal | `nvme-cli`, `smartmontools`; `perccli2` from the bundle's `dell/` (else SKIP) | — | no |
 | `network` | management interface up with an address · each capture port: **no address**, PROMISC, gro/lro/tso off | `--mgmt-if IF --capture-ifs "a b c"` (else SKIP: interfaces are never guessed) | — | no |
@@ -24,10 +24,9 @@ FAIL. SKIPPED checks never change the exit code, and are never omitted.
 | `gns3` | unit active · `/v3/version` answers · admin login issues a token | Phase 8, the admin secret | — | no |
 | `wan` | apply a 40 ms profile, measure, clear | Phase 12 tooling, which lives in the build repo's config repo, not this kit | `--allow-wan` | SKIPs with that reason today |
 | `capture` | Zeek `capture_loss` below 0.5 % · optional replay: packets sent by `tcpreplay` into a feed | Malcolm running; a reference PCAP | `--feed IF --pcap FILE` | injects traffic into a capture feed |
-| `monitoring` | every Prometheus target up | Phase 14 | — | no |
 | `backup` | restore one file from the latest restic snapshot and compare | Phase 15, `/etc/lab/secrets/restic.pw` | — | writes to a temp dir only |
 | `airgap` | the posture report from `scripts/r770-airgap-check.sh`, folded in row by row | — | `--mgmt-cidr` judges resolvers | no |
-| `portal` | each `.lab` name answers over TLS with the lab CA · no redirect escapes to a loopback port · only nginx owns `0.0.0.0:443` | Phase 13 | — | no |
+| `portal` | each of the 3 `.lab` names answers over TLS with the lab CA · no redirect escapes to a loopback port · only nginx owns `0.0.0.0:443` | Phase 13 | — | no |
 
 ## What SKIPPED means
 
@@ -57,7 +56,7 @@ Two verdicts deserve a note:
 ## Mapping to the success criteria
 
 Host · CPU/RAM · Storage · Network · Virtualization · GNS3 · WAN · Capture ·
-Monitoring · Backup map one-to-one onto the areas above; `airgap` and `portal`
+Backup map one-to-one onto the areas above; `airgap` and `portal`
 add the two properties the air gap and the portal integration introduced. The
 GNS3 "one QEMU node + one Docker node pass traffic" check and the WAN
 measurement are not automated by this kit and are SKIPPED with that reason;
