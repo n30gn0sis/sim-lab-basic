@@ -168,7 +168,7 @@ cmd_docs() {
     run cp -a "$wiki" "$tmp/docs"
     run install -m 0644 "$KIT_CONFIG_DIR/docs/mkdocs.yml" "$tmp/mkdocs.yml"
     # --network none: the build can want fonts and plugins; on an air gap it must not even try.
-    run docker run --rm --network none -v "$tmp:/docs" "$img" build || { rm -rf "$tmp"; die "mkdocs build failed — is $img loaded (images stage)?"; }
+    run docker run --rm --network none -v "$tmp:/docs" "$img" build || { rm -rf "$tmp"; die "mkdocs build failed — is $img actually present? (see the docker load above)"; }
     if [ "$DRY" != "1" ]; then
         [ -f "$tmp/site/index.html" ] || { rm -rf "$tmp"; die "mkdocs produced no site/index.html"; }
         run rm -rf "$(p /srv/www/docs)"
