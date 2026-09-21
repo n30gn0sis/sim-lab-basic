@@ -113,6 +113,52 @@ common_flag() {
     return 0
 }
 
+# ── step orchestration ──────────────────────────────────────────────────────
+# step_index <array-name> <target> — index of <target> in the named array
+# (passed by name, via nameref), or return 1 if absent. Generalizes
+# r770-deploy.sh's old stage_index() for use by more than one script.
+step_index() {
+    local -n _arr=$1; local target=$2 i
+    for i in "${!_arr[@]}"; do [ "${_arr[$i]}" = "$target" ] && { echo "$i"; return 0; }; done
+    return 1
+}
+
+# run_step <step-name> <cmd...> — run, then apply the kit's 0/2/1 contract:
+# 0 continue; 2 warn (collected into the caller's WARNED_STEPS, gated on
+# KIT_YES / a prompt / KIT_NON_INTERACTIVE exactly like every other gate);
+# anything else dies naming the step to resume with. Generalizes
+# r770-deploy.sh's old child(). Caller declares WARNED_STEPS="" before its
+# first call and reads it after the loop to report warnings.
+#
+# <cmd...> runs in a subshell ( ), not bare. r770-deploy.sh's child() always
+# ran a SEPARATE script (a new process), so that script's own die()/footer()
+# `exit` only ever ended that process. A "full" pipeline now also runs a few
+# steps in-process, as this script's own cmd_* functions — and those end in
+# die()/footer(), which call `exit`. Called bare, that `exit` would kill this
+# whole script on the first such step, not just the step. The subshell keeps
+# `exit` scoped to the step, so run_step always gets a clean $? back.
+run_step() {
+    local step=$1; shift
+    local rc=0
+    ( "$@" ) || rc=$?
+    case "$rc" in
+        0) ;;
+        2)
+            WARNED_STEPS="${WARNED_STEPS:-} $step"
+            echo
+            echo "step '$step' finished with warnings."
+            if [ "${KIT_YES:-0}" = "1" ]; then
+                echo "accepted via --yes; disposition them in the cycle log."
+            elif [ "${KIT_NON_INTERACTIVE:-0}" = "1" ]; then
+                die "step '$step' warned and this run is non-interactive — read the warnings, then rerun with --yes --from $step"
+            else
+                local a; read -r -p "Continue past the warnings from '$step'? [y/N] " a
+                case "$a" in [yY]*) ;; *) die "stopped after '$step' — rerun with --from $step once dispositioned" ;; esac
+            fi ;;
+        *) die "step '$step' refused or failed (exit $rc) — nothing after it ran; fix it, then rerun with --from $step" ;;
+    esac
+}
+
 # gate <title> <current-fn> <proposed-fn> <rollback-text>
 # Shows what is, what will be, and how to undo it — then needs a decision.
 # --non-interactive without --yes refuses: a gate is a question, and an
