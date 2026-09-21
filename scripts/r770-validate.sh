@@ -255,7 +255,7 @@ area_portal() {
         esac
     done
     local owners; owners=$(ss -ltnp 2>/dev/null | grep -E '(0\.0\.0\.0|\*):443 ' | grep -oE 'users:\(\("[^"]+"' | cut -d'"' -f2 | sort -u | tr '\n' ' ')
-    if [ "$(printf '%s' "$owners" | wc -w)" -eq 1 ] && [[ "$owners" == nginx* ]]; then row "port-443" "only nginx" "$owners" PASS "ss -ltnp"; else row "port-443" "only nginx" "${owners:-nothing}" FAIL "ss -ltnp"; diag port-443 "something other than the portal owns 0.0.0.0:443 — if it is Malcolm's nginx-proxy the rebind did not take"; fi
+    if [ "$(printf '%s' "$owners" | wc -w)" -eq 1 ] && [[ "$owners" == nginx* ]]; then row "port-443" "only nginx" "$owners" PASS "ss -ltnp"; else row "port-443" "only nginx" "${owners:-nothing}" FAIL "ss -ltnp"; diag port-443 "something other than the front door owns 0.0.0.0:443 — if it is Malcolm's nginx-proxy the rebind did not take"; fi
 }
 
 # ── report ───────────────────────────────────────────────────────────────────

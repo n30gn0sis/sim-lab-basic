@@ -246,7 +246,7 @@ do_rebind() {
     fi
     sed -i "s|${REBIND_FROM}|${REBIND_TO}|" "$c"
     [ "$(grep -cF -- "$REBIND_TO" "$c")" -eq 1 ] || die "rebind edit did not take in $c"
-    pass "nginx-proxy publish rewritten: 0.0.0.0:443 -> 127.0.0.1:8443 (the portal owns 443)"
+    pass "nginx-proxy publish rewritten: 0.0.0.0:443 -> 127.0.0.1:8443 (the front door owns 443)"
 }
 cmd_rebind() { banner "rebind"; need_root; do_rebind; footer "rebind"; }
 
@@ -281,7 +281,7 @@ cmd_start() {
     local ss_out; ss_out=$(ss -ltn 2>/dev/null || true)
     if printf '%s\n' "$ss_out" | grep -q '127\.0\.0\.1:8443 '; then pass "nginx-proxy listening on 127.0.0.1:8443"; else fail "nothing listening on 127.0.0.1:8443"; fi
     if printf '%s\n' "$ss_out" | grep -qE '(0\.0\.0\.0|\*):443 '; then
-        warn "something listens on 0.0.0.0:443 — expected only once the portal's nginx is up; if this is Malcolm, the rebind did not take"
+        warn "something listens on 0.0.0.0:443 — expected only once the front door's nginx is up; if this is Malcolm, the rebind did not take"
     else
         pass "nothing on 0.0.0.0:443 from Malcolm"
     fi
@@ -525,10 +525,11 @@ cmd_arkime_views() {
 
 # ── full ─────────────────────────────────────────────────────────────────────
 # The whole Malcolm pipeline, in order, stopping at the first step that
-# refuses. Independent of r770-gns3-deploy.sh's own `full` and of
-# r770-deploy.sh (still present, superseded once it is removed): this script
-# now brings its own bundle in from the media rather than being handed an
-# already-copied one by an outer orchestrator.
+# refuses. Independent of r770-gns3-deploy.sh's own `full` and of the retired
+# r770-deploy.sh, whose child()/stage_index() this script's run_step/step_index
+# (scripts/lib/common.sh) grew out of: this script now brings its own bundle
+# in from the media rather than being handed an already-copied one by an
+# outer orchestrator.
 cmd_full() {
     [ -n "$BUNDLE" ] || die "--bundle <dir> is required for full (try --help)"
     local first last i step

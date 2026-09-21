@@ -20,12 +20,10 @@ Requires `shellcheck` and `bats` (>= 1.10): `sudo apt-get -y install shellcheck 
 | `import-bundle.bats` | gate on the bundle's verifier, refusals, the APT rewrite and its automatic restore, docker assertions, the incomplete-load regression, file routing |
 | `malcolm-deploy.bats` | the seven cases ported from the build repo, plus flag assertion, rendered-config replay, the rebind's idempotence and drift refusal, secrets never printed, start via Malcolm's script |
 | `gns3-deploy.bats` | `python3-venv` refusal, `--no-index`, pip-index refusal, the chown of the state dir, the unit gate, loopback assertion |
-| `portal-deploy.bats` | the SAN list, file modes, `nginx -t` before reload, gate, probe verdicts, `--mgmt-ip` required, offline docs build |
-| `monitoring-deploy.bats` | `.env` by repository name with a shuffled list, `--pull never`, loopback ports, targets, volume purge gate |
+| `portal-deploy.bats` | the SAN list, file modes, `nginx -t` before reload, gate, probe verdicts, offline docs build |
 | `airgap-check.bats` | every false-pass the posture check must not produce; SKIP vs FAIL |
 | `validate.bats` | one row per check, SKIP with reason, FAIL diagnosis, arguments-not-facts, interfaces never guessed, indexing lag as WARN |
-| `deploy.bats` | the runner's order and refusals, `--from/--to/--only`, warnings carried to exit 2, `--yes` reaching children |
-| `config.bats` | the carried config stays deployable as measured: http2 form, no staging leftovers, known tokens, images from variables, SANs match blackbox |
+| `config.bats` | the carried config stays deployable as measured: http2 form, no staging leftovers, only tokens the kit renders (documented in `config/README.md`), the GNS3 template carries no `jwt_secret_key`, the Malcolm template pins storage and disables what an air gap cannot do |
 | `no-pins.bats` | no version pin anywhere outside its one owner, `staging/r770-offline-fetch.sh` |
 | `no-credentials.bats` | `.gitignore` covers evidence, secrets and bundles; no credential-shaped string tracked |
 | `no-legacy-manifest.bats` | no checksum gate of the kit's own; the bundle's verifier referenced by name and invoked from the library; `r770-bundle.sh` exists only under `staging/`, and `scripts/` never reaches for it |

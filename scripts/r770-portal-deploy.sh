@@ -132,12 +132,14 @@ cmd_nginx() {
     for f in "$KIT_CONFIG_DIR"/nginx/snippets/*.conf; do
         run install -m 0644 "$f" "$(p /etc/nginx/snippets)/$(basename "$f")" || die "could not install $(basename "$f")"
     done
+    local n_vhosts=0
     for f in "$KIT_CONFIG_DIR"/nginx/*.lab.conf; do
         run install -m 0644 "$f" "$(p /etc/nginx/sites-available)/$(basename "$f")" || die "could not install $(basename "$f")"
         run ln -sf "../sites-available/$(basename "$f")" "$(p /etc/nginx/sites-enabled)/$(basename "$f")"
+        n_vhosts=$((n_vhosts + 1))
     done
     run rm -f "$(p /etc/nginx/sites-enabled)/default"
-    pass "five vhosts and two snippets installed; default site removed"
+    pass "$n_vhosts vhosts and two snippets installed; default site removed"
     # -t BEFORE reload: a bad config must never take the running portal down.
     run nginx -t || die "nginx -t rejected the configuration — nothing was reloaded; the previous config is still live"
     run systemctl reload nginx || die "reload failed"

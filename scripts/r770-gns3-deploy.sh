@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # r770-gns3-deploy.sh — GNS3 server from the bundle's wheelhouse, offline,
-# as a systemd service bound to 127.0.0.1 behind the portal.
+# as a systemd service bound to 127.0.0.1 behind the front door.
 #
 #   r770-gns3-deploy.sh <subcommand> [--bundle <dir>] [options]
 #
@@ -189,10 +189,11 @@ cmd_status() {
 
 # ── full ─────────────────────────────────────────────────────────────────────
 # The whole GNS3 pipeline, in order, stopping at the first step that refuses.
-# Independent of r770-malcolm-deploy.sh's own `full` and of r770-deploy.sh
-# (still present, superseded once it is removed): this script now brings its
-# own bundle in from the media rather than being handed an already-copied one
-# by an outer orchestrator.
+# Independent of r770-malcolm-deploy.sh's own `full` and of the retired
+# r770-deploy.sh, whose child()/stage_index() this script's run_step/step_index
+# (scripts/lib/common.sh) grew out of: this script now brings its own bundle
+# in from the media rather than being handed an already-copied one by an
+# outer orchestrator.
 cmd_full() {
     [ -n "$BUNDLE" ] || die "--bundle <dir> is required for full (try --help)"
     local first last i step
