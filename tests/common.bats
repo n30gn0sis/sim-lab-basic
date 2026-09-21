@@ -108,14 +108,14 @@ lib() { kit_run bash -c "set -uo pipefail; . '$LIB'; kit_init test; $1"; }
 }
 
 @test "image_ref_from_list() finds by repository name regardless of position" {
-    run lib "image_ref_from_list '$BUNDLE/docker/monitoring-image-list.txt' grafana-oss"
-    [ "$output" = "docker.io/grafana/grafana-oss:0.0.0-fixture" ]
-    run lib "image_ref_from_list '$BUNDLE/docker/monitoring-image-list.txt' nginx"
-    [ "$output" = "docker.io/library/nginx:stable" ]
+    run lib "image_ref_from_list '$BUNDLE/malcolm/image-list.txt' arkime"
+    [ "$output" = "ghcr.io/idaholab/malcolm/arkime:0.0.0-fixture" ]
+    run lib "image_ref_from_list '$BUNDLE/malcolm/image-list.txt' nginx-proxy"
+    [ "$output" = "ghcr.io/idaholab/malcolm/nginx-proxy:0.0.0-fixture" ]
 }
 
 @test "image_ref_from_list() dies on zero or two matches" {
-    run lib "image_ref_from_list '$BUNDLE/docker/monitoring-image-list.txt' loki"
+    run lib "image_ref_from_list '$BUNDLE/malcolm/image-list.txt' loki"
     echo "$output"
     [ "$status" -eq 1 ]
     printf 'a/x:1-fixture\nb/x:2-fixture\n' > "$BATS_TEST_TMPDIR/dup.txt"

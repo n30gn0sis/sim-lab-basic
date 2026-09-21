@@ -159,7 +159,10 @@ all_the_way_to_nginx() {
 }
 
 @test "docs refuses a bundle whose list has no mkdocs image" {
-    grep -v mkdocs "$BUNDLE/docker/monitoring-image-list.txt" > "$BATS_TEST_TMPDIR/l" && mv "$BATS_TEST_TMPDIR/l" "$BUNDLE/docker/monitoring-image-list.txt"
+    # a non-empty list that simply doesn't carry mkdocs-material (Task 3 trimmed
+    # the fixture's list to that one entry, so filtering it back out would leave
+    # an empty file and trip image_list()'s own "missing or empty" die instead)
+    printf 'docker.io/library/busybox:latest\n' > "$BUNDLE/docker/monitoring-image-list.txt"
     run portal docs --bundle "$BUNDLE"
     [ "$status" -eq 1 ]
     [[ "$output" == *"mkdocs-material"* ]]
