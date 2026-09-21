@@ -44,9 +44,9 @@ all_the_way_to_nginx() {
     portal htpasswd >/dev/null
 }
 
-@test "--print-sans lists exactly the five lab names" {
+@test "--print-sans lists exactly the three lab names" {
     run portal --print-sans
-    [ "$output" = "portal.lab malcolm.lab gns3.lab monitoring.lab docs.lab" ]
+    [ "$output" = "malcolm.lab gns3.lab docs.lab" ]
 }
 
 @test "ca builds the PKI once, publishes ca.crt 0644, and is idempotent" {
@@ -61,15 +61,15 @@ all_the_way_to_nginx() {
     [[ "$output" == *"already exists"* ]]
 }
 
-@test "cert asks easyrsa for exactly the five SANs and installs crt 0644 / key 0600" {
+@test "cert asks easyrsa for exactly the three SANs and installs crt 0644 / key 0600" {
     portal ca >/dev/null
     run portal cert
     echo "$output"
     [ "$status" -eq 0 ]
-    grep -q -- '--subject-alt-name=DNS:portal.lab,DNS:malcolm.lab,DNS:gns3.lab,DNS:monitoring.lab,DNS:docs.lab build-server-full lab nopass' "$STUB_LOG"
+    grep -q -- '--subject-alt-name=DNS:malcolm.lab,DNS:gns3.lab,DNS:docs.lab build-server-full lab nopass' "$STUB_LOG"
     [ "$(stat -c %a "$ROOT/etc/nginx/ssl/lab.crt")" = "644" ]
     [ "$(stat -c %a "$ROOT/etc/nginx/ssl/lab.key")" = "600" ]
-    for n in portal malcolm gns3 monitoring docs; do [[ "$output" == *"PASS  SAN present: $n.lab"* ]]; done
+    for n in malcolm gns3 docs; do [[ "$output" == *"PASS  SAN present: $n.lab"* ]]; done
 }
 
 @test "cert FAILs when the issued certificate lacks a SAN" {
@@ -105,7 +105,7 @@ all_the_way_to_nginx() {
     run portal nginx
     echo "$output"
     [ "$status" -eq 0 ]
-    for n in portal malcolm gns3 monitoring docs; do
+    for n in malcolm gns3 docs; do
         [ -f "$ROOT/etc/nginx/sites-available/$n.lab.conf" ]
         [ -L "$ROOT/etc/nginx/sites-enabled/$n.lab.conf" ]
         [[ "$output" == *"PASS  $n.lab answers over TLS"* ]]
@@ -133,28 +133,19 @@ all_the_way_to_nginx() {
     run portal nginx
     echo "$output"
     [ "$status" -eq 1 ]
-    [[ "$output" == *"PASS  portal.lab answers over TLS (HTTP 401)"* ]]
+    [[ "$output" == *"PASS  gns3.lab answers over TLS (HTTP 401)"* ]]
     [[ "$output" == *"FAIL  malcolm.lab: HTTP 502"* ]]
 }
 
-@test "portal requires --mgmt-ip and renders a page with no staging leftovers" {
-    run portal portal
-    echo "$output"
-    [ "$status" -eq 1 ]
-    [[ "$output" == *"never guesses"* ]]
-    run portal portal --mgmt-ip 10.10.10.31
-    echo "$output"
-    [ "$status" -eq 0 ]
-    f="$ROOT/srv/www/portal/index.html"
-    grep -q '10.10.10.31 portal.lab malcolm.lab gns3.lab monitoring.lab docs.lab' "$f"
-    ! grep -qE '__|192\.168\.|rehearsal' "$f"
-}
-
-@test "docs builds the wiki with the bundled mkdocs image and --network none" {
+@test "docs loads the mkdocs image before building, with --network none" {
     run portal docs --bundle "$BUNDLE"
     echo "$output"
     [ "$status" -eq 0 ]
+    grep -q "^docker load -i $BUNDLE/docker/monitoring-images.tar.gz" "$STUB_LOG"
     grep -q '^docker run --rm --network none -v .*:/docs docker.io/squidfunk/mkdocs-material:latest build' "$STUB_LOG"
+    l=$(grep -n '^docker load' "$STUB_LOG" | cut -d: -f1)
+    r=$(grep -n '^docker run' "$STUB_LOG" | cut -d: -f1)
+    [ -n "$l" ] && [ -n "$r" ] && [ "$l" -lt "$r" ]
     [ -f "$ROOT/srv/www/docs/index.html" ]
 }
 
