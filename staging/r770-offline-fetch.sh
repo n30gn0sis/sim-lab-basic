@@ -193,7 +193,12 @@ seed() {  # seed <abs path under $B> — link/copy the file from PREV_BUNDLE if 
     local out="$1" rel src
     if [ -z "$PREV_BUNDLE" ] || have "$out"; then return 0; fi
     rel="${out#"$B"/}"
-    case "$rel" in apt/*|enrichment/*) return 0 ;; esac   # refresh-per-cycle content
+    # apt/enrichment: refresh-per-cycle content. docker/monitoring-images.tar.gz:
+    # a stale prior bundle's tarball still carries the monitoring images this
+    # array was trimmed of on 2026-09-21 — seeding it would silently reunite
+    # a "docs-image-only" list with an untrimmed payload. It's one small image
+    # now, so always re-pulling costs little.
+    case "$rel" in apt/*|enrichment/*|docker/monitoring-images.tar.gz) return 0 ;; esac
     src="$PREV_BUNDLE/$rel"
     if [ -s "$src" ]; then
         mkdir -p "$(dirname "$out")"

@@ -8,7 +8,10 @@ commit: b7ba5e675de3972914c544159af9893bccd9b945
 # docs/kit-sync.md). Its hash below no longer corresponds to any single
 # simlab-build commit; the other three hashes are still that commit,
 # byte-for-byte, and must not be touched.
+# 2026-09-22: r770-offline-fetch.sh hash updated again — seed() now excludes
+# docker/monitoring-images.tar.gz from prior-bundle reuse, so the trim from
+# 2026-09-21 can't be silently undone by a stale cached tarball.
 b896a954fd8a0881aa162048974939646181a09cad4a4ce21fe243c3e0429705  r770-build-bundle.sh
 ed56097343e8d31ca3be4969c360cee30ac36d1e4065b47a201b252500ecba90  r770-bundle.sh
-a59c190ec6b213b0ab4ad72a822444ee67109aac998b0aa6a28f878a6cb8f42e  r770-offline-fetch.sh
+3e4659b3b88b15c758f271d63d57ffde976a38b3239e83aae2fc3c19218963fb  r770-offline-fetch.sh
 a146a89173f3732850afedc676c4fea67dd0c78678ffe5b112d64bbec90d996a  r770-staging-preflight.sh

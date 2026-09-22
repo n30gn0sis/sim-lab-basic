@@ -31,11 +31,21 @@ fi'
 
 gns3() { kit_run "$SCRIPT" "$@"; }
 
-stub_docker_reporting() {  # the build repo's helper: docker image ls prints the given tags
-    printf '%s\n' "$@" > "$BATS_TEST_TMPDIR/present.txt"
+stub_docker_reporting() {  # docker image ls reports these tags once `docker
+    # load` "loads" them — or immediately, if the caller sets PRELOADED=1
+    # first. cmd_load pre-checks image ls before loading, so most tests want
+    # the tags absent until a real load happens; the assert-tags-only tests
+    # want them present from the start.
+    printf '%s\n' "$@" > "$BATS_TEST_TMPDIR/would-be-present.txt"
+    if [ "${PRELOADED:-0}" = "1" ]; then
+        cp "$BATS_TEST_TMPDIR/would-be-present.txt" "$BATS_TEST_TMPDIR/present.txt"
+    else
+        : > "$BATS_TEST_TMPDIR/present.txt"
+    fi
     stub docker 'echo "docker $*" >> "$STUB_LOG"
 case "$1" in
   image) [ "$2" = ls ] && cat "$BATS_TEST_TMPDIR/present.txt" 2>/dev/null ;;
+  load) cp "$BATS_TEST_TMPDIR/would-be-present.txt" "$BATS_TEST_TMPDIR/present.txt" ;;
 esac
 exit 0'
 }
@@ -61,7 +71,7 @@ STUB
 # ── load / assert-tags — this script's own images, no longer shared ─────────
 
 @test "assert-tags passes when every listed tag is present" {
-    stub_docker_reporting docker.io/library/alpine:latest quay.io/frrouting/frr:0.0.0-fixture
+    PRELOADED=1 stub_docker_reporting docker.io/library/alpine:latest quay.io/frrouting/frr:0.0.0-fixture
     run gns3 assert-tags --bundle "$BUNDLE"
     echo "$output"
     [ "$status" -eq 0 ]
@@ -69,7 +79,7 @@ STUB
 }
 
 @test "assert-tags FAILS when a tag is missing, and names it" {
-    stub_docker_reporting docker.io/library/alpine:latest
+    PRELOADED=1 stub_docker_reporting docker.io/library/alpine:latest
     run gns3 assert-tags --bundle "$BUNDLE"
     echo "$output"
     [ "$status" -ne 0 ]
@@ -82,11 +92,23 @@ STUB
     echo "$output"
     [ "$status" -eq 0 ]
     grep -q "^docker load -i $BUNDLE/gns3/docker-nodes/gns3-node-images.tar.gz" "$STUB_LOG"
-    # a second load (the images are already present per the stub) still succeeds cleanly
+    # a second load: the images are present now that the first load "landed"
+    # them in the stub, so the pre-check skips the reload entirely
+    : > "$STUB_LOG"
     run gns3 load --bundle "$BUNDLE"
     echo "$output"
     [ "$status" -eq 0 ]
-    [[ "$output" == *"all images present"* ]]
+    ! grep -q '^docker load' "$STUB_LOG"
+    [[ "$output" == *"load skipped"* ]]
+}
+
+@test "load skips docker load when every tag is already present" {
+    PRELOADED=1 stub_docker_reporting docker.io/library/alpine:latest quay.io/frrouting/frr:0.0.0-fixture
+    run gns3 load --bundle "$BUNDLE"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    ! grep -q '^docker load' "$STUB_LOG"
+    [[ "$output" == *"load skipped"* ]]
 }
 
 @test "load refuses when docker is not installed" {

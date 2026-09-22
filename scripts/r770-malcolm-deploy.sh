@@ -537,6 +537,13 @@ cmd_full() {
     [ -z "$FROM" ] || first=$(step_index STEPS "$FROM") || die "unknown step: $FROM (see --help)"
     [ -z "$TO" ]   || last=$(step_index STEPS "$TO")    || die "unknown step: $TO (see --help)"
     [ "$first" -le "$last" ] || die "--from $FROM comes after --to $TO"
+    # Resolve the local copy BEFORE the loop, not only inside the copy) arm
+    # below: a resumed run (--from past copy) never executes that arm, so
+    # BUNDLE would otherwise still point at --bundle's original media path
+    # (already unmounted) for every in-process step. local_bundle() falls
+    # back to the raw path when the copy hasn't landed yet, so this is safe
+    # on a fresh run too.
+    BUNDLE="$(local_bundle)"
     echo "bundle: $BUNDLE"; [ -n "$MEDIA" ] && echo "media: $MEDIA${DEVICE:+ ($DEVICE)}"
     echo "steps: ${STEPS[*]:$first:$((last - first + 1))}"
     WARNED_STEPS=""
@@ -551,7 +558,7 @@ cmd_full() {
             copy)
                 if [ -n "$MEDIA" ]; then run_step "$step" "$IMPORT_BUNDLE_CMD" copy --bundle "$BUNDLE" --media "$MEDIA"
                 else run_step "$step" "$IMPORT_BUNDLE_CMD" copy --bundle "$BUNDLE"; fi
-                BUNDLE="$(local_bundle)" ;;   # from here on, the local copy — the media may be gone
+                BUNDLE="$(local_bundle)" ;;   # now the copy has landed, so this always resolves
             apt|phone-home|docker|files) run_step "$step" "$IMPORT_BUNDLE_CMD" "$step" --bundle "$(local_bundle)" ;;
             load)      run_step "$step" cmd_load ;;
             unpack)    run_step "$step" cmd_unpack ;;

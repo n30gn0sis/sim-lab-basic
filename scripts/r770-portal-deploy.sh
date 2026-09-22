@@ -113,6 +113,7 @@ ng_proposed() {
     echo "    sites-available/ + sites-enabled/: $(find "$KIT_CONFIG_DIR/nginx" -maxdepth 1 -name '*.lab.conf' -printf '%f ' )"
     echo "    snippets/: lab-tls.conf lab-auth.conf"
     echo "    sites-enabled/default: removed (the stock page answered on 0.0.0.0:443 since the package installed)"
+    echo "    any *.lab.conf not in that set (a prior kit version's retired vhosts, e.g. portal.lab.conf/monitoring.lab.conf): removed"
     echo "    nginx -t, then reload, then every vhost probed at 127.0.0.1 with its own name"
 }
 cmd_nginx() {
@@ -131,6 +132,19 @@ cmd_nginx() {
     run mkdir -p "$(p /etc/nginx/sites-available)" "$(p /etc/nginx/sites-enabled)" "$(p /etc/nginx/snippets)"
     for f in "$KIT_CONFIG_DIR"/nginx/snippets/*.conf; do
         run install -m 0644 "$f" "$(p /etc/nginx/snippets)/$(basename "$f")" || die "could not install $(basename "$f")"
+    done
+    # prune vhosts a prior kit version shipped that this one no longer does
+    # (e.g. portal.lab.conf/monitoring.lab.conf) — otherwise an upgrade
+    # leaves retired routes reachable even though validation only checks
+    # the current SANs
+    local current=" " f2 existing bn
+    for f2 in "$KIT_CONFIG_DIR"/nginx/*.lab.conf; do current="$current$(basename "$f2") "; done
+    for existing in "$(p /etc/nginx/sites-enabled)"/*.lab.conf "$(p /etc/nginx/sites-available)"/*.lab.conf; do
+        [ -e "$existing" ] || continue
+        bn=$(basename "$existing")
+        case "$current" in *" $bn "*) continue ;; esac
+        run rm -f "$existing"
+        note "removed retired vhost: $bn"
     done
     local n_vhosts=0
     for f in "$KIT_CONFIG_DIR"/nginx/*.lab.conf; do

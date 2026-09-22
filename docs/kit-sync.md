@@ -68,6 +68,16 @@ must not silently overwrite this local edit — diff it against this file
 first, and re-apply the monitoring trim (or fold it upstream and re-carry)
 rather than blindly copying `simlab-build`'s current version over it.
 
+**Addendum (2026-09-22):** an external PR review on the trim above caught
+that `seed()` would still reuse a stale prior bundle's untrimmed
+`docker/monitoring-images.tar.gz` (the pre-trim payload, with the removed
+monitoring images) even after the list file was correctly regenerated as
+`mkdocs-material`-only — the seeded payload and the freshly written list
+would silently disagree. `seed()` now excludes
+`docker/monitoring-images.tar.gz` from prior-bundle reuse, the same way it
+already excludes `apt/*`/`enrichment/*`. `staging/PROVENANCE.txt`'s hash
+for `r770-offline-fetch.sh` was recomputed again for this change.
+
 ## The no-pins rule
 
 The build repo keeps one owner per fact (`OWNERS.md` there): every version pin
