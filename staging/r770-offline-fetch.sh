@@ -2,6 +2,19 @@
 #
 # r770-offline-fetch.sh — build the air-gap supply bundle for the R770 lab server.
 #
+# v3.6 (2026-09-21) [sim-lab-basic local, NOT from simlab-build]: monitoring
+#   cut. The R770 kit no longer deploys Prometheus/Alertmanager/blackbox-
+#   exporter/Grafana/cAdvisor, so MONITOR_IMAGES was trimmed to keep only
+#   mkdocs-material (the offline analyst wiki still needs it); the confirmed-
+#   unused stock nginx and docker-registry v2 images were dropped with them.
+#   The array name and the two output filenames (docker/monitoring-image-list.txt,
+#   docker/monitoring-images.tar.gz) were deliberately NOT renamed — see the
+#   comment above MONITOR_IMAGES below. This is a one-time, user-approved
+#   exception to the byte-for-byte carry rule: this file has now DIVERGED
+#   from simlab-build and is no longer identical to any single upstream
+#   commit. See docs/kit-sync.md for the divergence record; do not silently
+#   overwrite this edit on the next resync.
+#
 # v3.5 (2026-09-08): cadvisor REGISTRY fix (not just a tag bump).
 #   The bundle-1 fetch failed at [4/10] with:
 #     failed to resolve reference "gcr.io/cadvisor/cadvisor:v0.60.5": not found
@@ -51,14 +64,19 @@ OPNSENSE_VER="${OPNSENSE_VER:-26.7}"           # check https://opnsense.org/down
 OPNSENSE_MIRROR="${OPNSENSE_MIRROR:-https://mirrors.dotsrc.org/opnsense/releases/mirror}"
 FRR_IMG="${FRR_IMG:-quay.io/frrouting/frr:10.7.1}"    # check https://quay.io/repository/frrouting/frr?tab=tags
 
+# Trimmed 2026-09-21 (sim-lab-basic local divergence, see header above): this
+# kit no longer deploys monitoring, so Prometheus/Alertmanager/blackbox-
+# exporter/Grafana/cAdvisor are gone, along with the stock nginx and
+# docker-registry v2 images (confirmed to have no consumer in scripts/,
+# config/ or tests/ production code). Only mkdocs-material remains — it
+# still builds docs.lab, the offline analyst wiki
+# (scripts/r770-portal-deploy.sh docs). The array is kept under this name,
+# and its output stays docker/monitoring-image-list.txt /
+# docker/monitoring-images.tar.gz, because staging/r770-bundle.sh's
+# check_required() hardcodes those exact filenames as a matched list/payload
+# pair — renaming either would make the verifier silently stop checking this
+# category instead of failing loudly.
 MONITOR_IMAGES=(
-    "docker.io/prom/prometheus:v3.14.0"
-    "docker.io/prom/alertmanager:v0.34.0"
-    "docker.io/prom/blackbox-exporter:v0.28.0"
-    "docker.io/grafana/grafana-oss:12.1.0"     # 13.x is current stable; held at 12.x — review dashboards before jumping majors
-    "ghcr.io/google/cadvisor:v0.60.5"   # gcr.io/cadvisor/cadvisor is ABANDONED at v0.55.1 — see below
-    "docker.io/library/nginx:stable"
-    "docker.io/library/registry:2"
     "docker.io/squidfunk/mkdocs-material:latest"  # pin a tag once you standardize
 )
 
@@ -175,7 +193,12 @@ seed() {  # seed <abs path under $B> — link/copy the file from PREV_BUNDLE if 
     local out="$1" rel src
     if [ -z "$PREV_BUNDLE" ] || have "$out"; then return 0; fi
     rel="${out#"$B"/}"
-    case "$rel" in apt/*|enrichment/*) return 0 ;; esac   # refresh-per-cycle content
+    # apt/enrichment: refresh-per-cycle content. docker/monitoring-images.tar.gz:
+    # a stale prior bundle's tarball still carries the monitoring images this
+    # array was trimmed of on 2026-09-21 — seeding it would silently reunite
+    # a "docs-image-only" list with an untrimmed payload. It's one small image
+    # now, so always re-pulling costs little.
+    case "$rel" in apt/*|enrichment/*|docker/monitoring-images.tar.gz) return 0 ;; esac
     src="$PREV_BUNDLE/$rel"
     if [ -s "$src" ]; then
         mkdir -p "$(dirname "$out")"
@@ -347,16 +370,16 @@ fi
 note "GeoIP DESCOPED by decision 2026-08-31: no MaxMind account — Malcolm runs without geo tagging (v2 of this script has the fetch block if reversed)"
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 4. Monitoring / portal images
+# 4. Docs build image
 # ═════════════════════════════════════════════════════════════════════════════
-echo "==== [4/10] Monitoring & portal images ===="
+echo "==== [4/10] Docs build image ===="
 seed "$B/docker/monitoring-images.tar.gz"
 if have "$B/docker/monitoring-images.tar.gz"; then
-    note "Monitoring/portal images: tarball already present — pulls/save skipped"
+    note "Docs build image: tarball already present — pulls/save skipped"
 else
     for img in "${MONITOR_IMAGES[@]}"; do $CTR pull "$img"; done
     ctr_save "$B/docker/monitoring-images.tar.gz" "${MONITOR_IMAGES[@]}"
-    note "Monitoring/portal images: ${#MONITOR_IMAGES[@]} saved"
+    note "Docs build image: ${#MONITOR_IMAGES[@]} saved"
 fi
 printf '%s\n' "${MONITOR_IMAGES[@]}" > "$B/docker/monitoring-image-list.txt"
 

@@ -8,7 +8,7 @@
 setup() { cd "$BATS_TEST_DIRNAME/.."; }
 
 @test "no external URL in scripts or config" {
-    # loopback, the five .lab names, and compose-internal service names only
+    # loopback, the three .lab names, and compose-internal service names only
     allow='://(127[.]0[.]0[.]1|localhost|[a-z0-9]+[.]lab|host[.]docker[.]internal|prometheus|alertmanager|blackbox|cadvisor|grafana|arkime|dashboards|opensearch)(:|/|$)'
     bad=$(grep -rnoE 'https?://[A-Za-z0-9._:-]+' scripts/ config/ | grep -vE "$allow" || true)
     echo "external: $bad"

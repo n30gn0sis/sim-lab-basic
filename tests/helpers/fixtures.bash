@@ -25,18 +25,12 @@ make_bundle() {
     echo "fake zip"            > "$d/malcolm/malcolm-0.0.0-fixture-docker_install.zip"
     echo "services: {}"        > "$d/malcolm/docker-compose.yml"
 
-    # The monitoring list carries MORE images than the compose file consumes
-    # (nginx, registry, mkdocs-material ride along), in a deliberately shuffled
-    # order: the .env derivation must map by repository name, never by position.
+    # Trimmed to the one image staging's fetch script still carries here
+    # (Task 1): the docs build's mkdocs-material. "found by name not
+    # position" is still exercised elsewhere, by Malcolm's and GNS3's own
+    # multi-entry image lists.
     cat > "$d/docker/monitoring-image-list.txt" <<'LIST'
-docker.io/library/nginx:stable
-docker.io/grafana/grafana-oss:0.0.0-fixture
-docker.io/prom/blackbox-exporter:v0.0.0-fixture
-docker.io/library/registry:2
-docker.io/prom/prometheus:v0.0.0-fixture
 docker.io/squidfunk/mkdocs-material:latest
-ghcr.io/google/cadvisor:v0.0.0-fixture
-docker.io/prom/alertmanager:v0.0.0-fixture
 LIST
     _fixture_targz "$d/docker/monitoring-images.tar.gz" "fake monitoring images"
 

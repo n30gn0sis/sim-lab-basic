@@ -35,18 +35,27 @@ setup() { cd "$BATS_TEST_DIRNAME/.."; }
     done < <(find config -type f | sort)
 }
 
-@test "every runner stage resolves to a script that exists" {
-    while read -r st; do
-        case "$st" in
-            preflight|gate|copy|apt|phone-home|docker|images|files) s=scripts/r770-import-bundle.sh ;;
-            gns3) s=scripts/r770-gns3-deploy.sh ;; malcolm) s=scripts/r770-malcolm-deploy.sh ;;
-            portal) s=scripts/r770-portal-deploy.sh ;; monitoring) s=scripts/r770-monitoring-deploy.sh ;;
-            validate) s=scripts/r770-validate.sh ;; *) echo "unknown stage $st"; false ;;
-        esac
-        [ -x "$s" ]
-        grep -q "r770-$(basename "$s" .sh | sed 's/^r770-//')" scripts/r770-deploy.sh
-    done < <(./scripts/r770-deploy.sh --list)
-    [ "$(./scripts/r770-deploy.sh --list | wc -l)" -eq 13 ]
+@test "every full step of both pipelines resolves to a subcommand that exists" {
+    # No outer orchestrator: r770-malcolm-deploy.sh full and r770-gns3-deploy.sh
+    # full each hold their own STEPS array. The shared prefix
+    # (preflight gate copy apt phone-home docker files) must be a subcommand
+    # of r770-import-bundle.sh; every other step must be a cmd_<step> function
+    # defined in the pipeline's own script.
+    for s in scripts/r770-malcolm-deploy.sh scripts/r770-gns3-deploy.sh; do
+        steps=$(grep -oP '^STEPS=\(\K[^)]+' "$s")
+        [ -n "$steps" ] || { echo "no STEPS array in $s"; false; }
+        for st in $steps; do
+            case "$st" in
+                preflight|gate|copy|apt|phone-home|docker|files)
+                    grep -qE "^\s*${st})" scripts/r770-import-bundle.sh \
+                        || { echo "$s step $st: no matching subcommand in r770-import-bundle.sh"; false; } ;;
+                *)
+                    fn="cmd_$(echo "$st" | tr '-' '_')"
+                    grep -q "^${fn}(" "$s" \
+                        || { echo "$s step $st: no $fn() in $s"; false; } ;;
+            esac
+        done
+    done
 }
 
 @test "every script named in .claude/settings.json exists" {

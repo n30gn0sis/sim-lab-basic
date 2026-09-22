@@ -1,29 +1,27 @@
 #!/usr/bin/env bash
 #
-# r770-portal-deploy.sh — the nginx portal: an internal CA generated ON the
-# gapped box, one five-SAN certificate, the .lab vhosts, the landing page and
-# the analyst wiki built offline.
+# r770-portal-deploy.sh — the nginx front door: an internal CA generated ON
+# the gapped box, one three-SAN certificate, the .lab vhosts and the analyst
+# wiki built offline.
 #
 #   r770-portal-deploy.sh <subcommand> [--bundle <dir>] [options]
 #
 #   ca          easy-rsa PKI at /etc/lab/ca, CA cert published to /etc/nginx/ssl
-#   cert        one server cert for portal/malcolm/gns3/monitoring/docs.lab
+#   cert        one server cert for malcolm/gns3/docs.lab
 #   htpasswd    the shared analyst login, copied from Malcolm's auth material
 #   nginx       vhosts + snippets installed, default site removed, nginx -t
 #               BEFORE reload, every vhost probed after the reload settles (GATED)
-#   portal      landing page rendered with --mgmt-ip (required, never guessed)
 #   docs        analyst wiki built with the bundled mkdocs image, --network none
 #   status      certificate, permissions, enabled sites, who owns :443
 #   --print-sans  print the SAN list and exit (tests and docs read it)
 #
-#   --mgmt-ip <ip>   management address shown on the landing page (portal)
 #   --wiki <dir>     wiki source (docs; default: the kit's docs/wiki)
 #   EASYRSA_BIN      /usr/share/easy-rsa/easyrsa · MALCOLM_HOME /opt/malcolm
 #   --yes / --non-interactive / --dry-run / --force   as everywhere in the kit
 #
 #   0  done · 2  done with warnings · 1  refused or failed
 #
-# Rehearsal lessons this encodes (2026-09-12): one five-SAN cert works;
+# Rehearsal lessons this encodes (2026-09-12): one three-SAN cert works;
 # nginx starts on 0.0.0.0:443 with its default site the moment the package
 # installs; a probe that races `systemctl reload` reads the old cert, so
 # probe after it settles; the bundled nginx accepts `listen 443 ssl http2;`
@@ -33,13 +31,13 @@ set -uo pipefail
 # shellcheck source=lib/common.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
 
-SANS="portal.lab malcolm.lab gns3.lab monitoring.lab docs.lab"
+SANS="malcolm.lab gns3.lab docs.lab"
 PKI="/etc/lab/ca"
 SSL="/etc/nginx/ssl"
 EASYRSA_BIN="${EASYRSA_BIN:-/usr/share/easy-rsa/easyrsa}"
 MALCOLM_HOME="${MALCOLM_HOME:-/opt/malcolm}"
 SETTLE="${PORTAL_SETTLE_SECS:-2}"
-BUNDLE=""; MGMT_IP=""; WIKI=""
+BUNDLE=""; WIKI=""
 usage() { usage_from_header 3; exit 0; }
 easyrsa() { run env EASYRSA_PKI="$(p "$PKI")/pki" EASYRSA_BATCH=1 "$EASYRSA_BIN" "$@"; }
 
@@ -65,7 +63,7 @@ cmd_ca() {
 }
 
 cmd_cert() {
-    banner "cert — one certificate, five SANs"
+    banner "cert — one certificate, three SANs"
     need_root
     local pki ssl san n
     pki="$(p "$PKI")/pki"; ssl="$(p "$SSL")"
@@ -115,6 +113,7 @@ ng_proposed() {
     echo "    sites-available/ + sites-enabled/: $(find "$KIT_CONFIG_DIR/nginx" -maxdepth 1 -name '*.lab.conf' -printf '%f ' )"
     echo "    snippets/: lab-tls.conf lab-auth.conf"
     echo "    sites-enabled/default: removed (the stock page answered on 0.0.0.0:443 since the package installed)"
+    echo "    any *.lab.conf not in that set (a prior kit version's retired vhosts, e.g. portal.lab.conf/monitoring.lab.conf): removed"
     echo "    nginx -t, then reload, then every vhost probed at 127.0.0.1 with its own name"
 }
 cmd_nginx() {
@@ -134,12 +133,27 @@ cmd_nginx() {
     for f in "$KIT_CONFIG_DIR"/nginx/snippets/*.conf; do
         run install -m 0644 "$f" "$(p /etc/nginx/snippets)/$(basename "$f")" || die "could not install $(basename "$f")"
     done
+    # prune vhosts a prior kit version shipped that this one no longer does
+    # (e.g. portal.lab.conf/monitoring.lab.conf) — otherwise an upgrade
+    # leaves retired routes reachable even though validation only checks
+    # the current SANs
+    local current=" " f2 existing bn
+    for f2 in "$KIT_CONFIG_DIR"/nginx/*.lab.conf; do current="$current$(basename "$f2") "; done
+    for existing in "$(p /etc/nginx/sites-enabled)"/*.lab.conf "$(p /etc/nginx/sites-available)"/*.lab.conf; do
+        [ -e "$existing" ] || continue
+        bn=$(basename "$existing")
+        case "$current" in *" $bn "*) continue ;; esac
+        run rm -f "$existing"
+        note "removed retired vhost: $bn"
+    done
+    local n_vhosts=0
     for f in "$KIT_CONFIG_DIR"/nginx/*.lab.conf; do
         run install -m 0644 "$f" "$(p /etc/nginx/sites-available)/$(basename "$f")" || die "could not install $(basename "$f")"
         run ln -sf "../sites-available/$(basename "$f")" "$(p /etc/nginx/sites-enabled)/$(basename "$f")"
+        n_vhosts=$((n_vhosts + 1))
     done
     run rm -f "$(p /etc/nginx/sites-enabled)/default"
-    pass "five vhosts and two snippets installed; default site removed"
+    pass "$n_vhosts vhosts and two snippets installed; default site removed"
     # -t BEFORE reload: a bad config must never take the running portal down.
     run nginx -t || die "nginx -t rejected the configuration — nothing was reloaded; the previous config is still live"
     run systemctl reload nginx || die "reload failed"
@@ -156,17 +170,6 @@ cmd_nginx() {
     footer "nginx"
 }
 
-cmd_portal() {
-    banner "portal — landing page"
-    need_root
-    [ -n "$MGMT_IP" ] || die "--mgmt-ip <address> is required — the landing page tells analysts which address to put in their hosts file, and the kit never guesses an address"
-    [[ $MGMT_IP =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "--mgmt-ip '$MGMT_IP' is not an IPv4 address"
-    run mkdir -p "$(p /srv/www/portal)"
-    render "$KIT_CONFIG_DIR/portal/index.html.template" "$(p /srv/www/portal)/index.html" "MGMT_IP=$MGMT_IP" || exit 1
-    pass "landing page at /srv/www/portal/index.html (management address $MGMT_IP)"
-    footer "portal"
-}
-
 cmd_docs() {
     banner "docs — analyst wiki, built offline"
     need_root
@@ -174,11 +177,14 @@ cmd_docs() {
     wiki="${WIKI:-$KIT_DIR/docs/wiki}"
     [ -f "$wiki/index.md" ] || die "no wiki at $wiki (index.md missing) — pass --wiki <dir>"
     img=$(image_ref_from_list "$b/docker/monitoring-image-list.txt" mkdocs-material) || exit 1
+    if ! docker image ls --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | grep -qxF "$img"; then
+        run docker load -i "$b/docker/monitoring-images.tar.gz" || die "docker load failed for the docs build image"
+    fi
     tmp=$(mktemp -d)
     run cp -a "$wiki" "$tmp/docs"
     run install -m 0644 "$KIT_CONFIG_DIR/docs/mkdocs.yml" "$tmp/mkdocs.yml"
     # --network none: the build can want fonts and plugins; on an air gap it must not even try.
-    run docker run --rm --network none -v "$tmp:/docs" "$img" build || { rm -rf "$tmp"; die "mkdocs build failed — is $img loaded (images stage)?"; }
+    run docker run --rm --network none -v "$tmp:/docs" "$img" build || { rm -rf "$tmp"; die "mkdocs build failed — is $img actually present? (see the docker load above)"; }
     if [ "$DRY" != "1" ]; then
         [ -f "$tmp/site/index.html" ] || { rm -rf "$tmp"; die "mkdocs produced no site/index.html"; }
         run rm -rf "$(p /srv/www/docs)"
@@ -208,7 +214,6 @@ SUB="${1:-}"; [ $# -gt 0 ] && shift
 while [ $# -gt 0 ]; do
     case "$1" in
         --bundle)  BUNDLE="${2:-}"; shift ;;
-        --mgmt-ip) MGMT_IP="${2:-}"; shift ;;
         --wiki)    WIKI="${2:-}"; shift ;;
         --print-sans) echo "$SANS"; exit 0 ;;
         -h|--help) usage ;;
@@ -222,7 +227,6 @@ case "$SUB" in
     cert)     cmd_cert ;;
     htpasswd) cmd_htpasswd ;;
     nginx)    cmd_nginx ;;
-    portal)   cmd_portal ;;
     docs)     cmd_docs ;;
     status)   cmd_status ;;
     -h|--help|help|"") usage ;;

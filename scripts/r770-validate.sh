@@ -8,7 +8,7 @@
 #   r770-validate.sh [--area A]... [--list] [options]
 #
 #   areas: host cpu-ram storage network virtualization gns3 wan capture
-#          monitoring backup airgap portal          (default: all of them)
+#          backup airgap portal                    (default: all of them)
 #
 #   --expect-threads N    --expect-ram-gb N     what the chassis should show
 #   --mgmt-if IF          --capture-ifs "a b"   interfaces, given — never guessed
@@ -30,11 +30,11 @@ set -uo pipefail
 # shellcheck source=lib/common.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
 
-ALL_AREAS="host cpu-ram storage network virtualization gns3 wan capture monitoring backup airgap portal"
+ALL_AREAS="host cpu-ram storage network virtualization gns3 wan capture backup airgap portal"
 AREAS=""; EXPECT_THREADS=""; EXPECT_RAM=""; MGMT_IF=""; CAPTURE_IFS=""; MGMT_CIDR=""
 ALLOW_VM=0; LAB_BRIDGE=""; ALLOW_WAN=0; FEED=""; PCAP=""; OUT=""
 LVS="/var/lib/docker /data/pcap /data/index /data/staging /srv/vms /srv/gns3 /srv/work /srv/backup"
-SANS="portal.lab malcolm.lab gns3.lab monitoring.lab docs.lab"
+SANS="malcolm.lab gns3.lab docs.lab"
 MALCOLM_HOME="${MALCOLM_HOME:-/opt/malcolm}"
 AIRGAP_CMD="${VALIDATE_AIRGAP_CMD:-$KIT_DIR/scripts/r770-airgap-check.sh}"
 usage() { usage_from_header 3; exit 0; }
@@ -66,8 +66,8 @@ area_host() {
     if dpkg -s dnsmasq >/dev/null 2>&1; then
         local n miss=""
         for n in $SANS; do getent hosts "$n" >/dev/null 2>&1 || miss="$miss $n"; done
-        if [ -z "$miss" ]; then row "lab-dns" "five .lab names resolve" "all resolve" PASS "getent hosts <name>"; else row "lab-dns" "five .lab names resolve" "unresolved:$miss" FAIL "getent hosts <name>"; diag lab-dns "dnsmasq is installed but not authoritative for these names — check its .lab address records"; fi
-    else row "lab-dns" "five .lab names resolve" "dnsmasq not installed" SKIP "Phase 5 not built"; fi
+        if [ -z "$miss" ]; then row "lab-dns" "three .lab names resolve" "all resolve" PASS "getent hosts <name>"; else row "lab-dns" "three .lab names resolve" "unresolved:$miss" FAIL "getent hosts <name>"; diag lab-dns "dnsmasq is installed but not authoritative for these names — check its .lab address records"; fi
+    else row "lab-dns" "three .lab names resolve" "dnsmasq not installed" SKIP "Phase 5 not built"; fi
     local uris bad
     uris=$(apt-get indextargets --format '$''(URI)' 2>/dev/null | sort -u || true)
     bad=$(printf '%s\n' "$uris" | grep -v '^file:' | grep -c . || true)
@@ -208,17 +208,6 @@ area_capture() {
     row "arkime-count" "== $sent (± indexing lag)" "compare in Arkime after the pipeline catches up" WARN "Arkime sessions/packets for the replay window — Zeek→OpenSearch lag is real (measured 2026-09-12), not a capture failure"
 }
 
-# ── monitoring ───────────────────────────────────────────────────────────────
-area_monitoring() {
-    AREA=monitoring
-    local t up down
-    t=$(curl -s --max-time 10 http://127.0.0.1:9090/prometheus/api/v1/targets 2>/dev/null || true)
-    [ -n "$t" ] || { row "targets" "every target up" "Prometheus not answering on 127.0.0.1:9090" SKIP "Phase 14 not built"; return; }
-    up=$(printf '%s' "$t" | grep -o '"health":"up"' | wc -l)
-    down=$(printf '%s' "$t" | grep -o '"health":"[a-z]*"' | grep -vc '"up"' || true)
-    if [ "$down" -eq 0 ] && [ "$up" -gt 0 ]; then row "targets" "every target up" "$up up, 0 down" PASS "GET /prometheus/api/v1/targets"; else row "targets" "every target up" "$up up, $down not up" FAIL "GET /prometheus/api/v1/targets"; diag targets "a scrape target is down — open monitoring.lab/prometheus/targets for the error string"; fi
-}
-
 # ── backup ───────────────────────────────────────────────────────────────────
 area_backup() {
     AREA=backup
@@ -252,7 +241,7 @@ area_airgap() {
 area_portal() {
     AREA=portal
     local ca; ca="$(p /etc/nginx/ssl/ca.crt)"
-    [ -s "$ca" ] || { row "vhosts" "five names answer with the lab CA" "no /etc/nginx/ssl/ca.crt" SKIP "Phase 13 not built"; return; }
+    [ -s "$ca" ] || { row "vhosts" "three names answer with the lab CA" "no /etc/nginx/ssl/ca.crt" SKIP "Phase 13 not built"; return; }
     local n hdr code loc
     for n in $SANS; do
         hdr=$(curl -s --max-time 10 --cacert "$ca" --resolve "$n:443:127.0.0.1" -o /dev/null -D - "https://$n/" 2>/dev/null || true)
@@ -266,7 +255,7 @@ area_portal() {
         esac
     done
     local owners; owners=$(ss -ltnp 2>/dev/null | grep -E '(0\.0\.0\.0|\*):443 ' | grep -oE 'users:\(\("[^"]+"' | cut -d'"' -f2 | sort -u | tr '\n' ' ')
-    if [ "$(printf '%s' "$owners" | wc -w)" -eq 1 ] && [[ "$owners" == nginx* ]]; then row "port-443" "only nginx" "$owners" PASS "ss -ltnp"; else row "port-443" "only nginx" "${owners:-nothing}" FAIL "ss -ltnp"; diag port-443 "something other than the portal owns 0.0.0.0:443 — if it is Malcolm's nginx-proxy the rebind did not take"; fi
+    if [ "$(printf '%s' "$owners" | wc -w)" -eq 1 ] && [[ "$owners" == nginx* ]]; then row "port-443" "only nginx" "$owners" PASS "ss -ltnp"; else row "port-443" "only nginx" "${owners:-nothing}" FAIL "ss -ltnp"; diag port-443 "something other than the front door owns 0.0.0.0:443 — if it is Malcolm's nginx-proxy the rebind did not take"; fi
 }
 
 # ── report ───────────────────────────────────────────────────────────────────
@@ -331,7 +320,6 @@ for a in $AREAS; do
         gns3)           area_gns3 ;;
         wan)            area_wan ;;
         capture)        area_capture ;;
-        monitoring)     area_monitoring ;;
         backup)         area_backup ;;
         airgap)         area_airgap ;;
         portal)         area_portal ;;

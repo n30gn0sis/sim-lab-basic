@@ -22,7 +22,7 @@ setup() { cd "$BATS_TEST_DIRNAME/.."; }
 }
 
 @test "every __TOKEN__ in config/ is one the kit renders" {
-    known='MGMT_IP SECRETS_DIR ADMIN_PW PCAP_NODE_NAME OS_MEMORY LS_MEMORY ARKIME_MANAGE_PCAP ARKIME_FREE_SPACE_G MALCOLM_VER NETWORK_INDEX_PATTERN_ID'
+    known='ADMIN_PW PCAP_NODE_NAME OS_MEMORY LS_MEMORY ARKIME_MANAGE_PCAP ARKIME_FREE_SPACE_G MALCOLM_VER NETWORK_INDEX_PATTERN_ID'
     bad=""
     while read -r t; do
         n=${t#__}; n=${n%__}
@@ -36,23 +36,6 @@ setup() { cd "$BATS_TEST_DIRNAME/.."; }
     while read -r t; do
         grep -q -- "\`$t\`" config/README.md || { echo "undocumented token $t"; false; }
     done < <(grep -rhoE '__[A-Z][A-Z0-9_]*__' config/ --exclude=README.md | sort -u)
-}
-
-@test "the monitoring compose takes every image from a bundle-derived variable" {
-    run grep -E '^\s+image:' config/monitoring/docker-compose.yml
-    echo "$output"
-    while read -r line; do
-        [[ "$line" =~ image:\ \$\{[A-Z_]+_IMAGE\}$ ]] || { echo "literal image: $line"; false; }
-    done <<< "$output"
-    grep -q '__SECRETS_DIR__/grafana-admin.env' config/monitoring/docker-compose.yml
-    grep -q -- '--docker_only=true' config/monitoring/docker-compose.yml
-}
-
-@test "the blackbox extra_hosts are exactly the portal's five SAN names" {
-    sans=$(./scripts/r770-portal-deploy.sh --print-sans | tr ' ' '\n' | sort)
-    hosts=$(grep -oE '"[a-z0-9]+\.lab:host-gateway"' config/monitoring/docker-compose.yml | tr -d '"' | sed 's/:host-gateway//' | sort)
-    echo "sans: $sans"; echo "hosts: $hosts"
-    [ "$sans" = "$hosts" ]
 }
 
 @test "the GNS3 template carries no jwt_secret_key line (measured: not honoured)" {

@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 #
 # r770-gns3-deploy.sh — GNS3 server from the bundle's wheelhouse, offline,
-# as a systemd service bound to 127.0.0.1 behind the portal.
+# as a systemd service bound to 127.0.0.1 behind the front door.
 #
 #   r770-gns3-deploy.sh <subcommand> [--bundle <dir>] [options]
 #
+#   load         docker load the GNS3 docker-node images tarball, then
+#                assert every tag
+#   assert-tags  the tag check alone (docker load lies by omission)
 #   venv       python venv at /opt/gns3, gns3-server from the wheelhouse
 #              (pip --no-index; refuses if a pip index is configured)
 #   secrets    generate the GNS3 admin password file once (never printed)
@@ -12,7 +15,19 @@
 #              OWNED BY THE SERVICE USER, data dirs under /srv/gns3
 #   service    install + enable the systemd unit, assert 127.0.0.1:3080  (GATED)
 #   status     what is in place
+#   full       the whole GNS3 pipeline, in order, stopping at the first step
+#              that refuses: preflight gate copy apt phone-home docker files
+#              load venv secrets config service (see --from/--to/--only)
 #
+#   --bundle <dir>          the bundle (on the media for preflight/gate/copy
+#                           under `full`, local after)
+#   --media <mnt>           mountpoint of the transfer media, for `full`'s
+#                           gate/copy steps (gate mounts, copy unmounts)
+#   --device <dev>          block device to mount read-only at --media, for
+#                           `full`'s gate step — a DISCOVERED name, never a
+#                           guess
+#   --from STEP / --to STEP restrict `full` to a slice of its steps
+#   --only STEP             sugar for --from STEP --to STEP
 #   GNS3_HOME /opt/gns3 · GNS3_USER gns3 · GNS3_ETC /etc/gns3 · GNS3_WAIT_SECS 60
 #   --yes / --non-interactive / --dry-run / --force   as everywhere in the kit
 #
@@ -30,13 +45,41 @@ set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
 
 BUNDLE=""
+MEDIA=""; DEVICE=""; FROM=""; TO=""; ONLY=""
 GNS3_HOME="${GNS3_HOME:-/opt/gns3}"
 GNS3_USER="${GNS3_USER:-gns3}"
 GNS3_ETC="${GNS3_ETC:-/etc/gns3}"
 WAIT_SECS="${GNS3_WAIT_SECS:-60}"
 SECRET="/etc/lab/secrets/gns3-admin.pw"
+STEPS=(preflight gate copy apt phone-home docker files load venv secrets config service)
+# test seam: lets a suite stub out every call this script makes to
+# r770-import-bundle.sh under `full`, and record what was called.
+IMPORT_BUNDLE_CMD="${IMPORT_BUNDLE_CMD:-$KIT_DIR/scripts/r770-import-bundle.sh}"
 usage() { usage_from_header 3; exit 0; }
 venv() { p "$GNS3_HOME"; }
+local_bundle() {  # after copy, the bundle lives under /srv/bundles
+    local l; l="$(p /srv/bundles)/$(basename "$BUNDLE")"
+    if [ -d "$l" ]; then printf '%s' "$l"; else printf '%s' "$BUNDLE"; fi
+}
+
+# ── load / assert-tags (this script's own images, no longer shared) ─────────
+cmd_assert_tags() {
+    local b; b=$(bundle_dir "$BUNDLE") || exit 1
+    assert_image_tags "$b/gns3/docker-nodes/image-list.txt" || die "image(s) missing after load — the tarball is incomplete or the load failed"
+}
+cmd_load() {
+    command -v docker >/dev/null 2>&1 || die "docker is not installed — run 'r770-import-bundle.sh docker' first"
+    local b tar; b=$(bundle_dir "$BUNDLE") || exit 1
+    if [ "$FORCE" != "1" ] && assert_image_tags "$b/gns3/docker-nodes/image-list.txt" >/dev/null 2>&1; then
+        echo "gns3/docker-nodes/image-list.txt: every tag already present — load skipped (--force to redo)"
+        return 0
+    fi
+    tar="$b/gns3/docker-nodes/gns3-node-images.tar.gz"
+    [ -s "$tar" ] || die "no gns3-node-images.tar.gz under $b/gns3/docker-nodes"
+    echo "loading $tar ..."
+    run docker load -i "$tar" || die "docker load failed"
+    [ "$DRY" = "1" ] || cmd_assert_tags
+}
 
 cmd_venv() {
     banner "venv — gns3-server from the wheelhouse"
@@ -148,22 +191,84 @@ cmd_status() {
     return 0
 }
 
+# ── full ─────────────────────────────────────────────────────────────────────
+# The whole GNS3 pipeline, in order, stopping at the first step that refuses.
+# Independent of r770-malcolm-deploy.sh's own `full` and of the retired
+# r770-deploy.sh, whose child()/stage_index() this script's run_step/step_index
+# (scripts/lib/common.sh) grew out of: this script now brings its own bundle
+# in from the media rather than being handed an already-copied one by an
+# outer orchestrator.
+cmd_full() {
+    [ -n "$BUNDLE" ] || die "--bundle <dir> is required for full (try --help)"
+    local first last i step
+    first=0; last=$(( ${#STEPS[@]} - 1 ))
+    [ -z "$FROM" ] || first=$(step_index STEPS "$FROM") || die "unknown step: $FROM (see --help)"
+    [ -z "$TO" ]   || last=$(step_index STEPS "$TO")    || die "unknown step: $TO (see --help)"
+    [ "$first" -le "$last" ] || die "--from $FROM comes after --to $TO"
+    # Resolve the local copy BEFORE the loop, not only inside the copy) arm
+    # below: a resumed run (--from past copy) never executes that arm, so
+    # BUNDLE would otherwise still point at --bundle's original media path
+    # (already unmounted) for every in-process step. local_bundle() falls
+    # back to the raw path when the copy hasn't landed yet, so this is safe
+    # on a fresh run too.
+    BUNDLE="$(local_bundle)"
+    echo "bundle: $BUNDLE"; [ -n "$MEDIA" ] && echo "media: $MEDIA${DEVICE:+ ($DEVICE)}"
+    echo "steps: ${STEPS[*]:$first:$((last - first + 1))}"
+    WARNED_STEPS=""
+    for i in $(seq "$first" "$last"); do
+        step="${STEPS[$i]}"
+        banner "$(( i + 1 ))/${#STEPS[@]}  $step"
+        case "$step" in
+            preflight) run_step "$step" "$IMPORT_BUNDLE_CMD" preflight --bundle "$BUNDLE" ;;
+            gate)
+                if [ -n "$DEVICE" ]; then run_step "$step" "$IMPORT_BUNDLE_CMD" gate --bundle "$BUNDLE" --media "$MEDIA" --device "$DEVICE"
+                else run_step "$step" "$IMPORT_BUNDLE_CMD" gate --bundle "$BUNDLE"; fi ;;
+            copy)
+                if [ -n "$MEDIA" ]; then run_step "$step" "$IMPORT_BUNDLE_CMD" copy --bundle "$BUNDLE" --media "$MEDIA"
+                else run_step "$step" "$IMPORT_BUNDLE_CMD" copy --bundle "$BUNDLE"; fi
+                BUNDLE="$(local_bundle)" ;;   # now the copy has landed, so this always resolves
+            apt|phone-home|docker|files) run_step "$step" "$IMPORT_BUNDLE_CMD" "$step" --bundle "$(local_bundle)" ;;
+            load)    run_step "$step" cmd_load ;;
+            venv)    run_step "$step" cmd_venv ;;
+            secrets) run_step "$step" cmd_secrets ;;
+            config)  run_step "$step" cmd_config ;;
+            service) run_step "$step" cmd_service ;;
+        esac
+    done
+    echo
+    if [ -n "$WARNED_STEPS" ]; then
+        echo "DEPLOYED WITH WARNINGS — steps:$WARNED_STEPS. Disposition each in the cycle log; evidence under ${KIT_EVIDENCE_DIR:-./r770-evidence}"
+        exit 2
+    fi
+    echo "DEPLOYED — every step clean; evidence under ${KIT_EVIDENCE_DIR:-./r770-evidence}"
+    exit 0
+}
+
 SUB="${1:-}"; [ $# -gt 0 ] && shift
 while [ $# -gt 0 ]; do
     case "$1" in
         --bundle)  BUNDLE="${2:-}"; shift ;;
+        --media)   MEDIA="${2:-}"; shift ;;
+        --device)  DEVICE="${2:-}"; shift ;;
+        --from)    FROM="${2:-}"; shift ;;
+        --to)      TO="${2:-}"; shift ;;
+        --only)    ONLY="${2:-}"; shift ;;
         -h|--help) usage ;;
         *)         common_flag "$1" || die "unknown option: $1 (try --help)" ;;
     esac
     shift
 done
+[ -n "$ONLY" ] && { FROM="$ONLY"; TO="$ONLY"; }
 kit_init "r770-gns3-deploy"
 case "$SUB" in
+    load)        cmd_load ;;
+    assert-tags) cmd_assert_tags ;;
     venv)    cmd_venv ;;
     secrets) cmd_secrets ;;
     config)  cmd_config ;;
     service) cmd_service ;;
     status)  cmd_status ;;
+    full)    cmd_full ;;
     -h|--help|help|"") usage ;;
     *)       die "unknown subcommand: $SUB (try --help)" ;;
 esac

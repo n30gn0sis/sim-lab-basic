@@ -38,6 +38,46 @@ simlab-build (design + build side)            sim-lab-basic (R770 side — this 
 - [ ] `./tests/run.sh` green here; the build repo's suite green there
 - [ ] Tag the kit with the bundle date it was rehearsed against, and name that tag in the build repo's cycle log
 
+## Local divergence: `staging/r770-offline-fetch.sh` (2026-09-21)
+
+**This is a deliberate, one-time, user-approved exception to the byte-for-byte
+carry rule above** — the only one in this repo. `staging/r770-offline-fetch.sh`
+was hand-edited here (not resynced from `simlab-build`) to trim `MONITOR_IMAGES`
+down to just `mkdocs-material`, dropping the Prometheus/Alertmanager/blackbox-
+exporter/Grafana-OSS/cAdvisor monitoring images plus the confirmed-unused
+stock-nginx and docker-registry-v2 images, as part of cutting monitoring from
+this kit. `mkdocs-material` stays because the offline analyst wiki
+(`docs.lab`, built by `scripts/r770-portal-deploy.sh docs`) still needs it.
+The array's name and its two output paths
+(`docker/monitoring-image-list.txt` / `docker/monitoring-images.tar.gz`) were
+kept unchanged: `staging/r770-bundle.sh`'s `check_required()` — itself still
+provenance-locked and untouched — hardcodes those exact filenames as a
+matched list/payload pair, and renaming either would make the verifier
+silently stop checking that category instead of failing loudly.
+
+`staging/PROVENANCE.txt` records this: the hash for `r770-offline-fetch.sh`
+was recomputed and no longer corresponds to any single `simlab-build` commit,
+while the other three carried scripts' hashes are untouched. `staging/r770-bundle.sh`,
+`staging/r770-build-bundle.sh` and `staging/r770-staging-preflight.sh` remain
+byte-for-byte and provenance-locked; only the fetch script diverged.
+
+**Reconciling this upstream (porting the trim back into `simlab-build`, or
+re-carrying a future upstream fetch script over this local edit) is out of
+scope for this repo.** A future sync pass on `staging/r770-offline-fetch.sh`
+must not silently overwrite this local edit — diff it against this file
+first, and re-apply the monitoring trim (or fold it upstream and re-carry)
+rather than blindly copying `simlab-build`'s current version over it.
+
+**Addendum (2026-09-22):** an external PR review on the trim above caught
+that `seed()` would still reuse a stale prior bundle's untrimmed
+`docker/monitoring-images.tar.gz` (the pre-trim payload, with the removed
+monitoring images) even after the list file was correctly regenerated as
+`mkdocs-material`-only — the seeded payload and the freshly written list
+would silently disagree. `seed()` now excludes
+`docker/monitoring-images.tar.gz` from prior-bundle reuse, the same way it
+already excludes `apt/*`/`enrichment/*`. `staging/PROVENANCE.txt`'s hash
+for `r770-offline-fetch.sh` was recomputed again for this change.
+
 ## The no-pins rule
 
 The build repo keeps one owner per fact (`OWNERS.md` there): every version pin

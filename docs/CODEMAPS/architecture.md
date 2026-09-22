@@ -1,4 +1,4 @@
-<!-- Generated: 2026-09-17 | Files scanned: 72 tracked | Token estimate: ~700 -->
+<!-- Generated: 2026-09-21 | Files scanned: 72 tracked | Token estimate: ~700 -->
 
 # Architecture
 
@@ -6,10 +6,10 @@ Two hosts, one repo. A bundle is the only thing that crosses between them.
 
 ```
 STAGING HOST (internet)                     R770 (air-gapped, Ubuntu 24.04)
-  staging/r770-staging-preflight.sh           scripts/r770-deploy.sh
-  staging/r770-offline-fetch.sh  ──┐            └─ 13 stages, in order
-    (the one pin owner)            │               stops at the first refusal
-  staging/r770-build-bundle.sh     │
+  staging/r770-staging-preflight.sh           scripts/r770-malcolm-deploy.sh full
+  staging/r770-offline-fetch.sh  ──┐            scripts/r770-gns3-deploy.sh full
+    (the one pin owner)            │            two independent pipelines, no
+  staging/r770-build-bundle.sh     │            outer orchestrator
   staging/r770-bundle.sh ──────────┤
     (copied INTO the bundle)       │
                                    ▼
@@ -28,18 +28,41 @@ guarded by `staging/PROVENANCE.txt` + `tests/staging.bats`.
 ## Three layers on the R770 side
 
 ```
-r770-deploy.sh            orchestrator — holds no logic of its own
-  │ script_for(stage) → one of six scripts; child() wraps each in 0/2/1
-  ▼
-r770-import-bundle.sh  r770-gns3-deploy.sh  r770-malcolm-deploy.sh
-r770-portal-deploy.sh  r770-monitoring-deploy.sh  r770-validate.sh
+r770-malcolm-deploy.sh full     r770-gns3-deploy.sh full     (independent; each
+  │ own STEPS array               │ own STEPS array           brings its own
+  │ run_step()/step_index()       │ run_step()/step_index()   bundle in from
+  ▼                               ▼                           the media)
+r770-import-bundle.sh  ◄── shared bundle-prep steps, idempotent either order
+r770-portal-deploy.sh          optional front door, run by hand after Malcolm
+r770-validate.sh               read-only checks, run at any point
   │ every one sources ↓
   ▼
 scripts/lib/common.sh     the only seam that touches the host
 ```
 
-`scripts/r770-airgap-check.sh` is read-only and stands outside the stage list;
+`scripts/r770-airgap-check.sh` is read-only and stands outside every pipeline;
 `r770-validate.sh` folds its rows in under the `airgap` area.
+
+## Two independent `full` pipelines, one shared prep
+
+`r770-malcolm-deploy.sh full` and `r770-gns3-deploy.sh full` each hold their
+own `STEPS=(...)` array and step through it with `common.sh`'s
+`run_step()`/`step_index()` — there is no outer orchestrator holding a
+combined stage list. Both begin with the same bundle-prep steps
+(`preflight gate copy apt phone-home docker files`, all against
+`r770-import-bundle.sh`) before diverging into their own `load` and
+pipeline-specific steps. Every one of those shared steps is idempotent
+(`copy` stamps, `apt` short-circuits via `cmp -s`, `phone-home` is a no-op on
+an already-disabled unit, `docker` install is idempotent by itself, `files`
+stamps per category), so running one pipeline's `full` after the other has
+already run reports "already done" for the shared prefix and moves straight
+into its own steps. The only doubled cost is `gate`'s bundle re-verification
+running once per pipeline instead of once total.
+
+The front door (`r770-portal-deploy.sh`: `ca cert htpasswd nginx docs`) is
+never part of either `full` — it is run by hand, after Malcolm, because
+`htpasswd` has a hard dependency on Malcolm's `auth` step having already
+produced the login material it copies.
 
 ## What common.sh owns
 
@@ -54,6 +77,7 @@ scripts/lib/common.sh     the only seam that touches the host
 | Shape drift | `assert_edit()` | refuses to edit a file whose format moved |
 | Credentials | `secret_file()` | generate once, print the path, never the value |
 | Idempotency | `stamp()` / `stamped()` | markers under `/srv/bundles/.kit-stamps` |
+| `full`'s step slicing | `step_index()` / `run_step()` | `--from/--to/--only` resolve against a script's own `STEPS` array; `run_step()` applies the uniform 0/2/1 contract around each one |
 
 ## Exit contract, everywhere
 
@@ -63,9 +87,9 @@ into the exit. `kit_init()` tees every transcript to
 `r770-evidence/<script>-<host>-<ts>.log` — gitignored, carried back to the
 build repo's `state/inventory/` by hand.
 
-A stage that refused names the `--from <stage>` to resume with. Every stage is
-idempotent: copies stamped, loads skip present tags, secrets generated once,
-the rebind recognises itself, the CA and certificate reused.
+A step that refused names the `--from <step>` to resume `full` with. Every
+step is idempotent: copies stamped, loads skip present tags, secrets
+generated once, the rebind recognises itself, the CA and certificate reused.
 
 ## Owners (do not restate here)
 

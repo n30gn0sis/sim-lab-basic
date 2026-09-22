@@ -21,8 +21,20 @@
 #                 only honest source for what this Malcolm actually ships
 #   dashboards    install the kit's saved objects, then assert every id back
 #   arkime-views  install the kit's Arkime views, then read every one back
+#   full          the whole Malcolm pipeline, in order, stopping at the first
+#                 step that refuses: preflight gate copy apt phone-home
+#                 docker files load unpack configure secrets auth rebind
+#                 start (see --from/--to/--only)
 #
-#   --bundle <dir>             the bundle copied to /srv/bundles
+#   --bundle <dir>             the bundle (on the media for preflight/gate/copy
+#                              under `full`, local after)
+#   --media <mnt>              mountpoint of the transfer media, for `full`'s
+#                              gate/copy steps (gate mounts, copy unmounts)
+#   --device <dev>             block device to mount read-only at --media, for
+#                              `full`'s gate step — a DISCOVERED name, never a
+#                              guess
+#   --from STEP / --to STEP    restrict `full` to a slice of its steps
+#   --only STEP                sugar for --from STEP --to STEP
 #   --arkime-free-space-g N    let Arkime delete oldest raw PCAP below N GB free
 #                              (Phase 10 sets this from measured feed rates;
 #                              default: no automatic deletion)
@@ -51,6 +63,7 @@ set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
 
 BUNDLE=""; FREE_G=""; IDX=""; OSD_NETRC=""
+MEDIA=""; DEVICE=""; FROM=""; TO=""; ONLY=""
 MALCOLM_HOME="${MALCOLM_HOME:-/opt/malcolm}"
 ADMIN_USER="${MALCOLM_ADMIN_USER:-analyst}"
 WAIT_SECS="${MALCOLM_WAIT_SECS:-600}"
@@ -63,12 +76,20 @@ INSTALL_FLAGS=(--non-interactive --skip-splash --configure --import-malcolm-conf
 REBIND_FROM='^    - 0.0.0.0:443:443/tcp$'
 REBIND_TO='    - 127.0.0.1:8443:443/tcp'
 SECRET="/etc/lab/secrets/malcolm-admin.pw"
+STEPS=(preflight gate copy apt phone-home docker files load unpack configure secrets auth rebind start)
+# test seam: lets a suite stub out every call this script makes to
+# r770-import-bundle.sh under `full`, and record what was called.
+IMPORT_BUNDLE_CMD="${IMPORT_BUNDLE_CMD:-$KIT_DIR/scripts/r770-import-bundle.sh}"
 
 usage() { usage_from_header 3; exit 0; }
 home()      { p "$MALCOLM_HOME"; }
 installer() { printf '%s/scripts/install.py' "$(home)"; }
 stack()     { printf '%s/malcolm' "$(home)"; }
 compose()   { printf '%s/docker-compose.yml' "$(stack)"; }
+local_bundle() {  # after copy, the bundle lives under /srv/bundles
+    local l; l="$(p /srv/bundles)/$(basename "$BUNDLE")"
+    if [ -d "$l" ]; then printf '%s' "$l"; else printf '%s' "$BUNDLE"; fi
+}
 
 # ── load / assert-tags (behaviour-identical to the build repo's script) ─────
 cmd_assert_tags() {
@@ -225,7 +246,7 @@ do_rebind() {
     fi
     sed -i "s|${REBIND_FROM}|${REBIND_TO}|" "$c"
     [ "$(grep -cF -- "$REBIND_TO" "$c")" -eq 1 ] || die "rebind edit did not take in $c"
-    pass "nginx-proxy publish rewritten: 0.0.0.0:443 -> 127.0.0.1:8443 (the portal owns 443)"
+    pass "nginx-proxy publish rewritten: 0.0.0.0:443 -> 127.0.0.1:8443 (the front door owns 443)"
 }
 cmd_rebind() { banner "rebind"; need_root; do_rebind; footer "rebind"; }
 
@@ -260,7 +281,7 @@ cmd_start() {
     local ss_out; ss_out=$(ss -ltn 2>/dev/null || true)
     if printf '%s\n' "$ss_out" | grep -q '127\.0\.0\.1:8443 '; then pass "nginx-proxy listening on 127.0.0.1:8443"; else fail "nothing listening on 127.0.0.1:8443"; fi
     if printf '%s\n' "$ss_out" | grep -qE '(0\.0\.0\.0|\*):443 '; then
-        warn "something listens on 0.0.0.0:443 — expected only once the portal's nginx is up; if this is Malcolm, the rebind did not take"
+        warn "something listens on 0.0.0.0:443 — expected only once the front door's nginx is up; if this is Malcolm, the rebind did not take"
     else
         pass "nothing on 0.0.0.0:443 from Malcolm"
     fi
@@ -502,11 +523,71 @@ cmd_arkime_views() {
     footer "arkime-views"
 }
 
+# ── full ─────────────────────────────────────────────────────────────────────
+# The whole Malcolm pipeline, in order, stopping at the first step that
+# refuses. Independent of r770-gns3-deploy.sh's own `full` and of the retired
+# r770-deploy.sh, whose child()/stage_index() this script's run_step/step_index
+# (scripts/lib/common.sh) grew out of: this script now brings its own bundle
+# in from the media rather than being handed an already-copied one by an
+# outer orchestrator.
+cmd_full() {
+    [ -n "$BUNDLE" ] || die "--bundle <dir> is required for full (try --help)"
+    local first last i step
+    first=0; last=$(( ${#STEPS[@]} - 1 ))
+    [ -z "$FROM" ] || first=$(step_index STEPS "$FROM") || die "unknown step: $FROM (see --help)"
+    [ -z "$TO" ]   || last=$(step_index STEPS "$TO")    || die "unknown step: $TO (see --help)"
+    [ "$first" -le "$last" ] || die "--from $FROM comes after --to $TO"
+    # Resolve the local copy BEFORE the loop, not only inside the copy) arm
+    # below: a resumed run (--from past copy) never executes that arm, so
+    # BUNDLE would otherwise still point at --bundle's original media path
+    # (already unmounted) for every in-process step. local_bundle() falls
+    # back to the raw path when the copy hasn't landed yet, so this is safe
+    # on a fresh run too.
+    BUNDLE="$(local_bundle)"
+    echo "bundle: $BUNDLE"; [ -n "$MEDIA" ] && echo "media: $MEDIA${DEVICE:+ ($DEVICE)}"
+    echo "steps: ${STEPS[*]:$first:$((last - first + 1))}"
+    WARNED_STEPS=""
+    for i in $(seq "$first" "$last"); do
+        step="${STEPS[$i]}"
+        banner "$(( i + 1 ))/${#STEPS[@]}  $step"
+        case "$step" in
+            preflight) run_step "$step" "$IMPORT_BUNDLE_CMD" preflight --bundle "$BUNDLE" ;;
+            gate)
+                if [ -n "$DEVICE" ]; then run_step "$step" "$IMPORT_BUNDLE_CMD" gate --bundle "$BUNDLE" --media "$MEDIA" --device "$DEVICE"
+                else run_step "$step" "$IMPORT_BUNDLE_CMD" gate --bundle "$BUNDLE"; fi ;;
+            copy)
+                if [ -n "$MEDIA" ]; then run_step "$step" "$IMPORT_BUNDLE_CMD" copy --bundle "$BUNDLE" --media "$MEDIA"
+                else run_step "$step" "$IMPORT_BUNDLE_CMD" copy --bundle "$BUNDLE"; fi
+                BUNDLE="$(local_bundle)" ;;   # now the copy has landed, so this always resolves
+            apt|phone-home|docker|files) run_step "$step" "$IMPORT_BUNDLE_CMD" "$step" --bundle "$(local_bundle)" ;;
+            load)      run_step "$step" cmd_load ;;
+            unpack)    run_step "$step" cmd_unpack ;;
+            configure) run_step "$step" cmd_configure ;;
+            secrets)   run_step "$step" cmd_secrets ;;
+            auth)      run_step "$step" cmd_auth ;;
+            rebind)    run_step "$step" cmd_rebind ;;
+            start)     run_step "$step" cmd_start ;;
+        esac
+    done
+    echo
+    if [ -n "$WARNED_STEPS" ]; then
+        echo "DEPLOYED WITH WARNINGS — steps:$WARNED_STEPS. Disposition each in the cycle log; evidence under ${KIT_EVIDENCE_DIR:-./r770-evidence}"
+        exit 2
+    fi
+    echo "DEPLOYED — every step clean; evidence under ${KIT_EVIDENCE_DIR:-./r770-evidence}"
+    exit 0
+}
+
 # ── dispatch ─────────────────────────────────────────────────────────────────
 SUB="${1:-}"; [ $# -gt 0 ] && shift
 while [ $# -gt 0 ]; do
     case "$1" in
         --bundle)              BUNDLE="${2:-}"; shift ;;
+        --media)               MEDIA="${2:-}"; shift ;;
+        --device)              DEVICE="${2:-}"; shift ;;
+        --from)                FROM="${2:-}"; shift ;;
+        --to)                  TO="${2:-}"; shift ;;
+        --only)                ONLY="${2:-}"; shift ;;
         --arkime-free-space-g) FREE_G="${2:-}"; shift ;;
         --index-pattern)       IDX="${2:-}"; shift ;;
         -h|--help)             usage ;;
@@ -518,6 +599,7 @@ while [ $# -gt 0 ]; do
     esac
     shift
 done
+[ -n "$ONLY" ] && { FROM="$ONLY"; TO="$ONLY"; }
 kit_init "r770-malcolm-deploy"
 case "$SUB" in
     load)        cmd_load ;;
@@ -529,6 +611,7 @@ case "$SUB" in
     rebind)      cmd_rebind ;;
     start)       cmd_start ;;
     stop)        cmd_stop ;;
+    full)        cmd_full ;;
     status)      cmd_status ;;
     inventory)    cmd_inventory ;;
     dashboards)   cmd_dashboards ;;

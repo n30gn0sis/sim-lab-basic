@@ -11,7 +11,6 @@
 #   apt          local flat repo at /srv/repo/apt, sources rewritten   (GATED)
 #   phone-home   unattended-upgrades, snapd, motd-news neutralised      (GATED)
 #   docker       docker-ce from the local repo, daemon asserted         (GATED)
-#   images       docker load every list/payload pair, assert every tag
 #   files        VM images, GNS3 definitions/appliances, enrichment, docs
 #   status       what has landed so far
 #
@@ -35,11 +34,6 @@ set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
 
 LVS="/var/lib/docker /data/pcap /data/index /data/staging /srv/vms /srv/gns3 /srv/work /srv/backup"
-PAIRS=(
-    "malcolm/image-list.txt|malcolm/malcolm-images-*.tar.gz"
-    "docker/monitoring-image-list.txt|docker/monitoring-images.tar.gz"
-    "gns3/docker-nodes/image-list.txt|gns3/docker-nodes/gns3-node-images.tar.gz"
-)
 PHONE_HOME_UNITS="unattended-upgrades.service apt-daily.timer apt-daily-upgrade.timer ua-timer.timer motd-news.timer fwupd-refresh.timer"
 DOCKER_PKGS="docker-ce docker-ce-cli containerd.io docker-compose-plugin"
 
@@ -327,40 +321,6 @@ cmd_docker() {
     footer "docker"
 }
 
-# ── images ───────────────────────────────────────────────────────────────────
-cmd_images() {
-    banner "images — load every list/payload pair and assert every tag"
-    need_root
-    command -v docker >/dev/null 2>&1 || die "docker is not installed — run the docker stage first"
-    local b pair list payload tar
-    b=$(bundle_dir "$BUNDLE") || exit 1
-    for pair in "${PAIRS[@]}"; do
-        list="${pair%%|*}"; payload="${pair#*|}"
-        tar=""
-        for tar in "$b"/$payload; do [ -s "$tar" ] || tar=""; break; done
-        if [ ! -s "$b/$list" ] && [ -z "$tar" ]; then
-            note "$list: category not in this bundle"
-            continue
-        fi
-        [ -s "$b/$list" ] || { fail "$payload present but $list missing — cannot verify the loaded tags"; continue; }
-        [ -n "$tar" ] || { fail "$list present but $payload missing — this bundle cannot import that category"; continue; }
-        if [ "$FORCE" != "1" ] && assert_image_tags "$b/$list" >/dev/null 2>&1; then
-            pass "$list: every tag already present — load skipped"
-            continue
-        fi
-        run docker load -i "$tar" || { fail "docker load failed for $tar"; continue; }
-        [ "$DRY" = "1" ] && continue
-        # `docker load` reports success even when the resulting tag set is
-        # incomplete: assert against the list that travelled with the tarball.
-        if assert_image_tags "$b/$list"; then
-            pass "$list: every tag present after load"
-        else
-            fail "$list: tag(s) missing after load — the tarball is incomplete; re-cut, do not patch by hand"
-        fi
-    done
-    footer "images"
-}
-
 # ── files ────────────────────────────────────────────────────────────────────
 copy_into() {  # copy_into <src-glob-dir> <dest> [stamp]
     local src=$1 dest=$2 tag=${3:-}
@@ -474,9 +434,6 @@ cmd_status() {
     else
         echo "docker: not installed"
     fi
-    [ -n "$BUNDLE" ] && [ -d "$BUNDLE" ] && for pair in "${PAIRS[@]}"; do
-        [ -s "$BUNDLE/${pair%%|*}" ] && { assert_image_tags "$BUNDLE/${pair%%|*}" | tail -1; }
-    done
     return 0
 }
 
@@ -500,7 +457,6 @@ case "$SUB" in
     apt)        cmd_apt ;;
     phone-home) cmd_phone_home ;;
     docker)     cmd_docker ;;
-    images)     cmd_images ;;
     files)      cmd_files ;;
     status)     cmd_status ;;
     -h|--help|help|"") usage ;;

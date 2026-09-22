@@ -194,37 +194,6 @@ import() { kit_run "$SCRIPT" "$@"; }
     [[ "$output" == *"registry mirrors configured"* ]]
 }
 
-# ── images ──────────────────────────────────────────────────────────────────
-
-@test "images regression: a load that 'succeeds' with a tag missing is a FAIL that names the tag" {
-    printf 'ghcr.io/idaholab/malcolm/arkime:0.0.0-fixture\n' > "$BATS_TEST_TMPDIR/present.txt"
-    run import images --bundle "$BUNDLE"
-    echo "$output"
-    [ "$status" -eq 1 ]
-    grep -q '^docker load -i' "$STUB_LOG"
-    [[ "$output" == *"MISSING ghcr.io/idaholab/malcolm/nginx-proxy:0.0.0-fixture"* ]]
-    [[ "$output" != *"malcolm/image-list.txt: every tag present after load"* ]]
-}
-
-@test "images skips a load whose tags are already all present (idempotent), and loads the rest" {
-    { cat "$BUNDLE/malcolm/image-list.txt"; } > "$BATS_TEST_TMPDIR/present.txt"
-    run import images --bundle "$BUNDLE"
-    echo "$output"
-    [[ "$output" == *"malcolm/image-list.txt: every tag already present — load skipped"* ]]
-    run grep -c '^docker load -i' "$STUB_LOG"
-    [ "$output" = "2" ]                     # monitoring + gns3-node pairs still loaded
-    ! grep -q 'docker load -i .*malcolm-images' "$STUB_LOG"
-}
-
-@test "images treats a category absent on both sides as 'not in bundle', not as an error" {
-    rm "$BUNDLE/gns3/docker-nodes/image-list.txt" "$BUNDLE/gns3/docker-nodes/gns3-node-images.tar.gz"
-    cat "$BUNDLE/malcolm/image-list.txt" "$BUNDLE/docker/monitoring-image-list.txt" > "$BATS_TEST_TMPDIR/present.txt"
-    run import images --bundle "$BUNDLE"
-    echo "$output"
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"category not in this bundle"* ]]
-}
-
 # ── files ───────────────────────────────────────────────────────────────────
 
 @test "files routes payload into place: README skipped, signatures to checksums/, definitions without images WARN" {

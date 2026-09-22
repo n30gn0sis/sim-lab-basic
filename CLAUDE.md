@@ -32,9 +32,11 @@ Running the kit itself requires root and real (or `KIT_ROOT`-faked) hardware —
 it is not something to invoke casually in this repo:
 
 ```bash
-./scripts/r770-deploy.sh --list                              # print the 13 stages
-sudo ./scripts/r770-deploy.sh --bundle <dir> --media <mnt> \
-    --device /dev/<discovered> --mgmt-ip <address> --dry-run # print every command, run nothing
+sudo ./scripts/r770-malcolm-deploy.sh full \
+    --bundle <dir> --media <mnt> --device /dev/<discovered> --dry-run # Malcolm's whole pipeline, print every command, run nothing
+sudo ./scripts/r770-gns3-deploy.sh full \
+    --bundle <dir> --media <mnt> --device /dev/<discovered> --dry-run # GNS3's whole pipeline, same contract, independent of Malcolm's
+sudo ./scripts/r770-portal-deploy.sh nginx --dry-run          # the optional front door, one step at a time, run after Malcolm is up
 ./staging/r770-build-bundle.sh --dry-run                     # same, staging side
 ```
 
@@ -43,18 +45,21 @@ sudo ./scripts/r770-deploy.sh --bundle <dir> --media <mnt> \
 - **Two hosts, enforced.** `staging/` (preflight → fetch → build → verify) is
   the build repo's pipeline copied byte for byte — identity guarded by
   `staging/PROVENANCE.txt` and `tests/staging.bats`, never edited here.
-  `scripts/` is the 13-stage R770 runtime. `tests/no-legacy-manifest.bats`
-  and friends prove `scripts/` never reaches into `staging/`.
-- **`r770-deploy.sh` holds no logic of its own.** It's a pure orchestrator:
-  `script_for(stage)` maps each of the 13 stages (`preflight gate copy apt
-  phone-home docker images files gns3 malcolm portal monitoring validate`) to
-  one of six scripts (`r770-import-bundle.sh`, `r770-gns3-deploy.sh`,
-  `r770-malcolm-deploy.sh`, `r770-portal-deploy.sh`,
-  `r770-monitoring-deploy.sh`, `r770-validate.sh`) and calls it as a
-  subcommand. `child()` applies one uniform exit contract (0 clean · 2 warned,
-  needs `--yes`/a prompt · 1 refused, stop) around every stage, which is what
-  makes `--from/--to/--only` and re-entry after a failure work the same way
-  everywhere.
+  `scripts/` is the R770 side: two independent pipelines plus an optional
+  front door. `tests/no-legacy-manifest.bats` and friends prove `scripts/`
+  never reaches into `staging/`.
+- **Two independent pipelines, no orchestrator.** There is no
+  `r770-deploy.sh` any more — it was deleted once each service could stand
+  up its own pipeline. `scripts/r770-malcolm-deploy.sh full` and
+  `scripts/r770-gns3-deploy.sh full` each run their own bundle-in prep
+  (preflight, gate, copy, apt, phone-home, docker, files — the shared logic
+  lives in `scripts/r770-import-bundle.sh`, sourced as a library, not called
+  as a stage) before their own service-specific steps; run either pipeline
+  first, or both back to back — the shared prep steps are idempotent, so the
+  second `full` just reports "already done". The optional front door,
+  `scripts/r770-portal-deploy.sh` (`ca cert htpasswd nginx docs`), is a
+  separate, explicit sequence run after Malcolm is up; it is not part of
+  either `full`.
 - **`scripts/lib/common.sh` is the one seam every script sources.** It owns:
   `KIT_ROOT`/`KIT_DRY_RUN`/`KIT_YES`/`KIT_NON_INTERACTIVE`/`KIT_EVIDENCE_DIR`
   (what makes every script dry-runnable and testable against a fake root);
@@ -65,7 +70,11 @@ sudo ./scripts/r770-deploy.sh --bundle <dir> --media <mnt> \
   incomplete); `render()` (token substitution that refuses to write if any
   `__TOKEN__` survives); `secret_file()` (generate-once, print the path
   never the value); `stamp()`/`stamped()` (idempotency markers under
-  `/srv/bundles/.kit-stamps`).
+  `/srv/bundles/.kit-stamps`); `run_step()`/`step_index()` (what each
+  pipeline's own `full` uses to slice its step sequence for
+  `--from/--to/--only` and to re-enter after a failure — the same job the
+  retired `r770-deploy.sh`'s `child()`/`stage_index()` did before each
+  pipeline carried its own).
 - **A "bundle" is a contract, not a convention.** `bundle_dir()` only accepts
   a directory that has `r770-bundle.sh`, `BUNDLE_NOTES.md` and
   `MANIFEST.sha256` at its root. Version pins are never restated: they live
