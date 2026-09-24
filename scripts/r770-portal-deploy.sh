@@ -181,6 +181,10 @@ cmd_status() {
 }
 
 SUB="${1:-}"; [ $# -gt 0 ] && shift
+# SELF is not set until kit_init below; name the script explicitly so this
+# refusal reads the same as every other die() in this script.
+SELF="r770-portal-deploy"
+[ "$SUB" = docs ] && die "docs moved to r770-docs-deploy.sh — run: r770-docs-deploy.sh build --bundle <dir> (or full --only build)"
 [ "$SUB" = "--print-sans" ] && { echo "$SANS"; exit 0; }
 while [ $# -gt 0 ]; do
     case "$1" in

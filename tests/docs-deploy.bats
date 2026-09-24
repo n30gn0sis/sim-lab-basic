@@ -146,6 +146,24 @@ exit 0'
     [ "$(cat "$ROOT/srv/www/docs/index.html")" = "<html>built</html>" ]
 }
 
+@test "build dies and never runs docker when the wiki copy fails, leaving the live site untouched" {
+    PRELOADED=1 stub_docker
+    mkdir -p "$ROOT/srv/www/docs"
+    echo "<html>old</html>" > "$ROOT/srv/www/docs/index.html"
+    export REAL
+    stub cp 'case "${@: -1}" in
+  */docs) exit 1 ;;
+  *) exec "$REAL/cp" "$@" ;;
+esac'
+    run docs build --bundle "$BUNDLE"
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"wiki copy"*"failed"* ]]
+    ! grep -q '^docker run' "$STUB_LOG"
+    [ "$(cat "$ROOT/srv/www/docs/index.html")" = "<html>old</html>" ]
+    [ ! -e "$ROOT/srv/www/docs.new" ]
+}
+
 @test "build refuses a bundle whose list has no mkdocs image" {
     PRELOADED=1 stub_docker
     printf 'docker.io/library/busybox:0.0.0-fixture\n' > "$BUNDLE/docker/monitoring-image-list.txt"
@@ -240,6 +258,7 @@ STUB
     grep -q "^import-bundle preflight --bundle $BUNDLE\$" "$IMPORT_LOG"
     grep -q "^import-bundle gate --bundle $BUNDLE\$" "$IMPORT_LOG"
     grep -q "^import-bundle copy --bundle $BUNDLE\$" "$IMPORT_LOG"
+    grep -q "^import-bundle files --bundle $BUNDLE\$" "$IMPORT_LOG"
     l=$(grep -n '^docker load' "$STUB_LOG" | cut -d: -f1)
     r=$(grep -n '^docker run' "$STUB_LOG" | cut -d: -f1)
     [ -n "$l" ] && [ -n "$r" ] && [ "$l" -lt "$r" ]

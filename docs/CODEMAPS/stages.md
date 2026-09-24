@@ -3,10 +3,11 @@
 # Pipelines → scripts → subcommands
 
 There is no outer orchestrator. `r770-malcolm-deploy.sh full`,
-`r770-gns3-deploy.sh full` and `r770-docs-deploy.sh full` are three independent entry points, each printed by
-that script's own `--help`. Each steps through its own `STEPS=(...)` array in
-order, stopping at the first refusal; `--from/--to/--only` slice it. 🔒 =
-gated (prints current · proposed · rollback, needs `--yes` or a `y`).
+`r770-gns3-deploy.sh full` and `r770-docs-deploy.sh full` are three
+independent entry points, each printed by that script's own `--help`. Each
+steps through its own `STEPS=(...)` array in order, stopping at the first
+refusal; `--from/--to/--only` slice it. 🔒 = gated (prints current ·
+proposed · rollback, needs `--yes` or a `y`).
 
 | Pipeline | Script | `full` step sequence | Operator-invoked extras |
 |---|---|---|---|

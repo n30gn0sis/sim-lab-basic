@@ -74,9 +74,11 @@ cmd_load() {
 }
 
 # ── build ────────────────────────────────────────────────────────────────────
-# publish_site <built-site-dir> — swap it in as $WWW/docs without ever leaving
-# docs.lab empty: stage beside the live tree, then two renames. Returns
-# non-zero, reason on stderr, with the previous site still (or again) live.
+# publish_site <built-site-dir> — swap it in as $WWW/docs: stage beside the
+# live tree, then two renames. A failure at any point leaves the previous
+# site live (a failed build never leaves docs.lab empty); the swap window
+# between the two renames is brief but real. Returns non-zero, reason on
+# stderr, with the previous site still (or again) live.
 publish_site() {
     local src=$1 www live new prev
     www="$(p "$WWW")"; live="$www/docs"; new="$www/docs.new"; prev="$www/docs.prev"
@@ -104,8 +106,8 @@ cmd_build() {
     [ -f "$wiki/index.md" ] || die "no wiki at $wiki (index.md missing) — pass --wiki <dir>"
     img=$(image_ref_from_list "$b/$LIST_REL" mkdocs-material) || exit 1
     tmp=$(mktemp -d)
-    run cp -a "$wiki" "$tmp/docs"
-    run install -m 0644 "$KIT_CONFIG_DIR/docs/mkdocs.yml" "$tmp/mkdocs.yml"
+    run cp -a "$wiki" "$tmp/docs" || { rm -rf "$tmp"; die "wiki copy into $tmp/docs failed — the wiki may be partially staged"; }
+    run install -m 0644 "$KIT_CONFIG_DIR/docs/mkdocs.yml" "$tmp/mkdocs.yml" || { rm -rf "$tmp"; die "could not install mkdocs.yml into $tmp"; }
     # --network none: the build can want fonts and plugins; on an air gap it must not even try.
     run docker run --rm --network none -v "$tmp:/docs" "$img" build || { rm -rf "$tmp"; die "mkdocs build failed — is $img loaded? (run 'load' first)"; }
     if [ "$DRY" != "1" ]; then

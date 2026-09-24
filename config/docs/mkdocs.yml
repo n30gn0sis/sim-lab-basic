@@ -1,4 +1,4 @@
-# Built ON the R770 by `r770-portal-deploy.sh docs` with the bundled mkdocs-material
+# Built ON the R770 by `r770-docs-deploy.sh build` with the bundled mkdocs-material
 # image, --network none: the kit's docs/wiki/ is mounted as /docs/docs and this
 # file as /docs/mkdocs.yml (MkDocs refuses a config inside docs_dir).
 site_name: Analyst Guide — R770 Network Lab

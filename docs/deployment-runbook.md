@@ -32,17 +32,20 @@ The install is **not** a single sitting.
 | Bundle-in prep: `preflight` `gate` `copy` `apt` `phone-home` `docker` `files` (shared by all three pipelines) | 4, 6 | — ready (needs the Phase 3 volumes mounted) |
 | GNS3 pipeline: `load` `venv` `secrets` `config` `service` | 8 | needs Phase 8 built |
 | Malcolm pipeline: `load` `unpack` `configure` `secrets` `auth` `rebind` `start` | 10 | needs Phase 10 built, capture-port prep (Phase 9) |
+| Docs pipeline: `load` `build` | 13 | needs Phase 13 built (the docs site is part of it) |
 | Front door: `ca` `cert` `htpasswd` `nginx` | 13 | needs Phase 13 built, and Malcolm's `auth` step already run |
 | validate | 16 | runs at any point; SKIPs what is not built |
 
-None of these steps touch a network interface, an IP address, or SSH — GNS3,
-Malcolm and the front door's nginx all bind to `127.0.0.1` only (the front
-door itself answers on `0.0.0.0:443`). Proving iDRAC as a recovery path is a
+None of these steps touch a network interface, an IP address, or SSH — GNS3
+and Malcolm bind to `127.0.0.1` only, the docs pipeline's build runs with
+`--network none`, and the front door's nginx answers on `0.0.0.0:443` only
+once Malcolm and docs are up. Proving iDRAC as a recovery path is a
 prerequisite for the build repo's **own** management-networking work, not for
-anything these steps do — it does not gate the GNS3, Malcolm or front-door
-steps here. What still gates them is whether their own build-repo phase (8,
-9, 10, 13) is built; check `state/BUILD-STATE.md` in the build repo before
-assuming one is ready. The shared bundle-prep steps can run now regardless:
+anything these steps do — it does not gate the GNS3, Malcolm, docs or
+front-door steps here. What still gates them is whether their own build-repo
+phase (8, 9, 10, 13) is built; check `state/BUILD-STATE.md` in the build repo
+before assuming one is ready. The shared bundle-prep steps can run now
+regardless:
 they are the long ones, and they prove the bundle before anything else
 begins. Run any pipeline with `--to files` to stop there.
 
@@ -334,8 +337,10 @@ The kit's `docs/wiki` (or `--wiki <dir>`) built with the bundled image under
 `--network none`, then published to `/srv/www/docs` by staging beside the live
 tree and swapping it in with two renames. A failed build, or a failed copy,
 leaves the previous site live; a `docs.new` or `docs.prev` left by an
-interrupted run is cleared by the next `build`. To rebuild after the wiki
-source changes: `r770-docs-deploy.sh full --bundle <local bundle> --only build`.
+interrupted run is cleared by the next `build`. `build` does not load the
+image itself (unlike the retired portal `docs` step); it refuses with "run
+'load' first" if the image is absent. To rebuild after the wiki source
+changes: `r770-docs-deploy.sh full --bundle <local bundle> --only build`.
 
 ### Docs — validate note
 

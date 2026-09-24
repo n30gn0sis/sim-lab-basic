@@ -55,6 +55,13 @@ provenance-locked and untouched — hardcodes those exact filenames as a
 matched list/payload pair, and renaming either would make the verifier
 silently stop checking that category instead of failing loudly.
 
+**Stale comment, to fix on the next resync:** `staging/r770-offline-fetch.sh:73`
+still says mkdocs-material "builds docs.lab (`scripts/r770-portal-deploy.sh
+docs`)" — that subcommand was retired; the wiki is now built by
+`scripts/r770-docs-deploy.sh build`. This file is provenance-locked
+(`tests/staging.bats`) and is not edited here; fix the comment in the build
+repo and carry it over on the next resync.
+
 `staging/PROVENANCE.txt` records this: the hash for `r770-offline-fetch.sh`
 was recomputed and no longer corresponds to any single `simlab-build` commit,
 while the other three carried scripts' hashes are untouched. `staging/r770-bundle.sh`,

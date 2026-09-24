@@ -139,7 +139,13 @@ all_the_way_to_nginx() {
     run portal docs
     echo "$output"
     [ "$status" -eq 1 ]
-    [[ "$output" == *"unknown subcommand: docs"* ]]
+    [[ "$output" == *"docs moved to r770-docs-deploy.sh"* ]]
+    [[ "$output" == *"r770-docs-deploy.sh build --bundle <dir>"* ]]
+    run portal docs --bundle "$BUNDLE"
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"docs moved to r770-docs-deploy.sh"* ]]
+    [[ "$output" == *"r770-docs-deploy.sh build --bundle <dir>"* ]]
     run portal status --bundle "$BUNDLE"
     echo "$output"
     [ "$status" -eq 1 ]
