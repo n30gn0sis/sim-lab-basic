@@ -38,8 +38,9 @@ The install is **not** a single sitting.
 
 None of these steps touch a network interface, an IP address, or SSH — GNS3
 and Malcolm bind to `127.0.0.1` only, the docs pipeline's build runs with
-`--network none`, and the front door's nginx answers on `0.0.0.0:443` only
-once Malcolm and docs are up. Proving iDRAC as a recovery path is a
+`--network none`, and the front door's nginx answers on `0.0.0.0:443` (from
+the moment the package installs, with its stock default site until the
+portal's `nginx` step removes it). Proving iDRAC as a recovery path is a
 prerequisite for the build repo's **own** management-networking work, not for
 anything these steps do — it does not gate the GNS3, Malcolm, docs or
 front-door steps here. What still gates them is whether their own build-repo
