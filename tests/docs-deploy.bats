@@ -211,3 +211,114 @@ exit 0'
     [[ "$output" == *"$MKDOCS (loaded)"* ]]
     [[ "$output" != *"not enabled"* ]]
 }
+
+# ── full ──────────────────────────────────────────────────────────────────
+
+# stub_import_bundle — a fake r770-import-bundle.sh that records "<subcommand>
+# <argv...>" to $IMPORT_LOG and exits per IMPORT_RC_<SUBCOMMAND> (default 0).
+stub_import_bundle() {
+    cat > "$BATS_TEST_TMPDIR/import-bundle-stub.sh" <<'STUB'
+#!/usr/bin/env bash
+echo "import-bundle $*" >> "$IMPORT_LOG"
+sub="$1"
+var="IMPORT_RC_$(printf '%s' "$sub" | tr 'a-z-' 'A-Z_')"
+exit "${!var:-0}"
+STUB
+    chmod +x "$BATS_TEST_TMPDIR/import-bundle-stub.sh"
+    export IMPORT_BUNDLE_CMD="$BATS_TEST_TMPDIR/import-bundle-stub.sh"
+    export IMPORT_LOG="$BATS_TEST_TMPDIR/import-bundle.log"
+    : > "$IMPORT_LOG"
+}
+
+@test "full runs preflight through build in order: r770-import-bundle.sh for the shared steps, load before build" {
+    stub_import_bundle
+    stub_docker
+    run docs full --bundle "$BUNDLE"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [ "$(awk '{print $2}' "$IMPORT_LOG" | paste -sd' ')" = "preflight gate copy apt phone-home docker files" ]
+    grep -q "^import-bundle preflight --bundle $BUNDLE\$" "$IMPORT_LOG"
+    grep -q "^import-bundle gate --bundle $BUNDLE\$" "$IMPORT_LOG"
+    grep -q "^import-bundle copy --bundle $BUNDLE\$" "$IMPORT_LOG"
+    l=$(grep -n '^docker load' "$STUB_LOG" | cut -d: -f1)
+    r=$(grep -n '^docker run' "$STUB_LOG" | cut -d: -f1)
+    [ -n "$l" ] && [ -n "$r" ] && [ "$l" -lt "$r" ]
+    [ -f "$ROOT/srv/www/docs/index.html" ]
+    [[ "$output" == *"DEPLOYED — every step clean"* ]]
+}
+
+@test "full with --media/--device passes them to the gate step only, and --media alone to copy" {
+    stub_import_bundle
+    run docs full --bundle "$BUNDLE" --media /mnt/usb --device /dev/fixture0 --only gate
+    echo "$output"
+    [ "$status" -eq 0 ]
+    grep -q "^import-bundle gate --bundle $BUNDLE --media /mnt/usb --device /dev/fixture0\$" "$IMPORT_LOG"
+
+    : > "$IMPORT_LOG"
+    run docs full --bundle "$BUNDLE" --media /mnt/usb --only copy
+    echo "$output"
+    [ "$status" -eq 0 ]
+    grep -q "^import-bundle copy --bundle $BUNDLE --media /mnt/usb\$" "$IMPORT_LOG"
+}
+
+@test "full --only build rebuilds the wiki alone: no shared steps, no load" {
+    stub_import_bundle
+    PRELOADED=1 stub_docker
+    run docs full --bundle "$BUNDLE" --only build
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [ ! -s "$IMPORT_LOG" ]
+    ! grep -q '^docker load' "$STUB_LOG"
+    grep -q '^docker run --rm --network none' "$STUB_LOG"
+    [[ "$output" == *"DEPLOYED — every step clean"* ]]
+}
+
+@test "full --from/--to slices to a contiguous range of steps" {
+    stub_import_bundle
+    run docs full --bundle "$BUNDLE" --from apt --to files
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [ "$(awk '{print $2}' "$IMPORT_LOG" | paste -sd' ')" = "apt phone-home docker files" ]
+    ! grep -q '^docker' "$STUB_LOG"
+}
+
+@test "full refuses when --from comes after --to, and names both" {
+    run docs full --bundle "$BUNDLE" --from build --to apt
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"--from build"* ]]
+    [[ "$output" == *"--to apt"* ]]
+}
+
+@test "full refuses naming an unknown --from/--to step" {
+    run docs full --bundle "$BUNDLE" --from bogus
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"unknown step: bogus"* ]]
+}
+
+@test "full refuses without --bundle" {
+    run docs full
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"--bundle <dir> is required for full"* ]]
+}
+
+@test "full stops after a step that warns without --yes, and finishes exit 2 once the warning is accepted" {
+    stub_import_bundle
+    export IMPORT_RC_APT=2
+    unset KIT_YES
+    run docs full --bundle "$BUNDLE" --only apt
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"warned and this run is non-interactive"* ]]
+
+    export KIT_YES=1
+    : > "$IMPORT_LOG"
+    run docs full --bundle "$BUNDLE" --only apt
+    echo "$output"
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"accepted via --yes"* ]]
+    [[ "$output" == *"DEPLOYED WITH WARNINGS"* ]]
+    [[ "$output" == *"steps: apt"* ]]
+}

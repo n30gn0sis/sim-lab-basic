@@ -35,13 +35,13 @@ setup() { cd "$BATS_TEST_DIRNAME/.."; }
     done < <(find config -type f | sort)
 }
 
-@test "every full step of both pipelines resolves to a subcommand that exists" {
-    # No outer orchestrator: r770-malcolm-deploy.sh full and r770-gns3-deploy.sh
-    # full each hold their own STEPS array. The shared prefix
-    # (preflight gate copy apt phone-home docker files) must be a subcommand
-    # of r770-import-bundle.sh; every other step must be a cmd_<step> function
-    # defined in the pipeline's own script.
-    for s in scripts/r770-malcolm-deploy.sh scripts/r770-gns3-deploy.sh; do
+@test "every full step of every pipeline resolves to a subcommand that exists" {
+    # No outer orchestrator: r770-malcolm-deploy.sh, r770-gns3-deploy.sh and
+    # r770-docs-deploy.sh full each hold their own STEPS array. The shared
+    # prefix (preflight gate copy apt phone-home docker files) must be a
+    # subcommand of r770-import-bundle.sh; every other step must be a
+    # cmd_<step> function defined in the pipeline's own script.
+    for s in scripts/r770-malcolm-deploy.sh scripts/r770-gns3-deploy.sh scripts/r770-docs-deploy.sh; do
         steps=$(grep -oP '^STEPS=\(\K[^)]+' "$s")
         [ -n "$steps" ] || { echo "no STEPS array in $s"; false; }
         for st in $steps; do
