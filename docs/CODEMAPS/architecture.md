@@ -34,7 +34,7 @@ r770-malcolm-deploy.sh full   r770-gns3-deploy.sh full   r770-docs-deploy.sh ful
   │ run_step()/step_index()     │ run_step()/step_index()  │ run_step()/step_index()
   ▼                             ▼                          ▼
                  (independent; each brings its own bundle in from the media)
-r770-import-bundle.sh  ◄── shared bundle-prep steps, idempotent either order
+r770-import-bundle.sh  ◄── shared bundle-prep steps, idempotent in any order
 r770-portal-deploy.sh          optional front door, run by hand after Malcolm
 r770-validate.sh               read-only checks, run at any point
   │ every one sources ↓
