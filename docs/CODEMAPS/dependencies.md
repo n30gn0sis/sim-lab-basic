@@ -41,7 +41,7 @@ success on an incomplete tag set):
 |---|---|---|
 | `malcolm/image-list.txt` | `malcolm/malcolm-images-*.tar.gz` | `r770-malcolm-deploy.sh load` |
 | `gns3/docker-nodes/image-list.txt` | `gns3/docker-nodes/gns3-node-images.tar.gz` | `r770-gns3-deploy.sh load` |
-| `docker/monitoring-image-list.txt` | `docker/monitoring-images.tar.gz` | `r770-portal-deploy.sh docs` (self-load; the list keeps its build-repo name but now carries only `mkdocs-material`, the offline wiki's build image) |
+| `docker/monitoring-image-list.txt` | `docker/monitoring-images.tar.gz` | `r770-docs-deploy.sh load` (the list keeps its build-repo name but now carries only `mkdocs-material`, the offline wiki's build image) |
 
 A pair whose tags are already present is skipped, so the load step reruns
 safely. A missing tag means the tarball is incomplete: re-cut, never patch by

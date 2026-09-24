@@ -11,14 +11,15 @@ the step is wrong — stop and fix the bundle, not the box.
 `BUNDLE_NOTES.md`; the hardware of record and the phase status are in the build
 repo's `state/BUILD-STATE.md`. This runbook names no version and no measurement.
 
-Malcolm and GNS3 are **two independent pipelines**, each its own
-`... full` entry point in its own script — there is no outer orchestrator.
-Run either first, or both back to back on the same box: the bundle-prep
-steps they share (`preflight gate copy apt phone-home docker files`) are all
-idempotent, so the second pipeline's copy of them reports "already done" and
-moves on (see `docs/CODEMAPS/architecture.md`). Once Malcolm is up, an
-optional **front door** (one certificate, the three `.lab` vhosts, the
-offline analyst wiki) is a separate, explicit sequence.
+Malcolm, GNS3 and the offline analyst wiki are **three independent
+pipelines**, each its own `... full` entry point in its own script — there
+is no outer orchestrator. Run them in any order, or back to back on the same
+box: the bundle-prep steps they share (`preflight gate copy apt phone-home
+docker files`) are all idempotent, so a later pipeline's copy of them reports
+"already done" and moves on (see `docs/CODEMAPS/architecture.md`). Once
+Malcolm is up, an optional **front door** (one certificate, the three `.lab`
+vhosts) is a separate, explicit sequence; it serves the wiki the docs
+pipeline published at `docs.lab`.
 
 ---
 
@@ -28,10 +29,10 @@ The install is **not** a single sitting.
 
 | Steps | Build-repo phase | Blocked by |
 |---|---|---|
-| Bundle-in prep: `preflight` `gate` `copy` `apt` `phone-home` `docker` `files` (shared by both pipelines) | 4, 6 | — ready (needs the Phase 3 volumes mounted) |
+| Bundle-in prep: `preflight` `gate` `copy` `apt` `phone-home` `docker` `files` (shared by all three pipelines) | 4, 6 | — ready (needs the Phase 3 volumes mounted) |
 | GNS3 pipeline: `load` `venv` `secrets` `config` `service` | 8 | needs Phase 8 built |
 | Malcolm pipeline: `load` `unpack` `configure` `secrets` `auth` `rebind` `start` | 10 | needs Phase 10 built, capture-port prep (Phase 9) |
-| Front door: `ca` `cert` `htpasswd` `nginx` `docs` | 13 | needs Phase 13 built, and Malcolm's `auth` step already run |
+| Front door: `ca` `cert` `htpasswd` `nginx` | 13 | needs Phase 13 built, and Malcolm's `auth` step already run |
 | validate | 16 | runs at any point; SKIPs what is not built |
 
 None of these steps touch a network interface, an IP address, or SSH — GNS3,
@@ -43,7 +44,7 @@ steps here. What still gates them is whether their own build-repo phase (8,
 9, 10, 13) is built; check `state/BUILD-STATE.md` in the build repo before
 assuming one is ready. The shared bundle-prep steps can run now regardless:
 they are the long ones, and they prove the bundle before anything else
-begins. Run either pipeline with `--to files` to stop there.
+begins. Run any pipeline with `--to files` to stop there.
 
 ---
 
@@ -59,13 +60,16 @@ lsblk -o NAME,SIZE,FSTYPE,LABEL,MOUNTPOINT      # identify the media — never a
 
 ---
 
-## The short path: two commands
+## The short path: one command per pipeline
 
 ```bash
 sudo ./scripts/r770-malcolm-deploy.sh full --bundle /mnt/bundle/bundle-YYYYMMDD \
     --media /mnt/bundle --device /dev/<discovered>
 
 sudo ./scripts/r770-gns3-deploy.sh full --bundle /mnt/bundle/bundle-YYYYMMDD \
+    --media /mnt/bundle --device /dev/<discovered>
+
+sudo ./scripts/r770-docs-deploy.sh full --bundle /mnt/bundle/bundle-YYYYMMDD \
     --media /mnt/bundle --device /dev/<discovered>
 ```
 
@@ -74,7 +78,7 @@ Exit **0** every step clean · **2** finished with warnings to disposition ·
 `--help` prints its step sequence. `--to files` stops after the bundle is in.
 `--dry-run` prints every command a run would execute, including the gates'
 current/proposed/rollback text, and executes none of it. The sections below
-are the same two pipelines one step at a time, and remain the reference for
+are the same three pipelines one step at a time, and remain the reference for
 what each step does and why.
 
 ---
@@ -301,20 +305,60 @@ issues a token); once the front door is up, `--area portal` covers
 
 ---
 
+## Docs procedure
+
+Steps D1–D4 (`preflight` `gate` `copy` `apt` `phone-home` `docker` `files`)
+are identical to Malcolm's M1–M7 above, against the same
+`r770-import-bundle.sh`, and are idempotent — if another pipeline has
+already run on this box, the docs pipeline's copy of them reports "already
+done" and `full` moves straight on. What follows is docs-specific.
+
+### Step D5 — load
+
+```bash
+sudo ./scripts/r770-docs-deploy.sh load --bundle /srv/bundles/bundle-YYYYMMDD
+```
+
+`docker load` of `docker/monitoring-images.tar.gz`, then **every tag asserted
+against `docker/monitoring-image-list.txt`** (the names predate the cut of the
+monitoring stack; the pair now carries only the mkdocs-material build image).
+Skipped, and safe to rerun, once every tag is already present.
+
+### Step D6 — build
+
+```bash
+sudo ./scripts/r770-docs-deploy.sh build --bundle /srv/bundles/bundle-YYYYMMDD
+```
+
+The kit's `docs/wiki` (or `--wiki <dir>`) built with the bundled image under
+`--network none`, then published to `/srv/www/docs` by staging beside the live
+tree and swapping it in with two renames. A failed build, or a failed copy,
+leaves the previous site live; a `docs.new` or `docs.prev` left by an
+interrupted run is cleared by the next `build`. To rebuild after the wiki
+source changes: `r770-docs-deploy.sh full --bundle <local bundle> --only build`.
+
+### Docs — validate note
+
+`r770-docs-deploy.sh status` shows the page count, the build time, whether
+the image is loaded (with `--bundle`) and whether `docs.lab` is being served.
+Once the front door is up, `r770-validate.sh --area portal` covers `docs.lab`.
+
+---
+
 ## Front door (optional, after Malcolm)
 
-The front door is the internal CA, one three-SAN certificate, the `.lab`
-vhosts and the offline analyst wiki — a separate, explicit sequence, never
-part of either `full`. Run it once Malcolm's `auth` step has produced
-`/opt/malcolm/malcolm/nginx/htpasswd`: `htpasswd` below has a **hard
-dependency** on that file and refuses without it.
+The front door is the internal CA, one three-SAN certificate and the `.lab`
+vhosts — a separate, explicit sequence, never part of any `full`. It serves
+`docs.lab` from whatever the docs pipeline last published; before the first
+`build`, `docs.lab` answers 401 (auth), then 404. Run it once Malcolm's
+`auth` step has produced `/opt/malcolm/malcolm/nginx/htpasswd`: `htpasswd`
+below has a **hard dependency** on that file and refuses without it.
 
 ```bash
 sudo ./scripts/r770-portal-deploy.sh ca                        # easy-rsa CA under /etc/lab/ca, ca.crt to /etc/nginx/ssl
 sudo ./scripts/r770-portal-deploy.sh cert                       # one cert: malcolm, gns3, docs .lab
 sudo ./scripts/r770-portal-deploy.sh htpasswd                   # the analyst login, from Malcolm's auth material — needs `auth` already run
 sudo ./scripts/r770-portal-deploy.sh nginx                      # vhosts; nginx -t BEFORE reload; every name probed after
-sudo ./scripts/r770-portal-deploy.sh docs --bundle /srv/bundles/bundle-YYYYMMDD   # wiki built with the bundled mkdocs image, --network none
 ```
 
 The CA is generated here and never carried in. Distribute `/etc/nginx/ssl/ca.crt`

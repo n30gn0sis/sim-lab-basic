@@ -47,7 +47,7 @@ down to just `mkdocs-material`, dropping the Prometheus/Alertmanager/blackbox-
 exporter/Grafana-OSS/cAdvisor monitoring images plus the confirmed-unused
 stock-nginx and docker-registry-v2 images, as part of cutting monitoring from
 this kit. `mkdocs-material` stays because the offline analyst wiki
-(`docs.lab`, built by `scripts/r770-portal-deploy.sh docs`) still needs it.
+(`docs.lab`, built by `scripts/r770-docs-deploy.sh build`) still needs it.
 The array's name and its two output paths
 (`docker/monitoring-image-list.txt` / `docker/monitoring-images.tar.gz`) were
 kept unchanged: `staging/r770-bundle.sh`'s `check_required()` — itself still
