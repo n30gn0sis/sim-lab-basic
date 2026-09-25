@@ -1,6 +1,8 @@
 # The lab bridge every scenario shares. AgeingTimeSec=0 keeps no MAC table,
 # so the bridge floods every frame to every port -- including lab-mon0, whose
-# veth peer lab-mirror0 is what Malcolm captures. Installed by
+# veth peer lab-mirror0 is what Malcolm captures. MulticastSnooping=no stops
+# the bridge pruning multicast to ports that never joined a group, so the
+# mirror sees every group too. Installed by
 # r770-gns3-deploy.sh labnet as /etc/systemd/network/05-br-lab.netdev.
 [NetDev]
 Name=br-lab
@@ -9,3 +11,4 @@ Kind=bridge
 [Bridge]
 AgeingTimeSec=0
 STP=no
+MulticastSnooping=no
