@@ -230,6 +230,15 @@ esac'
     [[ "$output" != *"not enabled"* ]]
 }
 
+@test "status reports the image loaded when docker lists it by its short name" {
+    PRELOADED=1 stub_docker
+    echo "squidfunk/mkdocs-material:latest" > "$BATS_TEST_TMPDIR/present.txt"
+    run docs status --bundle "$BUNDLE"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"$MKDOCS (loaded)"* ]]
+}
+
 # ── full ──────────────────────────────────────────────────────────────────
 
 # stub_import_bundle — a fake r770-import-bundle.sh that records "<subcommand>

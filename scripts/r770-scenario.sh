@@ -190,9 +190,9 @@ configure_nodes() {  # configure_nodes <scenario> — feed each node its files, 
             cid=$(container_of "$WORK/nodes.tsv" "$node") || exit 1
             case "$kind" in
                 sh)           run docker exec -i "$cid" sh -s < "$f" ;;
-                # the daemons may still be starting: retry the apply (idempotent) for up to ~30s
-                frr.conf)     run docker exec -i "$cid" sh -c 'cat > /tmp/lab-frr.conf && i=0; until vtysh -f /tmp/lab-frr.conf; do i=$((i+1)); [ "$i" -ge 15 ] && exit 1; sleep 2; done' < "$f" ;;
-                swanctl.conf) run docker exec -i "$cid" sh -c 'mkdir -p /etc/swanctl && cat > /etc/swanctl/swanctl.conf && i=0; until swanctl --load-all; do i=$((i+1)); [ "$i" -ge 15 ] && exit 1; sleep 2; done' < "$f" ;;
+                # write the file, and only then retry the apply (idempotent) for up to ~30s: the daemons may still be starting
+                frr.conf)     run docker exec -i "$cid" sh -c 'cat > /tmp/lab-frr.conf && { i=0; until vtysh -f /tmp/lab-frr.conf; do i=$((i+1)); [ "$i" -ge 15 ] && exit 1; sleep 2; done; }' < "$f" ;;
+                swanctl.conf) run docker exec -i "$cid" sh -c 'mkdir -p /etc/swanctl && cat > /etc/swanctl/swanctl.conf && { i=0; until swanctl --load-all; do i=$((i+1)); [ "$i" -ge 15 ] && exit 1; sleep 2; done; }' < "$f" ;;
             esac || die "configuring $node from $base failed — the nodes are left running for inspection; when done: r770-scenario.sh down $s"
             note "$node configured from $base"
         done

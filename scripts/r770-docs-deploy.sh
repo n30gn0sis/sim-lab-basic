@@ -131,7 +131,7 @@ cmd_status() {
     fi
     if [ -n "$BUNDLE" ] && b=$(bundle_dir "$BUNDLE") && img=$(image_ref_from_list "$b/$LIST_REL" mkdocs-material); then
         state="not loaded — run load"
-        if docker image ls --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | grep -qxF "$img"; then state="loaded"; fi
+        if docker_loaded_images | grep -qxF "$(image_norm "$img")"; then state="loaded"; fi
         printf '%-24s %s (%s)\n' "build image" "$img" "$state"
     else
         printf '%-24s %s\n' "build image" "unknown — pass --bundle <dir> to check"

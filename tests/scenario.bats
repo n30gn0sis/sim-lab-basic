@@ -310,9 +310,32 @@ PY
     run scenario up demo --bundle "$BUNDLE"
     echo "$output"
     [ "$status" -eq 0 ]
-    grep -q '^docker exec -i cid-a sh -c cat > /tmp/lab-frr.conf && i=0; until vtysh -f /tmp/lab-frr.conf; do i=$((i+1)); \[ "$i" -ge 15 \] && exit 1; sleep 2; done$' "$STUB_LOG"
-    grep -q '^docker exec -i cid-b sh -c mkdir -p /etc/swanctl && cat > /etc/swanctl/swanctl.conf && i=0; until swanctl --load-all; do i=$((i+1)); \[ "$i" -ge 15 \] && exit 1; sleep 2; done$' "$STUB_LOG"
+    grep -q '^docker exec -i cid-a sh -c cat > /tmp/lab-frr.conf && { i=0; until vtysh -f /tmp/lab-frr.conf; do i=$((i+1)); \[ "$i" -ge 15 \] && exit 1; sleep 2; done; }$' "$STUB_LOG"
+    grep -q '^docker exec -i cid-b sh -c mkdir -p /etc/swanctl && cat > /etc/swanctl/swanctl.conf && { i=0; until swanctl --load-all; do i=$((i+1)); \[ "$i" -ge 15 \] && exit 1; sleep 2; done; }$' "$STUB_LOG"
     grep -q 'hostname a' "$BATS_TEST_TMPDIR/stdin-cid-a"
+}
+
+@test "a node config apply stops at once when its file cannot be written, and never runs the loader" {
+    printf 'hostname a\n' > "$SCENARIO_DIR/demo/nodes/a.frr.conf"
+    printf 'connections {}\n' > "$SCENARIO_DIR/demo/nodes/b.swanctl.conf"
+    run scenario up demo --bundle "$BUNDLE"
+    [ "$status" -eq 0 ]
+    # run each apply command the script sent exactly as the node's sh would,
+    # with a cat that cannot write and loaders that record being called
+    nb="$BATS_TEST_TMPDIR/node-bin"; mkdir -p "$nb"
+    printf '#!/bin/sh\nexit 1\n' > "$nb/cat"
+    printf '#!/bin/sh\necho called >> "%s/loader.log"\nexit 1\n' "$BATS_TEST_TMPDIR" > "$nb/vtysh"
+    cp "$nb/vtysh" "$nb/swanctl"
+    printf '#!/bin/sh\nexit 0\n' > "$nb/mkdir"
+    printf '#!/bin/sh\nexit 0\n' > "$nb/sleep"
+    chmod +x "$nb"/*
+    for cid in cid-a cid-b; do
+        cmd=$(sed -n "s/^docker exec -i $cid sh -c //p" "$STUB_LOG" | grep -E 'vtysh|swanctl')
+        [ -n "$cmd" ]
+        run env PATH="$nb:$PATH" sh -c "$cmd" < /dev/null
+        [ "$status" -ne 0 ]
+    done
+    [ ! -e "$BATS_TEST_TMPDIR/loader.log" ]
 }
 
 @test "up dies naming the down command when a node file names a node with no container" {
