@@ -223,9 +223,25 @@ image_list() {
     printf '%s\n' "$out"
 }
 
+# image_norm [<ref>...] — each image reference (args, or one per line on
+# stdin) in docker's familiar form: a leading docker.io/ stripped, then a
+# leading library/. `docker image ls` prints alpine:latest where a bundle's
+# list says docker.io/library/alpine:latest; any other registry keeps its name.
+image_norm() {
+    if [ $# -gt 0 ]; then printf '%s\n' "$@"; else cat; fi | sed -e 's#^docker\.io/##' -e 's#^library/##'
+}
+
+# docker_loaded_images — every repository:tag in the docker image store,
+# normalised by image_norm; empty (never an error) when docker cannot answer.
+docker_loaded_images() {
+    docker image ls --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | image_norm || true
+}
+
 # assert_image_tags <list-file> — every tag in the list is present in the
-# docker image store. `docker load` reports success even when the resulting
-# tag set is incomplete, which is why this exists. Returns 1 with the count.
+# docker image store (both sides compared through image_norm; the lines
+# printed keep the list's own names). `docker load` reports success even when
+# the resulting tag set is incomplete, which is why this exists. Returns 1
+# with the count.
 #
 # The list is read into the shell BEFORE the loop. Feeding the loop from a
 # process substitution would put image_list in a subshell, where its die()
@@ -236,10 +252,10 @@ assert_image_tags() {
     # `|| return 1`: image_list dies inside the substitution's subshell, which
     # would otherwise leave `list` empty and the loop reporting success.
     list=$(image_list "$f") || return 1
-    present=$(docker image ls --format '{{.Repository}}:{{.Tag}}' 2>/dev/null || true)
+    present=$(docker_loaded_images)
     while IFS= read -r want; do
         [ -n "$want" ] || continue
-        if printf '%s\n' "$present" | grep -qxF "$want"; then
+        if printf '%s\n' "$present" | grep -qxF "$(image_norm "$want")"; then
             echo "ok      $want"
         else
             echo "MISSING $want"

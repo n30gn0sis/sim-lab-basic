@@ -107,6 +107,37 @@ lib() { kit_run bash -c "set -uo pipefail; . '$LIB'; kit_init test; $1"; }
     [[ "$output" != *"all images present"* ]]
 }
 
+@test "assert_image_tags() accepts docker's short names for docker.io references" {
+    printf 'docker.io/library/alpine:latest\ndocker.io/nicolaka/netshoot:0.0.0-fixture\n' > "$BATS_TEST_TMPDIR/list.txt"
+    stub docker 'if [ "$1" = image ] && [ "$2" = ls ]; then printf "alpine:latest\nnicolaka/netshoot:0.0.0-fixture\n"; fi; exit 0'
+    run lib "assert_image_tags '$BATS_TEST_TMPDIR/list.txt'"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"ok      docker.io/library/alpine:latest"* ]]
+    [[ "$output" == *"ok      docker.io/nicolaka/netshoot:0.0.0-fixture"* ]]
+    [[ "$output" == *"all images present"* ]]
+}
+
+@test "assert_image_tags() still wants the exact name outside docker.io, and a missing tag still FAILs" {
+    printf 'ghcr.io/x/alpine:latest\nquay.io/frrouting/frr:0.0.0-fixture\ndocker.io/library/busybox:latest\n' > "$BATS_TEST_TMPDIR/list.txt"
+    stub docker 'if [ "$1" = image ] && [ "$2" = ls ]; then printf "alpine:latest\nfrr:0.0.0-fixture\nquay.io/frrouting/frr:0.0.0-fixture\nbusybox:other\n"; fi; exit 0'
+    run lib "assert_image_tags '$BATS_TEST_TMPDIR/list.txt'"
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"MISSING ghcr.io/x/alpine:latest"* ]]
+    [[ "$output" == *"ok      quay.io/frrouting/frr:0.0.0-fixture"* ]]
+    [[ "$output" == *"MISSING docker.io/library/busybox:latest"* ]]
+    [[ "$output" == *"2 image(s) missing"* ]]
+}
+
+@test "image_norm() strips docker.io/ then library/, and leaves other registries alone" {
+    run lib "image_norm docker.io/library/alpine:latest docker.io/nicolaka/netshoot:x library/alpine:x ghcr.io/a/b:c"
+    [ "$status" -eq 0 ]
+    [ "$output" = "$(printf 'alpine:latest\nnicolaka/netshoot:x\nalpine:x\nghcr.io/a/b:c')" ]
+    run lib "printf 'docker.io/library/alpine:latest\n' | image_norm"
+    [ "$output" = "alpine:latest" ]
+}
+
 @test "image_ref_from_list() finds by repository name regardless of position" {
     run lib "image_ref_from_list '$BUNDLE/malcolm/image-list.txt' arkime"
     [ "$output" = "ghcr.io/idaholab/malcolm/arkime:0.0.0-fixture" ]

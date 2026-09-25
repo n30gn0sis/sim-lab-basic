@@ -252,6 +252,14 @@ PY
     [[ "$output" == *"docker.io/nicolaka/netshoot:0.0.0-fixture is not loaded"* ]]
 }
 
+@test "up accepts an image docker lists by its short name" {
+    echo 'nicolaka/netshoot:0.0.0-fixture' > "$BATS_TEST_TMPDIR/images.txt"
+    run scenario up demo --bundle "$BUNDLE"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"is not loaded"* ]]
+}
+
 @test "up refuses a scenario that is already up, and --force takes it down first" {
     seed_project p1 lab-scenario-demo opened demo
     run scenario up demo --bundle "$BUNDLE"

@@ -212,10 +212,10 @@ cmd_up() {
     b=$(bundle_dir "$BUNDLE") || exit 1
     miss=$(missing_images "$b" "$NAME")
     [ -z "$miss" ] || die "image(s) not in this bundle's gns3/docker-nodes/image-list.txt: $miss$(ike_hint "$miss")"
-    loaded=$(docker image ls --format '{{.Repository}}:{{.Tag}}' 2>/dev/null || true)
+    loaded=$(docker_loaded_images)
     for i in $(conf "$NAME" images); do
         ref=$(image_ref "$b" "$i")
-        printf '%s\n' "$loaded" | grep -qxF "$ref" || die "$ref is not loaded — run r770-gns3-deploy.sh load --bundle <dir>"
+        printf '%s\n' "$loaded" | grep -qxF "$(image_norm "$ref")" || die "$ref is not loaded — run r770-gns3-deploy.sh load --bundle <dir>"
     done
     gns3_login
     pid=$(our_project "$NAME") || die "could not list GNS3 projects"
