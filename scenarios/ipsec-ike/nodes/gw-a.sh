@@ -1,5 +1,9 @@
 # gw-a: addresses and forwarding; the tunnel itself comes from gw-a.swanctl.conf
 set -e
+# the strongSwan image does not start charon by itself (its default command is
+# bash); start it detached so docker exec returns -- swanctl --load-all is retried
+# by r770-scenario.sh until charon's control socket answers
+pgrep -x charon >/dev/null || /usr/libexec/ipsec/charon </dev/null >/dev/null 2>&1 &
 ip addr replace 10.202.1.1/24 dev eth0
 ip addr replace 10.202.0.1/24 dev eth1
 ip link set dev eth0 up
