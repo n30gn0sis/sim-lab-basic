@@ -1,21 +1,19 @@
 #!/usr/bin/env bash
 #
 # r770-portal-deploy.sh — the nginx front door: an internal CA generated ON
-# the gapped box, one three-SAN certificate, the .lab vhosts and the analyst
-# wiki built offline.
+# the gapped box, one three-SAN certificate and the .lab vhosts. The analyst
+# wiki it serves at docs.lab is built by r770-docs-deploy.sh.
 #
-#   r770-portal-deploy.sh <subcommand> [--bundle <dir>] [options]
+#   r770-portal-deploy.sh <subcommand> [options]
 #
 #   ca          easy-rsa PKI at /etc/lab/ca, CA cert published to /etc/nginx/ssl
 #   cert        one server cert for malcolm/gns3/docs.lab
 #   htpasswd    the shared analyst login, copied from Malcolm's auth material
 #   nginx       vhosts + snippets installed, default site removed, nginx -t
 #               BEFORE reload, every vhost probed after the reload settles (GATED)
-#   docs        analyst wiki built with the bundled mkdocs image, --network none
 #   status      certificate, permissions, enabled sites, who owns :443
 #   --print-sans  print the SAN list and exit (tests and docs read it)
 #
-#   --wiki <dir>     wiki source (docs; default: the kit's docs/wiki)
 #   EASYRSA_BIN      /usr/share/easy-rsa/easyrsa · MALCOLM_HOME /opt/malcolm
 #   --yes / --non-interactive / --dry-run / --force   as everywhere in the kit
 #
@@ -37,7 +35,6 @@ SSL="/etc/nginx/ssl"
 EASYRSA_BIN="${EASYRSA_BIN:-/usr/share/easy-rsa/easyrsa}"
 MALCOLM_HOME="${MALCOLM_HOME:-/opt/malcolm}"
 SETTLE="${PORTAL_SETTLE_SECS:-2}"
-BUNDLE=""; WIKI=""
 usage() { usage_from_header 3; exit 0; }
 easyrsa() { run env EASYRSA_PKI="$(p "$PKI")/pki" EASYRSA_BATCH=1 "$EASYRSA_BIN" "$@"; }
 
@@ -170,32 +167,6 @@ cmd_nginx() {
     footer "nginx"
 }
 
-cmd_docs() {
-    banner "docs — analyst wiki, built offline"
-    need_root
-    local b wiki img tmp; b=$(bundle_dir "$BUNDLE") || exit 1
-    wiki="${WIKI:-$KIT_DIR/docs/wiki}"
-    [ -f "$wiki/index.md" ] || die "no wiki at $wiki (index.md missing) — pass --wiki <dir>"
-    img=$(image_ref_from_list "$b/docker/monitoring-image-list.txt" mkdocs-material) || exit 1
-    if ! docker image ls --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | grep -qxF "$img"; then
-        run docker load -i "$b/docker/monitoring-images.tar.gz" || die "docker load failed for the docs build image"
-    fi
-    tmp=$(mktemp -d)
-    run cp -a "$wiki" "$tmp/docs"
-    run install -m 0644 "$KIT_CONFIG_DIR/docs/mkdocs.yml" "$tmp/mkdocs.yml"
-    # --network none: the build can want fonts and plugins; on an air gap it must not even try.
-    run docker run --rm --network none -v "$tmp:/docs" "$img" build || { rm -rf "$tmp"; die "mkdocs build failed — is $img actually present? (see the docker load above)"; }
-    if [ "$DRY" != "1" ]; then
-        [ -f "$tmp/site/index.html" ] || { rm -rf "$tmp"; die "mkdocs produced no site/index.html"; }
-        run rm -rf "$(p /srv/www/docs)"
-        run mkdir -p "$(p /srv/www)"
-        run cp -a "$tmp/site" "$(p /srv/www/docs)"
-        pass "wiki built into /srv/www/docs ($(find "$(p /srv/www/docs)" -name '*.html' | wc -l) pages)"
-    fi
-    rm -rf "$tmp"
-    footer "docs"
-}
-
 cmd_status() {
     banner "portal status"
     local ssl f; ssl="$(p "$SSL")"
@@ -210,11 +181,13 @@ cmd_status() {
 }
 
 SUB="${1:-}"; [ $# -gt 0 ] && shift
+# SELF is not set until kit_init below; name the script explicitly so this
+# refusal reads the same as every other die() in this script.
+SELF="r770-portal-deploy"
+[ "$SUB" = docs ] && die "docs moved to r770-docs-deploy.sh — run: r770-docs-deploy.sh build --bundle <dir> (or full --only build)"
 [ "$SUB" = "--print-sans" ] && { echo "$SANS"; exit 0; }
 while [ $# -gt 0 ]; do
     case "$1" in
-        --bundle)  BUNDLE="${2:-}"; shift ;;
-        --wiki)    WIKI="${2:-}"; shift ;;
         --print-sans) echo "$SANS"; exit 0 ;;
         -h|--help) usage ;;
         *)         common_flag "$1" || die "unknown option: $1 (try --help)" ;;
@@ -227,7 +200,6 @@ case "$SUB" in
     cert)     cmd_cert ;;
     htpasswd) cmd_htpasswd ;;
     nginx)    cmd_nginx ;;
-    docs)     cmd_docs ;;
     status)   cmd_status ;;
     -h|--help|help|"") usage ;;
     *)        die "unknown subcommand: $SUB (try --help)" ;;

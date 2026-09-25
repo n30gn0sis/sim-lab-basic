@@ -20,7 +20,10 @@ Requires `shellcheck` and `bats` (>= 1.10): `sudo apt-get -y install shellcheck 
 | `import-bundle.bats` | gate on the bundle's verifier, refusals, the APT rewrite and its automatic restore, docker assertions, the incomplete-load regression, file routing |
 | `malcolm-deploy.bats` | the seven cases ported from the build repo, plus flag assertion, rendered-config replay, the rebind's idempotence and drift refusal, secrets never printed, start via Malcolm's script |
 | `gns3-deploy.bats` | `python3-venv` refusal, `--no-index`, pip-index refusal, the chown of the state dir, the unit gate, loopback assertion |
-| `portal-deploy.bats` | the SAN list, file modes, `nginx -t` before reload, gate, probe verdicts, offline docs build |
+| `docs-deploy.bats` | load and the tag assertion, `--network none`, the atomic publish (a failed build leaves the live site; stale `docs.new`/`docs.prev` cleared), image-list refusals, `full` slicing and the warn contract |
+| `scenario.bats` | `r770-scenario.sh` against a fake GNS3 controller (`helpers/fake_gns3.py`): list, login refusals, the credential kept out of argv, up (render, TAP choice, import/open/start order, node config, readiness), traffic (order, window, run record, WARN/FAIL), down (ours only), status |
+| `scenarios.bats` | the scenario pack's content via `helpers/lint_scenarios.py`: layout, project JSON and tokens, two TAP-type Cloud ports, images bundled or upstream-pending, addresses inside each range, `expect.txt` shape, shellcheck on node and traffic scripts |
+| `portal-deploy.bats` | the SAN list, file modes, `nginx -t` before reload, gate, probe verdicts, `docs` retired |
 | `airgap-check.bats` | every false-pass the posture check must not produce; SKIP vs FAIL |
 | `validate.bats` | one row per check, SKIP with reason, FAIL diagnosis, arguments-not-facts, interfaces never guessed, indexing lag as WARN |
 | `config.bats` | the carried config stays deployable as measured: http2 form, no staging leftovers, only tokens the kit renders (documented in `config/README.md`), the GNS3 template carries no `jwt_secret_key`, the Malcolm template pins storage and disables what an air gap cannot do |
@@ -28,7 +31,7 @@ Requires `shellcheck` and `bats` (>= 1.10): `sudo apt-get -y install shellcheck 
 | `no-credentials.bats` | `.gitignore` covers evidence, secrets and bundles; no credential-shaped string tracked |
 | `no-legacy-manifest.bats` | no checksum gate of the kit's own; the bundle's verifier referenced by name and invoked from the library; `r770-bundle.sh` exists only under `staging/`, and `scripts/` never reaches for it |
 | `no-internet.bats` | no external URL in scripts or config; `pip` always `--no-index`; `docker run` always `--network none` |
-| `references.bats` | every kit path named in the docs exists; every `config/` file is installed by some script; every runner stage resolves |
+| `references.bats` | every kit path named in the docs exists; every `config/` file is installed by some script; every pipeline's `full` step resolves |
 
 ## The stub pattern
 

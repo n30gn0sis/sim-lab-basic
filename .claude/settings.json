@@ -27,6 +27,8 @@
       "Bash(./scripts/r770-import-bundle.sh:*)",
       "Bash(./scripts/r770-malcolm-deploy.sh:*)",
       "Bash(./scripts/r770-gns3-deploy.sh:*)",
+      "Bash(./scripts/r770-docs-deploy.sh:*)",
+      "Bash(./scripts/r770-scenario.sh:*)",
       "Bash(./scripts/r770-portal-deploy.sh:*)",
       "Bash(./scripts/r770-validate.sh:*)",
       "Bash(./staging/r770-build-bundle.sh:*)",

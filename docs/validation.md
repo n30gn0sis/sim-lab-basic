@@ -19,7 +19,7 @@ FAIL. SKIPPED checks never change the exit code, and are never omitted.
 | `host` | sshd active · chrony leap status Normal · the three `.lab` names resolve · APT sources are `file:` only | chrony and dnsmasq installed (else SKIP: Phase 5) | — | no |
 | `cpu-ram` | `kvm-ok` · thread count · memory · EDAC error counters zero | `--expect-threads N --expect-ram-gb N` (else SKIP: expectations are arguments, never hard-coded) | — | no |
 | `storage` | every layout volume is its own mount point, with its size · SMART health per NVMe · PERC virtual disk optimal | `nvme-cli`, `smartmontools`; `perccli2` from the bundle's `dell/` (else SKIP) | — | no |
-| `network` | management interface up with an address · each capture port: **no address**, PROMISC, gro/lro/tso off | `--mgmt-if IF --capture-ifs "a b c"` (else SKIP: interfaces are never guessed) | — | no |
+| `network` | management interface up with an address · each capture port: **no address**, no master (never a port of a bridge or bond), PROMISC, gro/lro/tso off · with --lab-bridge: bridge in hub mode (ageing_time 0), no multicast snooping, no physical port (directly or through a VLAN or bond), a --capture-ifs interface fed by a bridge port, and that mirror end address-less (link-local included) | `--mgmt-if IF --capture-ifs "a b c"` (else SKIP: interfaces are never guessed) ; --lab-bridge BR (else SKIP: bridges are never guessed) | — | no |
 | `virtualization` | a throwaway cirros guest: overlay, define, boot to `running`, destroy, undefine, overlay removed | libvirt (Phase 7), a cirros image under `/srv/vms/base` | `--allow-vm --lab-bridge BR` | self-cleaning (creates and destroys a guest) |
 | `gns3` | unit active · `/v3/version` answers · admin login issues a token | Phase 8, the admin secret | — | no |
 | `wan` | apply a 40 ms profile, measure, clear | Phase 12 tooling, which lives in the build repo's config repo, not this kit | `--allow-wan` | SKIPs with that reason today |
@@ -27,6 +27,13 @@ FAIL. SKIPPED checks never change the exit code, and are never omitted.
 | `backup` | restore one file from the latest restic snapshot and compare | Phase 15, `/etc/lab/secrets/restic.pw` | — | writes to a temp dir only |
 | `airgap` | the posture report from `scripts/r770-airgap-check.sh`, folded in row by row | — | `--mgmt-cidr` judges resolvers | no |
 | `portal` | each of the 3 `.lab` names answers over TLS with the lab CA · no redirect escapes to a loopback port · only nginx owns `0.0.0.0:443` | Phase 13 | — | no |
+
+`--allow-vm --lab-bridge br-lab` boots the throwaway guest onto the mirrored
+hub, so its DHCP and ARP chatter appears in Malcolm (Arkime sessions, Zeek
+`dhcp.log`/`conn.log`) as lab traffic. That is harmless — the guest lives for
+seconds and is destroyed — but expect it in the next look at the dashboards,
+or point `--allow-vm` at another bridge; `--lab-bridge` then names that bridge
+for the network area's lab-bridge rows too, so run the two areas separately.
 
 ## What SKIPPED means
 

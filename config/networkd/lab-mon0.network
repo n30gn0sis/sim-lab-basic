@@ -1,0 +1,11 @@
+[Match]
+Name=lab-mon0
+
+[Network]
+Bridge=br-lab
+LinkLocalAddressing=no
+IPv6AcceptRA=no
+ConfigureWithoutCarrier=yes
+
+[Link]
+RequiredForOnline=no

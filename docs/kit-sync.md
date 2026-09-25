@@ -47,13 +47,20 @@ down to just `mkdocs-material`, dropping the Prometheus/Alertmanager/blackbox-
 exporter/Grafana-OSS/cAdvisor monitoring images plus the confirmed-unused
 stock-nginx and docker-registry-v2 images, as part of cutting monitoring from
 this kit. `mkdocs-material` stays because the offline analyst wiki
-(`docs.lab`, built by `scripts/r770-portal-deploy.sh docs`) still needs it.
+(`docs.lab`, built by `scripts/r770-docs-deploy.sh build`) still needs it.
 The array's name and its two output paths
 (`docker/monitoring-image-list.txt` / `docker/monitoring-images.tar.gz`) were
 kept unchanged: `staging/r770-bundle.sh`'s `check_required()` — itself still
 provenance-locked and untouched — hardcodes those exact filenames as a
 matched list/payload pair, and renaming either would make the verifier
 silently stop checking that category instead of failing loudly.
+
+**Stale comment, to fix on the next resync:** `staging/r770-offline-fetch.sh:73`
+still says mkdocs-material "builds docs.lab (`scripts/r770-portal-deploy.sh
+docs`)" — that subcommand was retired; the wiki is now built by
+`scripts/r770-docs-deploy.sh build`. This file is provenance-locked
+(`tests/staging.bats`) and is not edited here; fix the comment in the build
+repo and carry it over on the next resync.
 
 `staging/PROVENANCE.txt` records this: the hash for `r770-offline-fetch.sh`
 was recomputed and no longer corresponds to any single `simlab-build` commit,
@@ -104,3 +111,22 @@ is asserted against those tools' `--help` before use.
   a config-file import. If a future installer drops that, the fallback is the
   build repo's runbook procedure (`--defaults --configure`) plus the same
   rebind; the kit dies naming the flag rather than guessing.
+- **Lab mirror mechanism (to carry to the build repo).** The kit mirrors lab
+  traffic with a hub-mode bridge (`br-lab`, `ageing_time 0`) and a veth
+  (`lab-mon0` ⇄ `lab-mirror0`) instead of the buildout plan §7's `tc mirred`
+  per port: no per-port rules to follow GNS3's ports as they come and go.
+  Record the decision in the build repo's buildout plan §7.
+- **Wiki mirror procedure (to carry to the build repo).** `docs/wiki/gns3.md`'s
+  "mirror … TBD" can now read: bind a GNS3 Cloud node to a `lab-tapN` on
+  the Cloud's **TAP** tab (never the Ethernet tab: gns3-server opens a name
+  not starting with `tap` as an ethernet interface with a raw socket, whose
+  frames an unheld TAP drops); everything on `br-lab` reaches Malcolm. `docs/wiki/` is build-repo content
+  and is edited there.
+- **strongSwan image (to add in the build repo).** `scenarios/ipsec-ike` needs
+  a strongSwan image in `GNS3_NODE_IMAGES` (the pin block in
+  `staging/r770-offline-fetch.sh`, edited in the build repo and resynced).
+  Until a bundle carries it, `r770-scenario.sh up ipsec-ike` refuses by name.
+  The image must start charon by itself and carry `swanctl` and `iproute2`.
+- **Wiki scenarios section (to carry to the build repo).** `docs/wiki/gns3.md`
+  can gain a "Scenario pack" section pointing analysts at
+  `r770-scenario.sh list|up|traffic|down`.

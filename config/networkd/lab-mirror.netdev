@@ -1,0 +1,8 @@
+# The mirror: lab-mon0 is a port of br-lab, lab-mirror0 is the capture end
+# Malcolm sniffs (r770-malcolm-deploy.sh configure --capture-ifs lab-mirror0).
+[NetDev]
+Name=lab-mon0
+Kind=veth
+
+[Peer]
+Name=lab-mirror0

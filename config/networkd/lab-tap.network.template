@@ -1,0 +1,11 @@
+[Match]
+Name=__TAP_NAME__
+
+[Network]
+Bridge=br-lab
+LinkLocalAddressing=no
+IPv6AcceptRA=no
+ConfigureWithoutCarrier=yes
+
+[Link]
+RequiredForOnline=no

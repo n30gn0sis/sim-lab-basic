@@ -123,6 +123,48 @@ area_storage() {
 }
 
 # ── network ──────────────────────────────────────────────────────────────────
+# The lab bridge (Phase 11 live mirror): hub mode, no physical port, and a
+# veth port whose peer is one of --capture-ifs. A veth's iflink is its peer's
+# ifindex; a port is physical if it, or a lower device under it (VLAN, bond),
+# has a device link in sysfs -- bridge_physical_ports in lib/common.sh.
+area_network_lab() {
+    if [ -z "$LAB_BRIDGE" ]; then row "lab-bridge" "hub mode, no physical port, mirrored" "no --lab-bridge given" SKIP "bridges are never guessed"; return; fi
+    local sys b at mc port n phys="" fed=() ifs=() i pidx
+    sys="$(p /sys/class/net)"; b="$sys/$LAB_BRIDGE"
+    if [ ! -d "$b/bridge" ]; then
+        row "lab-bridge $LAB_BRIDGE" "a bridge" "absent or not a bridge" FAIL "/sys/class/net/$LAB_BRIDGE/bridge"
+        diag "lab-bridge $LAB_BRIDGE" "the lab bridge does not exist — r770-gns3-deploy.sh labnet creates it"
+        return
+    fi
+    at=$(cat "$b/bridge/ageing_time" 2>/dev/null || echo unreadable)
+    if [ "$at" = "0" ]; then row "lab-bridge $LAB_BRIDGE hub" "ageing_time 0" "ageing_time 0" PASS "cat /sys/class/net/$LAB_BRIDGE/bridge/ageing_time"
+    else row "lab-bridge $LAB_BRIDGE hub" "ageing_time 0" "ageing_time $at" FAIL "cat /sys/class/net/$LAB_BRIDGE/bridge/ageing_time"; diag "lab-bridge $LAB_BRIDGE hub" "a learning bridge forwards port-to-port frames past the mirror — rerun r770-gns3-deploy.sh labnet"; fi
+    mc=$(cat "$b/bridge/multicast_snooping" 2>/dev/null || echo unreadable)
+    if [ "$mc" = "0" ]; then row "lab-bridge $LAB_BRIDGE multicast snooping" "multicast_snooping 0" "multicast_snooping 0" PASS "cat /sys/class/net/$LAB_BRIDGE/bridge/multicast_snooping"
+    else row "lab-bridge $LAB_BRIDGE multicast snooping" "multicast_snooping 0" "multicast_snooping $mc" FAIL "cat /sys/class/net/$LAB_BRIDGE/bridge/multicast_snooping"; diag "lab-bridge $LAB_BRIDGE multicast snooping" "a snooping bridge sends multicast only to ports that joined the group, so the mirror misses it — MulticastSnooping=no in 05-br-lab.netdev; rerun r770-gns3-deploy.sh labnet"; fi
+    phys=$(bridge_physical_ports "$LAB_BRIDGE")
+    if [ -z "$phys" ]; then row "lab-bridge $LAB_BRIDGE physical ports" "none" "none" PASS "ls /sys/class/net/$LAB_BRIDGE/brif"
+    else row "lab-bridge $LAB_BRIDGE physical ports" "none" "$phys" FAIL "ls /sys/class/net/$LAB_BRIDGE/brif"; diag "lab-bridge $LAB_BRIDGE physical ports" "rule 8: the lab fabric never touches a physical port — remove it from the bridge"; fi
+    read -ra ifs <<< "$CAPTURE_IFS"
+    for i in "${ifs[@]}"; do
+        pidx=$(cat "$sys/$i/iflink" 2>/dev/null || true)
+        [ -n "$pidx" ] || continue
+        for port in "$b"/brif/*; do
+            [ -e "$port" ] || continue
+            n=$(basename "$port")
+            [ "$(cat "$sys/$n/ifindex" 2>/dev/null)" = "$pidx" ] && [ "$n" != "$i" ] && fed+=("$i")
+        done
+    done
+    if [ "${#fed[@]}" -gt 0 ]; then row "lab-bridge $LAB_BRIDGE mirror" "a capture interface fed by a bridge port" "${fed[*]}" PASS "cat /sys/class/net/<if>/iflink vs brif/*/ifindex"
+    else row "lab-bridge $LAB_BRIDGE mirror" "a capture interface fed by a bridge port" "no --capture-ifs interface is fed by a port of $LAB_BRIDGE" FAIL "cat /sys/class/net/<if>/iflink vs brif/*/ifindex"; diag "lab-bridge $LAB_BRIDGE mirror" "Malcolm would see nothing from the lab — pass lab-mirror0 in --capture-ifs, and rerun labnet if the veth is missing"; fi
+    local cnt
+    for i in "${fed[@]}"; do
+        cnt=$(ip -o addr show "$i" 2>/dev/null | grep -E ' inet6? ' | grep -c . || true)
+        if [ "$cnt" -eq 0 ]; then row "lab-mirror $i address" "none, link-local included" "none" PASS "ip -o addr show $i"
+        else row "lab-mirror $i address" "none, link-local included" "$cnt address(es)" FAIL "ip -o addr show $i"; diag "lab-mirror $i address" "the mirror's capture end must be silent — its networkd file sets LinkLocalAddressing=no; networkctl status $i"; fi
+    done
+}
+
 area_network() {
     AREA=network
     if [ -n "$MGMT_IF" ]; then
@@ -131,16 +173,21 @@ area_network() {
         a=$(ip -o -4 addr show "$MGMT_IF" 2>/dev/null | awk '{print $4}' | head -1)
         if [ "$l" = "UP" ] && [ -n "$a" ]; then row "mgmt $MGMT_IF" "UP with an address" "$l $a" PASS "ip -o addr show $MGMT_IF"; else row "mgmt $MGMT_IF" "UP with an address" "${l:-absent} ${a:-no address}" FAIL "ip -o addr show $MGMT_IF"; diag "mgmt $MGMT_IF" "the management interface is not up with an address — if you are reading this over SSH, a different interface carries the session"; fi
     else row "mgmt" "UP with an address" "no --mgmt-if given" SKIP "interfaces are never guessed"; fi
-    if [ -z "$CAPTURE_IFS" ]; then row "capture" "no address, promisc, offloads off" "no --capture-ifs given" SKIP "interfaces are never guessed"; return; fi
-    local i addrs link offl
-    for i in $CAPTURE_IFS; do
+    area_network_lab
+    if [ -z "$CAPTURE_IFS" ]; then row "capture" "no address, no master, promisc, offloads off" "no --capture-ifs given" SKIP "interfaces are never guessed"; return; fi
+    local i addrs link offl master ifs=()
+    read -ra ifs <<< "$CAPTURE_IFS"
+    for i in "${ifs[@]}"; do
         addrs=$(ip -o addr show "$i" 2>/dev/null | grep -E ' inet6? ' | grep -v 'scope link' | grep -c . || true)
         if [ "$addrs" -eq 0 ]; then row "capture $i address" "none" "none" PASS "ip -o addr show $i"; else row "capture $i address" "none" "$addrs address(es)" FAIL "ip -o addr show $i"; diag "capture $i address" "a capture port has an address — capture ports never get an IP and never join the lab fabric; remove it from Netplan"; fi
+        master="$(p /sys/class/net)/$i/master"
+        if [ -e "$master" ] || [ -L "$master" ]; then row "capture $i master" "none" "$(basename "$(readlink "$master" 2>/dev/null || echo "$master")")" FAIL "readlink /sys/class/net/$i/master"; diag "capture $i master" "rule 8: a capture port is never bridged to the lab fabric (lab-mirror0 is fed BY br-lab through its veth peer, never a port of it) — remove $i from its bridge or bond"
+        else row "capture $i master" "none" "none" PASS "readlink /sys/class/net/$i/master"; fi
         link=$(ip -o link show "$i" 2>/dev/null | head -1)
         if printf '%s' "$link" | grep -q PROMISC; then row "capture $i promisc" "PROMISC" "PROMISC" PASS "ip -o link show $i"; else row "capture $i promisc" "PROMISC" "not promiscuous" FAIL "ip -o link show $i"; diag "capture $i promisc" "capture-prep has not run on this port (Phase 9)"; fi
         if command -v ethtool >/dev/null 2>&1; then
             offl=$(ethtool -k "$i" 2>/dev/null | grep -E '^(generic-receive-offload|large-receive-offload|tcp-segmentation-offload):' | grep -c ': on' || true)
-            if [ "$offl" -eq 0 ]; then row "capture $i offloads" "gro/lro/tso off" "off" PASS "ethtool -k $i"; else row "capture $i offloads" "gro/lro/tso off" "$offl still on" FAIL "ethtool -k $i"; diag "capture $i offloads" "offloads merge packets before capture sees them — capture-prep (Phase 9) turns them off"; fi
+            if [ "$offl" -eq 0 ]; then row "capture $i offloads" "gro/lro/tso off" "off" PASS "ethtool -k $i"; else row "capture $i offloads" "gro/lro/tso off" "$offl still on" FAIL "ethtool -k $i"; diag "capture $i offloads" "offloads merge packets before capture sees them — capture-prep (Phase 9) turns them off; on lab-mirror0, r770-gns3-deploy.sh labnet does (05-lab-mirror0.link + ethtool -K)"; fi
         else row "capture $i offloads" "gro/lro/tso off" "ethtool not installed" SKIP "package not installed yet"; fi
     done
 }

@@ -36,6 +36,8 @@ sudo ./scripts/r770-malcolm-deploy.sh full \
     --bundle <dir> --media <mnt> --device /dev/<discovered> --dry-run # Malcolm's whole pipeline, print every command, run nothing
 sudo ./scripts/r770-gns3-deploy.sh full \
     --bundle <dir> --media <mnt> --device /dev/<discovered> --dry-run # GNS3's whole pipeline, same contract, independent of Malcolm's
+sudo ./scripts/r770-docs-deploy.sh full \
+    --bundle <dir> --media <mnt> --device /dev/<discovered> --dry-run # the analyst wiki's pipeline, same contract, independent of both
 sudo ./scripts/r770-portal-deploy.sh nginx --dry-run          # the optional front door, one step at a time, run after Malcolm is up
 ./staging/r770-build-bundle.sh --dry-run                     # same, staging side
 ```
@@ -45,21 +47,24 @@ sudo ./scripts/r770-portal-deploy.sh nginx --dry-run          # the optional fro
 - **Two hosts, enforced.** `staging/` (preflight → fetch → build → verify) is
   the build repo's pipeline copied byte for byte — identity guarded by
   `staging/PROVENANCE.txt` and `tests/staging.bats`, never edited here.
-  `scripts/` is the R770 side: two independent pipelines plus an optional
+  `scripts/` is the R770 side: three independent pipelines plus an optional
   front door. `tests/no-legacy-manifest.bats` and friends prove `scripts/`
   never reaches into `staging/`.
-- **Two independent pipelines, no orchestrator.** There is no
+- **Three independent pipelines, no orchestrator.** There is no
   `r770-deploy.sh` any more — it was deleted once each service could stand
-  up its own pipeline. `scripts/r770-malcolm-deploy.sh full` and
-  `scripts/r770-gns3-deploy.sh full` each run their own bundle-in prep
-  (preflight, gate, copy, apt, phone-home, docker, files — the shared logic
-  lives in `scripts/r770-import-bundle.sh`, sourced as a library, not called
-  as a stage) before their own service-specific steps; run either pipeline
-  first, or both back to back — the shared prep steps are idempotent, so the
-  second `full` just reports "already done". The optional front door,
-  `scripts/r770-portal-deploy.sh` (`ca cert htpasswd nginx docs`), is a
-  separate, explicit sequence run after Malcolm is up; it is not part of
-  either `full`.
+  up its own pipeline. `scripts/r770-malcolm-deploy.sh full`,
+  `scripts/r770-gns3-deploy.sh full` and `scripts/r770-docs-deploy.sh full`
+  (the analyst wiki, built offline and published to `/srv/www/docs`) each
+  run their own bundle-in prep (preflight, gate, copy, apt, phone-home,
+  docker, files — the shared logic lives in `scripts/r770-import-bundle.sh`)
+  before their own service-specific steps; run them in any order — the
+  shared prep steps are idempotent, so a later `full` just reports "already
+  done". The one ordering exception: Malcolm's `configure --capture-ifs
+  lab-mirror0` needs GNS3's `labnet` first (it refuses an interface that
+  does not exist yet). The optional front door, `scripts/r770-portal-deploy.sh`
+  (`ca cert htpasswd nginx`), is a separate, explicit sequence run after
+  Malcolm is up; it serves `docs.lab` but does not build it, and it is not
+  part of any `full`.
 - **`scripts/lib/common.sh` is the one seam every script sources.** It owns:
   `KIT_ROOT`/`KIT_DRY_RUN`/`KIT_YES`/`KIT_NON_INTERACTIVE`/`KIT_EVIDENCE_DIR`
   (what makes every script dry-runnable and testable against a fake root);
@@ -119,9 +124,10 @@ sudo ./scripts/r770-portal-deploy.sh nginx --dry-run          # the optional fro
    the operator supplies from discovery output. No script picks one, and no
    placeholder like `/dev/sdX` or `eno1` is ever executed.
 2. **Gated changes.** APT sources, phone-home services, Docker install, the
-   nginx site set, the GNS3 unit and a volume purge each print *current ·
-   proposed · rollback* and need `--yes` or a `y`. `--non-interactive` without
-   `--yes` stops at the gate. Never bypass a gate to make a run "go".
+   nginx site set, the GNS3 unit, the lab network and a volume purge each
+   print *current · proposed · rollback* and need `--yes` or a `y`.
+   `--non-interactive` without `--yes` stops at the gate. Never bypass a gate
+   to make a run "go".
 3. **The verifier is the bundle's** (`<bundle>/r770-bundle.sh verify`). Never
    add a checksum routine to this kit, never gate on a raw checksum command.
 4. **One pin owner.** `staging/r770-offline-fetch.sh` holds the pin block and
@@ -136,7 +142,10 @@ sudo ./scripts/r770-portal-deploy.sh nginx --dry-run          # the optional fro
 7. **One change at a time** when something fails: reproduce, read the
    transcript, one hypothesis, one controlled change, rerun `--from <stage>`.
 8. Capture ports never get an IP and are never bridged to the lab fabric.
-   `r770-validate.sh --area network --capture-ifs ...` fails on either.
+   The lab mirror's capture end (`lab-mirror0`) is fed BY the lab fabric
+   through a veth (its peer `lab-mon0` is the bridge port) but is never a
+   port of it. `r770-validate.sh --area network --capture-ifs ...` fails on
+   an address or a master.
 
 ## Working on the kit itself
 
@@ -145,7 +154,7 @@ sudo ./scripts/r770-portal-deploy.sh nginx --dry-run          # the optional fro
   `KIT_ROOT`, synthetic `0.0.0-fixture` versions only).
 - A new script gets: the `KIT_*` seams via `scripts/lib/common.sh`, the
   `0 / 2 / 1` exit contract, `PASS  / WARN  / FAIL  / SKIP  ` vocabulary, a
-  bats suite, a row in `README.md`, and an `ask` entry in `.claude/settings.json`.
+  bats suite, a row in `README.md`, and an `allow` entry in `.claude/settings.json` beside its siblings.
 - Config changes go through `config/README.md`'s delta table and
   `docs/kit-sync.md`; the build repo remains the source those files are synced
   from. The four files under `staging/` are never edited here: change them in

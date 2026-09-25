@@ -2,7 +2,8 @@
 #
 # The portal is where a wrong file mode, a missing SAN or a bad reload takes
 # every service off the air at once. The suite pins the SAN list, the file
-# modes, the -t-before-reload order, the gate, and the offline docs build.
+# modes, the -t-before-reload order and the gate. The wiki it serves at
+# docs.lab is built elsewhere (tests/docs-deploy.bats).
 
 load helpers/fixtures
 load helpers/stubs
@@ -32,9 +33,6 @@ exit 0'
     stub_log chgrp; stub_log systemctl; stub_log nginx
     stub ss 'echo "LISTEN 0 511 0.0.0.0:443 0.0.0.0:* users:((\"nginx\",pid=1,fd=6))"'
     stub curl 'echo -n 200'
-    stub docker 'echo "docker $*" >> "$STUB_LOG"
-for a in "$@"; do case "$a" in *:/docs) d="${a%%:/docs}"; mkdir -p "$d/site"; echo "<html>built</html>" > "$d/site/index.html";; esac; done
-exit 0'
 }
 
 portal() { kit_run "$SCRIPT" "$@"; }
@@ -137,25 +135,23 @@ all_the_way_to_nginx() {
     [[ "$output" == *"FAIL  malcolm.lab: HTTP 502"* ]]
 }
 
-@test "docs loads the mkdocs image before building, with --network none" {
+@test "docs is no longer a portal subcommand, and the portal takes no --bundle or --wiki" {
+    run portal docs
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"docs moved to r770-docs-deploy.sh"* ]]
+    [[ "$output" == *"r770-docs-deploy.sh build --bundle <dir>"* ]]
     run portal docs --bundle "$BUNDLE"
     echo "$output"
-    [ "$status" -eq 0 ]
-    grep -q "^docker load -i $BUNDLE/docker/monitoring-images.tar.gz" "$STUB_LOG"
-    grep -q '^docker run --rm --network none -v .*:/docs docker.io/squidfunk/mkdocs-material:latest build' "$STUB_LOG"
-    l=$(grep -n '^docker load' "$STUB_LOG" | cut -d: -f1)
-    r=$(grep -n '^docker run' "$STUB_LOG" | cut -d: -f1)
-    [ -n "$l" ] && [ -n "$r" ] && [ "$l" -lt "$r" ]
-    [ -f "$ROOT/srv/www/docs/index.html" ]
-}
-
-@test "docs refuses a bundle whose list has no mkdocs image" {
-    # a non-empty list that simply doesn't carry mkdocs-material (Task 3 trimmed
-    # the fixture's list to that one entry, so filtering it back out would leave
-    # an empty file and trip image_list()'s own "missing or empty" die instead)
-    printf 'docker.io/library/busybox:latest\n' > "$BUNDLE/docker/monitoring-image-list.txt"
-    run portal docs --bundle "$BUNDLE"
     [ "$status" -eq 1 ]
-    [[ "$output" == *"mkdocs-material"* ]]
-    ! grep -q '^docker run' "$STUB_LOG"
+    [[ "$output" == *"docs moved to r770-docs-deploy.sh"* ]]
+    [[ "$output" == *"r770-docs-deploy.sh build --bundle <dir>"* ]]
+    run portal status --bundle "$BUNDLE"
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"unknown option: --bundle"* ]]
+    run portal status --wiki /tmp
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"unknown option: --wiki"* ]]
 }

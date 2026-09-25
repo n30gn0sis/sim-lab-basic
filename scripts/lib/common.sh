@@ -223,9 +223,25 @@ image_list() {
     printf '%s\n' "$out"
 }
 
+# image_norm [<ref>...] — each image reference (args, or one per line on
+# stdin) in docker's familiar form: a leading docker.io/ stripped, then a
+# leading library/. `docker image ls` prints alpine:latest where a bundle's
+# list says docker.io/library/alpine:latest; any other registry keeps its name.
+image_norm() {
+    if [ $# -gt 0 ]; then printf '%s\n' "$@"; else cat; fi | sed -e 's#^docker\.io/##' -e 's#^library/##'
+}
+
+# docker_loaded_images — every repository:tag in the docker image store,
+# normalised by image_norm; empty (never an error) when docker cannot answer.
+docker_loaded_images() {
+    docker image ls --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | image_norm || true
+}
+
 # assert_image_tags <list-file> — every tag in the list is present in the
-# docker image store. `docker load` reports success even when the resulting
-# tag set is incomplete, which is why this exists. Returns 1 with the count.
+# docker image store (both sides compared through image_norm; the lines
+# printed keep the list's own names). `docker load` reports success even when
+# the resulting tag set is incomplete, which is why this exists. Returns 1
+# with the count.
 #
 # The list is read into the shell BEFORE the loop. Feeding the loop from a
 # process substitution would put image_list in a subshell, where its die()
@@ -236,10 +252,10 @@ assert_image_tags() {
     # `|| return 1`: image_list dies inside the substitution's subshell, which
     # would otherwise leave `list` empty and the loop reporting success.
     list=$(image_list "$f") || return 1
-    present=$(docker image ls --format '{{.Repository}}:{{.Tag}}' 2>/dev/null || true)
+    present=$(docker_loaded_images)
     while IFS= read -r want; do
         [ -n "$want" ] || continue
-        if printf '%s\n' "$present" | grep -qxF "$want"; then
+        if printf '%s\n' "$present" | grep -qxF "$(image_norm "$want")"; then
             echo "ok      $want"
         else
             echo "MISSING $want"
@@ -335,6 +351,37 @@ secret_read() {
     local f=$1
     [ -s "$f" ] || die "secret not found: $f — run the 'secrets' subcommand first"
     head -1 "$f"
+}
+
+# ── network ──────────────────────────────────────────────────────────────────
+# net_is_physical <ifname> [depth] — 0 if the interface is backed by hardware:
+# it has a sysfs `device` link, or one of its lower devices (a VLAN's parent,
+# a bond's slaves, recursively) does. Depth-limited, so a lower-device cycle
+# ends instead of looping. Read through p(), so a suite fakes sysfs under ROOT.
+net_is_physical() {
+    local n=$1 depth=${2:-0} sys l
+    [ "$depth" -le 8 ] || return 1
+    sys="$(p /sys/class/net)"
+    [ -e "$sys/$n/device" ] && return 0
+    for l in "$sys/$n"/lower_*; do
+        [ -e "$l" ] || [ -L "$l" ] || continue
+        net_is_physical "${l##*/lower_}" $((depth + 1)) && return 0
+    done
+    return 1
+}
+
+# bridge_physical_ports <bridge> — the bridge's ports that are physical, per
+# net_is_physical, space-separated (nothing when there are none or the
+# bridge is absent). Rule 8: the lab fabric never touches a physical port,
+# not even through a VLAN or a bond.
+bridge_physical_ports() {
+    local port n out=""
+    for port in "$(p /sys/class/net)/$1"/brif/*; do
+        [ -e "$port" ] || continue
+        n=${port##*/}
+        net_is_physical "$n" && out="${out:+$out }$n"
+    done
+    printf '%s' "$out"
 }
 
 # ── misc ─────────────────────────────────────────────────────────────────────

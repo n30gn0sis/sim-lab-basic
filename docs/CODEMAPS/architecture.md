@@ -8,8 +8,9 @@ Two hosts, one repo. A bundle is the only thing that crosses between them.
 STAGING HOST (internet)                     R770 (air-gapped, Ubuntu 24.04)
   staging/r770-staging-preflight.sh           scripts/r770-malcolm-deploy.sh full
   staging/r770-offline-fetch.sh  ──┐            scripts/r770-gns3-deploy.sh full
-    (the one pin owner)            │            two independent pipelines, no
-  staging/r770-build-bundle.sh     │            outer orchestrator
+    (the one pin owner)            │            scripts/r770-docs-deploy.sh full
+  staging/r770-build-bundle.sh     │            three independent pipelines,
+                                   │            no outer orchestrator
   staging/r770-bundle.sh ──────────┤
     (copied INTO the bundle)       │
                                    ▼
@@ -28,11 +29,12 @@ guarded by `staging/PROVENANCE.txt` + `tests/staging.bats`.
 ## Three layers on the R770 side
 
 ```
-r770-malcolm-deploy.sh full     r770-gns3-deploy.sh full     (independent; each
-  │ own STEPS array               │ own STEPS array           brings its own
-  │ run_step()/step_index()       │ run_step()/step_index()   bundle in from
-  ▼                               ▼                           the media)
-r770-import-bundle.sh  ◄── shared bundle-prep steps, idempotent either order
+r770-malcolm-deploy.sh full   r770-gns3-deploy.sh full   r770-docs-deploy.sh full
+  │ own STEPS array             │ own STEPS array          │ own STEPS array
+  │ run_step()/step_index()     │ run_step()/step_index()  │ run_step()/step_index()
+  ▼                             ▼                          ▼
+                 (independent; each brings its own bundle in from the media)
+r770-import-bundle.sh  ◄── shared bundle-prep steps, idempotent in any order
 r770-portal-deploy.sh          optional front door, run by hand after Malcolm
 r770-validate.sh               read-only checks, run at any point
   │ every one sources ↓
@@ -43,26 +45,27 @@ scripts/lib/common.sh     the only seam that touches the host
 `scripts/r770-airgap-check.sh` is read-only and stands outside every pipeline;
 `r770-validate.sh` folds its rows in under the `airgap` area.
 
-## Two independent `full` pipelines, one shared prep
+## Three independent `full` pipelines, one shared prep
 
-`r770-malcolm-deploy.sh full` and `r770-gns3-deploy.sh full` each hold their
-own `STEPS=(...)` array and step through it with `common.sh`'s
-`run_step()`/`step_index()` — there is no outer orchestrator holding a
-combined stage list. Both begin with the same bundle-prep steps
-(`preflight gate copy apt phone-home docker files`, all against
-`r770-import-bundle.sh`) before diverging into their own `load` and
+`r770-malcolm-deploy.sh full`, `r770-gns3-deploy.sh full` and
+`r770-docs-deploy.sh full` each hold their own `STEPS=(...)` array and step
+through it with `common.sh`'s `run_step()`/`step_index()` — there is no outer
+orchestrator holding a combined stage list. All three begin with the same
+bundle-prep steps (`preflight gate copy apt phone-home docker files`, all
+against `r770-import-bundle.sh`) before diverging into their own `load` and
 pipeline-specific steps. Every one of those shared steps is idempotent
 (`copy` stamps, `apt` short-circuits via `cmp -s`, `phone-home` is a no-op on
 an already-disabled unit, `docker` install is idempotent by itself, `files`
-stamps per category), so running one pipeline's `full` after the other has
+stamps per category), so running one pipeline's `full` after another has
 already run reports "already done" for the shared prefix and moves straight
-into its own steps. The only doubled cost is `gate`'s bundle re-verification
+into its own steps. The only added cost is `gate`'s bundle re-verification
 running once per pipeline instead of once total.
 
-The front door (`r770-portal-deploy.sh`: `ca cert htpasswd nginx docs`) is
-never part of either `full` — it is run by hand, after Malcolm, because
+The front door (`r770-portal-deploy.sh`: `ca cert htpasswd nginx`) is
+never part of any `full` — it is run by hand, after Malcolm, because
 `htpasswd` has a hard dependency on Malcolm's `auth` step having already
-produced the login material it copies.
+produced the login material it copies. It serves `docs.lab` but no longer
+builds it — `r770-docs-deploy.sh build` does.
 
 ## What common.sh owns
 

@@ -107,6 +107,37 @@ lib() { kit_run bash -c "set -uo pipefail; . '$LIB'; kit_init test; $1"; }
     [[ "$output" != *"all images present"* ]]
 }
 
+@test "assert_image_tags() accepts docker's short names for docker.io references" {
+    printf 'docker.io/library/alpine:latest\ndocker.io/nicolaka/netshoot:0.0.0-fixture\n' > "$BATS_TEST_TMPDIR/list.txt"
+    stub docker 'if [ "$1" = image ] && [ "$2" = ls ]; then printf "alpine:latest\nnicolaka/netshoot:0.0.0-fixture\n"; fi; exit 0'
+    run lib "assert_image_tags '$BATS_TEST_TMPDIR/list.txt'"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"ok      docker.io/library/alpine:latest"* ]]
+    [[ "$output" == *"ok      docker.io/nicolaka/netshoot:0.0.0-fixture"* ]]
+    [[ "$output" == *"all images present"* ]]
+}
+
+@test "assert_image_tags() still wants the exact name outside docker.io, and a missing tag still FAILs" {
+    printf 'ghcr.io/x/alpine:latest\nquay.io/frrouting/frr:0.0.0-fixture\ndocker.io/library/busybox:latest\n' > "$BATS_TEST_TMPDIR/list.txt"
+    stub docker 'if [ "$1" = image ] && [ "$2" = ls ]; then printf "alpine:latest\nfrr:0.0.0-fixture\nquay.io/frrouting/frr:0.0.0-fixture\nbusybox:other\n"; fi; exit 0'
+    run lib "assert_image_tags '$BATS_TEST_TMPDIR/list.txt'"
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"MISSING ghcr.io/x/alpine:latest"* ]]
+    [[ "$output" == *"ok      quay.io/frrouting/frr:0.0.0-fixture"* ]]
+    [[ "$output" == *"MISSING docker.io/library/busybox:latest"* ]]
+    [[ "$output" == *"2 image(s) missing"* ]]
+}
+
+@test "image_norm() strips docker.io/ then library/, and leaves other registries alone" {
+    run lib "image_norm docker.io/library/alpine:latest docker.io/nicolaka/netshoot:x library/alpine:x ghcr.io/a/b:c"
+    [ "$status" -eq 0 ]
+    [ "$output" = "$(printf 'alpine:latest\nnicolaka/netshoot:x\nalpine:x\nghcr.io/a/b:c')" ]
+    run lib "printf 'docker.io/library/alpine:latest\n' | image_norm"
+    [ "$output" = "alpine:latest" ]
+}
+
 @test "image_ref_from_list() finds by repository name regardless of position" {
     run lib "image_ref_from_list '$BUNDLE/malcolm/image-list.txt' arkime"
     [ "$output" = "ghcr.io/idaholab/malcolm/arkime:0.0.0-fixture" ]
@@ -184,4 +215,22 @@ lib() { kit_run bash -c "set -uo pipefail; . '$LIB'; kit_init test; $1"; }
     [ "$status" -eq 2 ]; [[ "$output" == *"READY WITH WARNINGS"* ]]
     run lib 'warn b; fail c; footer'
     [ "$status" -eq 1 ]; [[ "$output" == *"NOT READY"* ]]
+}
+
+@test "bridge_physical_ports() follows lower devices: a VLAN and a bond over physical NICs count, a veth does not" {
+    s="$ROOT/sys/class/net"
+    mkdir -p "$s/br-x/bridge" "$s/br-x/brif" "$s/eno1/device" "$s/eno2/device" \
+             "$s/eno1.100" "$s/bond0" "$s/veth0" "$s/loopa" "$s/loopb"
+    ln -s ../eno1 "$s/eno1.100/lower_eno1"
+    ln -s ../eno2 "$s/bond0/lower_eno2"
+    ln -s ../loopb "$s/loopa/lower_loopb"      # a lower-device cycle must terminate
+    ln -s ../loopa "$s/loopb/lower_loopa"
+    touch "$s/br-x/brif/eno1.100" "$s/br-x/brif/bond0" "$s/br-x/brif/veth0" "$s/br-x/brif/loopa"
+    run lib 'bridge_physical_ports br-x'
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [ "$output" = "bond0 eno1.100" ]
+    run lib 'bridge_physical_ports br-none'
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
 }

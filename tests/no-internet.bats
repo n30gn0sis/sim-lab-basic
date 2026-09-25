@@ -44,3 +44,9 @@ setup() { cd "$BATS_TEST_DIRNAME/.."; }
         [[ "$line" == *"127.0.0.1"* ]] || [[ "$line" == *'"https://$n/"'* ]] || { echo "curl beyond loopback: $line"; false; }
     done < <(grep -hE '\b(curl|wget) ' scripts/*.sh | grep -vE '^\s*#|command -v|DRY-RUN|note "API' || true)
 }
+
+@test "scenario traffic stays inside the lab ranges" {
+    bad=$(grep -rnoE 'https?://[A-Za-z0-9._:-]+' scenarios/ | grep -vE '://10[.]20[1-5][.][0-9]+[.][0-9]+(:|/|$)' || true)
+    echo "outside the lab: $bad"
+    [ -z "$bad" ]
+}

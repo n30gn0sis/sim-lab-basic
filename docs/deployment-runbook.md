@@ -11,14 +11,15 @@ the step is wrong — stop and fix the bundle, not the box.
 `BUNDLE_NOTES.md`; the hardware of record and the phase status are in the build
 repo's `state/BUILD-STATE.md`. This runbook names no version and no measurement.
 
-Malcolm and GNS3 are **two independent pipelines**, each its own
-`... full` entry point in its own script — there is no outer orchestrator.
-Run either first, or both back to back on the same box: the bundle-prep
-steps they share (`preflight gate copy apt phone-home docker files`) are all
-idempotent, so the second pipeline's copy of them reports "already done" and
-moves on (see `docs/CODEMAPS/architecture.md`). Once Malcolm is up, an
-optional **front door** (one certificate, the three `.lab` vhosts, the
-offline analyst wiki) is a separate, explicit sequence.
+Malcolm, GNS3 and the offline analyst wiki are **three independent
+pipelines**, each its own `... full` entry point in its own script — there
+is no outer orchestrator. Run them in any order, or back to back on the same
+box: the bundle-prep steps they share (`preflight gate copy apt phone-home
+docker files`) are all idempotent, so a later pipeline's copy of them reports
+"already done" and moves on (see `docs/CODEMAPS/architecture.md`). Once
+Malcolm is up, an optional **front door** (one certificate, the three `.lab`
+vhosts) is a separate, explicit sequence; it serves the wiki the docs
+pipeline published at `docs.lab`.
 
 ---
 
@@ -28,22 +29,26 @@ The install is **not** a single sitting.
 
 | Steps | Build-repo phase | Blocked by |
 |---|---|---|
-| Bundle-in prep: `preflight` `gate` `copy` `apt` `phone-home` `docker` `files` (shared by both pipelines) | 4, 6 | — ready (needs the Phase 3 volumes mounted) |
-| GNS3 pipeline: `load` `venv` `secrets` `config` `service` | 8 | needs Phase 8 built |
+| Bundle-in prep: `preflight` `gate` `copy` `apt` `phone-home` `docker` `files` (shared by all three pipelines) | 4, 6 | — ready (needs the Phase 3 volumes mounted) |
+| GNS3 pipeline: `load` `venv` `secrets` `config` `service` `labnet` | 8 | needs Phase 8 built |
 | Malcolm pipeline: `load` `unpack` `configure` `secrets` `auth` `rebind` `start` | 10 | needs Phase 10 built, capture-port prep (Phase 9) |
-| Front door: `ca` `cert` `htpasswd` `nginx` `docs` | 13 | needs Phase 13 built, and Malcolm's `auth` step already run |
+| Docs pipeline: `load` `build` | 13 | needs Phase 13 built (the docs site is part of it) |
+| Front door: `ca` `cert` `htpasswd` `nginx` | 13 | needs Phase 13 built, and Malcolm's `auth` step already run |
 | validate | 16 | runs at any point; SKIPs what is not built |
 
-None of these steps touch a network interface, an IP address, or SSH — GNS3,
-Malcolm and the front door's nginx all bind to `127.0.0.1` only (the front
-door itself answers on `0.0.0.0:443`). Proving iDRAC as a recovery path is a
+None of these steps touch a network interface, an IP address, or SSH — GNS3
+and Malcolm bind to `127.0.0.1` only, the docs pipeline's build runs with
+`--network none`, and the front door's nginx answers on `0.0.0.0:443` (from
+the moment the package installs, with its stock default site until the
+portal's `nginx` step removes it). Proving iDRAC as a recovery path is a
 prerequisite for the build repo's **own** management-networking work, not for
-anything these steps do — it does not gate the GNS3, Malcolm or front-door
-steps here. What still gates them is whether their own build-repo phase (8,
-9, 10, 13) is built; check `state/BUILD-STATE.md` in the build repo before
-assuming one is ready. The shared bundle-prep steps can run now regardless:
+anything these steps do — it does not gate the GNS3, Malcolm, docs or
+front-door steps here. What still gates them is whether their own build-repo
+phase (8, 9, 10, 13) is built; check `state/BUILD-STATE.md` in the build repo
+before assuming one is ready. The shared bundle-prep steps can run now
+regardless:
 they are the long ones, and they prove the bundle before anything else
-begins. Run either pipeline with `--to files` to stop there.
+begins. Run any pipeline with `--to files` to stop there.
 
 ---
 
@@ -59,13 +64,16 @@ lsblk -o NAME,SIZE,FSTYPE,LABEL,MOUNTPOINT      # identify the media — never a
 
 ---
 
-## The short path: two commands
+## The short path: one command per pipeline
 
 ```bash
 sudo ./scripts/r770-malcolm-deploy.sh full --bundle /mnt/bundle/bundle-YYYYMMDD \
     --media /mnt/bundle --device /dev/<discovered>
 
 sudo ./scripts/r770-gns3-deploy.sh full --bundle /mnt/bundle/bundle-YYYYMMDD \
+    --media /mnt/bundle --device /dev/<discovered>
+
+sudo ./scripts/r770-docs-deploy.sh full --bundle /mnt/bundle/bundle-YYYYMMDD \
     --media /mnt/bundle --device /dev/<discovered>
 ```
 
@@ -74,7 +82,7 @@ Exit **0** every step clean · **2** finished with warnings to disposition ·
 `--help` prints its step sequence. `--to files` stops after the bundle is in.
 `--dry-run` prints every command a run would execute, including the gates'
 current/proposed/rollback text, and executes none of it. The sections below
-are the same two pipelines one step at a time, and remain the reference for
+are the same three pipelines one step at a time, and remain the reference for
 what each step does and why.
 
 ---
@@ -188,6 +196,7 @@ hand.
 B=/srv/bundles/bundle-YYYYMMDD
 sudo ./scripts/r770-malcolm-deploy.sh unpack --bundle $B       # needs python3-ruamel.yaml, python3-dotenv (apt/)
 sudo ./scripts/r770-malcolm-deploy.sh configure --bundle $B    # renders the kit's config template, replays it through install.py
+#   add --capture-ifs lab-mirror0 for live capture of the lab (run GNS3's labnet first)
 sudo ./scripts/r770-malcolm-deploy.sh secrets                  # /etc/lab/secrets/malcolm-admin.pw, once
 sudo ./scripts/r770-malcolm-deploy.sh auth --bundle $B         # auth_setup, hashes generated on the box
 sudo ./scripts/r770-malcolm-deploy.sh rebind                   # 0.0.0.0:443 -> 127.0.0.1:8443, the front door owns 443
@@ -201,9 +210,11 @@ surprise. The template pins PCAP to `/data/pcap/raw` and indexes to
 `/var/lib/docker`), sizes the JVM heaps from this host, turns Suricata and the
 Zeek feed pulls off. `--arkime-free-space-g N` turns on oldest-first deletion
 of raw PCAP below N GB free; Phase 10 sets that from measured feed rates, so
-the default is off. `rebind` is re-applied after every installer run because a
-compose override file is ignored. `start` refuses before `auth` and before
-`rebind`. Arkime and logstash are the last to go healthy; `start` waits up to
+the default is off. `--capture-ifs "<if ...>"` turns on live Arkime and Zeek
+capture on those interfaces (each must exist and carry no address); without
+it live capture stays off. `rebind` is re-applied after every installer run
+because a compose override file is ignored. `start` refuses before `auth` and
+before `rebind`. Arkime and logstash are the last to go healthy; `start` waits up to
 `MALCOLM_WAIT_SECS` and can be rerun to keep waiting.
 
 Once the stack is healthy, the lab's own saved objects and views go on top.
@@ -292,6 +303,58 @@ to the service user because GNS3 v3 writes its database and JWT key beside its
 config — root-owned, it fails with "unable to open database file". `service`
 FAILs if the server listens on anything but loopback.
 
+### Step G10 — labnet  *(GATED)*
+
+```bash
+sudo ./scripts/r770-gns3-deploy.sh labnet     # br-lab (hub mode), lab-tap0..3, lab-mon0 <-> lab-mirror0
+```
+
+The lab bridge every scenario shares, mirrored into Malcolm by construction:
+`br-lab` runs with `ageing_time 0`, so it floods every frame to every port —
+including `lab-mon0`, whose veth peer `lab-mirror0` is what Malcolm captures.
+A scenario puts a link on the bridge by binding a GNS3 Cloud node to a
+`lab-tapN` (owned by the `gns3` user) **on the Cloud's TAP tab, never its
+Ethernet tab** — in a project file, the Cloud's `ports_mapping` entry has
+`"type": "tap"` and `"interface": "lab-tapN"`. gns3-server types an interface
+as a TAP only when its name starts with `tap`; bound from the Ethernet tab,
+`lab-tapN` is opened with a raw packet socket, and a TAP that no process holds
+open drops those frames, so nothing reaches `br-lab`. (That behaviour was read
+from gns3-server's master branch; the staging rehearsal confirms it against
+the bundled GNS3 before this procedure is relied on.)
+
+The step installs `/etc/systemd/network/05-*lab*` files (the bridge with
+MAC learning and multicast snooping off, the veth, the TAPs, and
+`05-lab-mirror0.link`, which turns offloads off on the capture end) and runs
+`networkctl reload`; it refuses while systemd-networkd is inactive, before
+`config` has created the service user, and when one of its names already
+belongs to something else. After the reload it waits for the whole end state,
+then proves hub mode, no multicast snooping, the ports, that no physical
+interface joined the bridge directly or through a VLAN or bond (rule 8), that
+`lab-mirror0` is up, promiscuous and address-less with gro/lro/tso off, and
+whether Docker's `br_netfilter` + `FORWARD DROP` could drop bridged IP (a
+WARN with the rule to add by hand — the kit adds none). `GNS3_LAB_TAPS`
+changes the TAP count (default 4); lowering it removes the TAPs and files it
+no longer declares, through the gate. Files in place but interfaces missing
+(after someone deleted one) is an ungated `networkctl reload`. Nothing on
+`br-lab` is bridged to a physical port or NATed: lab traffic cannot leave the
+box.
+
+Then turn Malcolm's live capture on (Malcolm procedure, `configure`):
+`r770-malcolm-deploy.sh configure --bundle $B --capture-ifs lab-mirror0`.
+
+Evidence that the feed is live, once a scenario runs:
+- the Cloud's TAP binding brings `lab-tapN` to carrier — `ip link show
+  lab-tap0` no longer says `NO-CARRIER` while the node runs;
+- `tcpdump -c 5 -i lab-mirror0` shows frames;
+- labnet's netfilter line is a PASS, or — if it WARNed — a ping between two
+  scenario nodes shows up in `tcpdump -ni lab-mirror0` in both directions (if
+  it does not, add `iptables -I DOCKER-USER -i br-lab -o br-lab -j ACCEPT`,
+  record it, and rerun labnet);
+- Arkime shows sessions from the scenario's address range within about a
+  minute, with matching Zeek logs;
+- `r770-validate.sh --area network --lab-bridge br-lab --capture-ifs
+  lab-mirror0` and `--area capture` report the wiring and `capture_loss`.
+
 ### GNS3 — validate note
 
 Once `service` is up, `r770-validate.sh --area gns3` is the first honest
@@ -301,20 +364,100 @@ issues a token); once the front door is up, `--area portal` covers
 
 ---
 
+## Scenarios (after GNS3's `labnet`)
+
+```bash
+B=/srv/bundles/bundle-YYYYMMDD
+sudo ./scripts/r770-scenario.sh list --bundle $B        # which scenarios this bundle can run
+sudo ./scripts/r770-scenario.sh up ospf --bundle $B     # import, start, configure, wait until ready
+sudo ./scripts/r770-scenario.sh traffic ospf            # known traffic for traffic_secs; run record in r770-evidence/
+sudo ./scripts/r770-scenario.sh status                  # what is up, on which TAPs, last run
+sudo ./scripts/r770-scenario.sh down ospf               # stop and delete the imported project
+```
+
+Each scenario under `scenarios/` is a GNS3 project built only from bundled
+images, with exactly one link on `br-lab` through two Cloud nodes bound to
+kit TAPs (TAP type, picked free by `up`, or `--taps lab-tapN,lab-tapM`).
+`up` configures every node from the scenario's `nodes/` files over
+`docker exec` and waits for the scenario's readiness check; if that never
+passes, the nodes are left running for inspection and `down` removes them.
+`traffic` runs only when the scenario is ready and writes
+`scenario-<name>-<host>-<ts>.run` (UTC start/end, range, TAPs) beside the
+transcript. `ipsec-ike` refuses until a bundle carries a strongSwan image.
+Each scenario owns one /16 (`client-server` 10.205, `ipsec-esp` 10.201,
+`ipsec-ike` 10.202, `ospf` 10.203, `bgp` 10.204), so two can share the hub.
+
+What only the staging rehearsal proves — check each once on VM 9770.
+First, the images themselves:
+`docker run --rm --network none <alpine ref> sh -c 'command -v nc'` prints a
+path (`client-server`'s server is a busybox `nc` loop — stock alpine has no
+`httpd`), and `docker image ls --format '{{.Repository}}:{{.Tag}}'` shows how
+names display (short, like `alpine:latest`, or as the list writes them; the
+kit normalises either form). Then:
+the admin login and the project import answer as the kit expects; a Cloud
+bound through the TAP tab brings `lab-tapN` to carrier; GNS3's docker nodes
+allow `ip addr`, `sysctl` and `ip xfrm`; the FRR nodes' `ospfd`/`bgpd` start
+(`vtysh -c 'show ip ospf neighbor'`, `show bgp summary`); with Malcolm's live
+capture on, a run's window shows up in Arkime from the scenario's range.
+
+---
+
+## Docs procedure
+
+Steps D1–D4 (`preflight` `gate` `copy` `apt` `phone-home` `docker` `files`)
+are identical to Malcolm's M1–M7 above, against the same
+`r770-import-bundle.sh`, and are idempotent — if another pipeline has
+already run on this box, the docs pipeline's copy of them reports "already
+done" and `full` moves straight on. What follows is docs-specific.
+
+### Step D5 — load
+
+```bash
+sudo ./scripts/r770-docs-deploy.sh load --bundle /srv/bundles/bundle-YYYYMMDD
+```
+
+`docker load` of `docker/monitoring-images.tar.gz`, then **every tag asserted
+against `docker/monitoring-image-list.txt`** (the names predate the cut of the
+monitoring stack; the pair now carries only the mkdocs-material build image).
+Skipped, and safe to rerun, once every tag is already present.
+
+### Step D6 — build
+
+```bash
+sudo ./scripts/r770-docs-deploy.sh build --bundle /srv/bundles/bundle-YYYYMMDD
+```
+
+The kit's `docs/wiki` (or `--wiki <dir>`) built with the bundled image under
+`--network none`, then published to `/srv/www/docs` by staging beside the live
+tree and swapping it in with two renames. A failed build, or a failed copy,
+leaves the previous site live; a `docs.new` or `docs.prev` left by an
+interrupted run is cleared by the next `build`. `build` does not load the
+image itself (unlike the retired portal `docs` step); it refuses with "run
+'load' first" if the image is absent. To rebuild after the wiki source
+changes: `r770-docs-deploy.sh full --bundle <local bundle> --only build`.
+
+### Docs — validate note
+
+`r770-docs-deploy.sh status` shows the page count, the build time, whether
+the image is loaded (with `--bundle`) and whether `docs.lab` is being served.
+Once the front door is up, `r770-validate.sh --area portal` covers `docs.lab`.
+
+---
+
 ## Front door (optional, after Malcolm)
 
-The front door is the internal CA, one three-SAN certificate, the `.lab`
-vhosts and the offline analyst wiki — a separate, explicit sequence, never
-part of either `full`. Run it once Malcolm's `auth` step has produced
-`/opt/malcolm/malcolm/nginx/htpasswd`: `htpasswd` below has a **hard
-dependency** on that file and refuses without it.
+The front door is the internal CA, one three-SAN certificate and the `.lab`
+vhosts — a separate, explicit sequence, never part of any `full`. It serves
+`docs.lab` from whatever the docs pipeline last published; before the first
+`build`, `docs.lab` answers 401 (auth), then 404. Run it once Malcolm's
+`auth` step has produced `/opt/malcolm/malcolm/nginx/htpasswd`: `htpasswd`
+below has a **hard dependency** on that file and refuses without it.
 
 ```bash
 sudo ./scripts/r770-portal-deploy.sh ca                        # easy-rsa CA under /etc/lab/ca, ca.crt to /etc/nginx/ssl
 sudo ./scripts/r770-portal-deploy.sh cert                       # one cert: malcolm, gns3, docs .lab
 sudo ./scripts/r770-portal-deploy.sh htpasswd                   # the analyst login, from Malcolm's auth material — needs `auth` already run
 sudo ./scripts/r770-portal-deploy.sh nginx                      # vhosts; nginx -t BEFORE reload; every name probed after
-sudo ./scripts/r770-portal-deploy.sh docs --bundle /srv/bundles/bundle-YYYYMMDD   # wiki built with the bundled mkdocs image, --network none
 ```
 
 The CA is generated here and never carried in. Distribute `/etc/nginx/ssl/ca.crt`
