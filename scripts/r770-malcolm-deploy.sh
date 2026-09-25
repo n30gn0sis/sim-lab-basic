@@ -239,8 +239,11 @@ cmd_configure() {
         "PCAP_NODE_NAME=$(hostname -s)" "OS_MEMORY=${os}g" "LS_MEMORY=${ls}m" \
         "ARKIME_MANAGE_PCAP=$manage" "ARKIME_FREE_SPACE_G=$free" "MALCOLM_VER=$ver" \
         "PCAP_IFACE=$ifaces" "CAPTURE_LIVE=$live" "LIVE_ARKIME=$live" "LIVE_ZEEK=$live"
-    run python3 "$(installer)" --non-interactive --skip-splash --configure \
-        --import-malcolm-config-file "$rendered" --export-malcolm-config-file "$exported" \
+    # From its own directory: the installer looks for the stack tarball it
+    # extracts to malcolm/ in its working directory, and anywhere else fails on
+    # missing .env.example templates (measured on staging VM 9770, 2026-09-25).
+    ( cd "$(home)" && run python3 "$(installer)" --non-interactive --skip-splash --configure \
+        --import-malcolm-config-file "$rendered" --export-malcolm-config-file "$exported" ) \
         || die "the installer failed — its output above is the evidence; nothing else was changed"
     if [ "$DRY" != "1" ]; then
         [ -f "$(compose)" ] || die "the installer did not produce $(compose) — read its output"

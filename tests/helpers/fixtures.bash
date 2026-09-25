@@ -124,6 +124,7 @@ make_malcolm_tree() {
     cat > "$home/install.py" <<'STUB'
 #!/usr/bin/env bash
 [ -n "${MALCOLM_STUB_LOG:-}" ] && echo "install.py $*" >> "$MALCOLM_STUB_LOG"
+[ -n "${MALCOLM_STUB_LOG:-}" ] && echo "install.py cwd $(pwd)" >> "$MALCOLM_STUB_LOG"
 case " $* " in *" --help "*)
     echo "usage: install.py [-h] [--non-interactive] [--defaults] [--configure] [--skip-splash]"
     echo "  --import-malcolm-config-file FILE   import configuration"

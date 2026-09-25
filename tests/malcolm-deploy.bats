@@ -142,6 +142,9 @@ STUB
     [ "$status" -eq 0 ]
     grep -q -- "--import-malcolm-config-file $ROOT/opt/malcolm/malcolm-config.rendered.json" "$MALCOLM_STUB_LOG"
     grep -q -- '--non-interactive' "$MALCOLM_STUB_LOG"
+    # the installer finds its stack tarball in its working directory, so the
+    # kit must run it from /opt/malcolm (measured on staging VM 9770, 2026-09-25)
+    grep -qx "install.py cwd $ROOT/opt/malcolm" "$MALCOLM_STUB_LOG"
     r="$ROOT/opt/malcolm/malcolm-config.rendered.json"
     ! grep -q '__[A-Z_]*__' "$r"
     grep -q '"osMemory": "24g"' "$r"                # 128 GB host -> 24g (buildout §8)
