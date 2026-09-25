@@ -38,52 +38,29 @@ simlab-build (design + build side)            sim-lab-basic (R770 side — this 
 - [ ] `./tests/run.sh` green here; the build repo's suite green there
 - [ ] Tag the kit with the bundle date it was rehearsed against, and name that tag in the build repo's cycle log
 
-## Local divergence: `staging/r770-offline-fetch.sh` (2026-09-21)
+## Local divergence: `staging/r770-offline-fetch.sh` (since 2026-09-21)
 
-**This is a deliberate, one-time, user-approved exception to the byte-for-byte
-carry rule above** — the only one in this repo. `staging/r770-offline-fetch.sh`
-was hand-edited here (not resynced from `simlab-build`) to trim `MONITOR_IMAGES`
-down to just `mkdocs-material`, dropping the Prometheus/Alertmanager/blackbox-
-exporter/Grafana-OSS/cAdvisor monitoring images plus the confirmed-unused
-stock-nginx and docker-registry-v2 images, as part of cutting monitoring from
-this kit. `mkdocs-material` stays because the offline analyst wiki
-(`docs.lab`, built by `scripts/r770-docs-deploy.sh build`) still needs it.
-The array's name and its two output paths
-(`docker/monitoring-image-list.txt` / `docker/monitoring-images.tar.gz`) were
-kept unchanged: `staging/r770-bundle.sh`'s `check_required()` — itself still
-provenance-locked and untouched — hardcodes those exact filenames as a
-matched list/payload pair, and renaming either would make the verifier
-silently stop checking that category instead of failing loudly.
+**The one deliberate, user-approved exception to the byte-for-byte carry rule
+above.** The kit trims `MONITOR_IMAGES` to `mkdocs-material` alone (it no
+longer deploys Prometheus/Alertmanager/blackbox-exporter/Grafana-OSS/cAdvisor,
+and the stock nginx and docker-registry v2 images had no consumer);
+`mkdocs-material` stays because `docs.lab` is built by
+`scripts/r770-docs-deploy.sh build`. The array's name and its two output
+paths (`docker/monitoring-image-list.txt` / `docker/monitoring-images.tar.gz`)
+are unchanged: `staging/r770-bundle.sh`'s `check_required()` pairs exactly
+those filenames, and renaming either would make the verifier silently stop
+checking that category. `seed()` also never reuses a prior bundle's
+monitoring tarball (it may predate the trim), and stage 4 is labelled "Docs
+build image".
 
-**Stale comment, to fix on the next resync:** `staging/r770-offline-fetch.sh:73`
-still says mkdocs-material "builds docs.lab (`scripts/r770-portal-deploy.sh
-docs`)" — that subcommand was retired; the wiki is now built by
-`scripts/r770-docs-deploy.sh build`. This file is provenance-locked
-(`tests/staging.bats`) and is not edited here; fix the comment in the build
-repo and carry it over on the next resync.
-
-`staging/PROVENANCE.txt` records this: the hash for `r770-offline-fetch.sh`
-was recomputed and no longer corresponds to any single `simlab-build` commit,
-while the other three carried scripts' hashes are untouched. `staging/r770-bundle.sh`,
-`staging/r770-build-bundle.sh` and `staging/r770-staging-preflight.sh` remain
-byte-for-byte and provenance-locked; only the fetch script diverged.
-
-**Reconciling this upstream (porting the trim back into `simlab-build`, or
-re-carrying a future upstream fetch script over this local edit) is out of
-scope for this repo.** A future sync pass on `staging/r770-offline-fetch.sh`
-must not silently overwrite this local edit — diff it against this file
-first, and re-apply the monitoring trim (or fold it upstream and re-carry)
-rather than blindly copying `simlab-build`'s current version over it.
-
-**Addendum (2026-09-22):** an external PR review on the trim above caught
-that `seed()` would still reuse a stale prior bundle's untrimmed
-`docker/monitoring-images.tar.gz` (the pre-trim payload, with the removed
-monitoring images) even after the list file was correctly regenerated as
-`mkdocs-material`-only — the seeded payload and the freshly written list
-would silently disagree. `seed()` now excludes
-`docker/monitoring-images.tar.gz` from prior-bundle reuse, the same way it
-already excludes `apt/*`/`enrichment/*`. `staging/PROVENANCE.txt`'s hash
-for `r770-offline-fetch.sh` was recomputed again for this change.
+**How a resync handles it** (last done 2026-09-25, from `simlab-build`
+`f66d71b`): copy all four scripts from the build repo's commit, then reapply
+exactly this divergence to `r770-offline-fetch.sh` — its header says so, and
+`diff` against the upstream file shows only these hunks. Record the commit in
+`staging/PROVENANCE.txt` and regenerate the four hashes; the other three
+scripts are that commit byte for byte. Bundles cut by the build repo itself
+still carry the full monitoring set; the kit reads only `mkdocs-material` out
+of that list, so either kind of bundle works here.
 
 ## The no-pins rule
 
@@ -111,22 +88,14 @@ is asserted against those tools' `--help` before use.
   a config-file import. If a future installer drops that, the fallback is the
   build repo's runbook procedure (`--defaults --configure`) plus the same
   rebind; the kit dies naming the flag rather than guessing.
-- **Lab mirror mechanism (to carry to the build repo).** The kit mirrors lab
-  traffic with a hub-mode bridge (`br-lab`, `ageing_time 0`) and a veth
-  (`lab-mon0` ⇄ `lab-mirror0`) instead of the buildout plan §7's `tc mirred`
-  per port: no per-port rules to follow GNS3's ports as they come and go.
-  Record the decision in the build repo's buildout plan §7.
-- **Wiki mirror procedure (to carry to the build repo).** `docs/wiki/gns3.md`'s
-  "mirror … TBD" can now read: bind a GNS3 Cloud node to a `lab-tapN` on
-  the Cloud's **TAP** tab (never the Ethernet tab: gns3-server opens a name
-  not starting with `tap` as an ethernet interface with a raw socket, whose
-  frames an unheld TAP drops); everything on `br-lab` reaches Malcolm. `docs/wiki/` is build-repo content
-  and is edited there.
-- **strongSwan image (to add in the build repo).** `scenarios/ipsec-ike` needs
-  a strongSwan image in `GNS3_NODE_IMAGES` (the pin block in
-  `staging/r770-offline-fetch.sh`, edited in the build repo and resynced).
-  Until a bundle carries it, `r770-scenario.sh up ipsec-ike` refuses by name.
-  The image must start charon by itself and carry `swanctl` and `iproute2`.
-- **Wiki scenarios section (to carry to the build repo).** `docs/wiki/gns3.md`
-  can gain a "Scenario pack" section pointing analysts at
-  `r770-scenario.sh list|up|traffic|down`.
+- **Carried to the build repo 2026-09-25 (simlab-build PR #11).** The
+  hub-mode lab mirror (buildout §4.3/§7.2, PRD §5); the wiki's mirror
+  procedure (Cloud node, **TAP** tab — never the Ethernet tab, which gns3-server
+  opens with a raw socket whose frames an unheld TAP drops) and its
+  scenario-pack section, carried back into `docs/wiki/gns3.md`; and the
+  strongSwan pin (`STRONGSWAN_IMG` in `GNS3_NODE_IMAGES`, resynced into
+  `staging/r770-offline-fetch.sh`).
+- **strongSwan does not start charon by itself.** The pinned image's own
+  documentation starts it by hand (`./charon &`), so `scenarios/ipsec-ike`
+  must start it — settled on the staging rehearsal, where the image can be
+  inspected.
