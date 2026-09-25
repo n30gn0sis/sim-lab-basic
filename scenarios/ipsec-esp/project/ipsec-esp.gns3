@@ -1,0 +1,39 @@
+{
+  "name": "__PROJECT_NAME__",
+  "project_id": "__PROJECT_ID__",
+  "revision": 9,
+  "type": "topology",
+  "variables": [{"name": "r770_scenario", "value": "__SCENARIO__"}],
+  "topology": {
+    "computes": [],
+    "drawings": [],
+    "nodes": [
+      {"compute_id": "local", "node_id": "00000001-0000-4000-8000-000000000001", "name": "cl-a", "node_type": "docker", "x": -400, "y": 0,
+       "properties": {"image": "__IMG_NETSHOOT__", "adapters": 1, "start_command": "tail -f /dev/null", "console_type": "none"}},
+      {"compute_id": "local", "node_id": "00000001-0000-4000-8000-000000000002", "name": "gw-a", "node_type": "docker", "x": -200, "y": 0,
+       "properties": {"image": "__IMG_NETSHOOT__", "adapters": 2, "start_command": "tail -f /dev/null", "console_type": "none"}},
+      {"compute_id": "local", "node_id": "00000001-0000-4000-8000-000000000003", "name": "gw-b", "node_type": "docker", "x": 200, "y": 0,
+       "properties": {"image": "__IMG_NETSHOOT__", "adapters": 2, "start_command": "tail -f /dev/null", "console_type": "none"}},
+      {"compute_id": "local", "node_id": "00000001-0000-4000-8000-000000000004", "name": "cl-b", "node_type": "docker", "x": 400, "y": 0,
+       "properties": {"image": "__IMG_NETSHOOT__", "adapters": 1, "start_command": "tail -f /dev/null", "console_type": "none"}},
+      {"compute_id": "local", "node_id": "00000001-0000-4000-8000-000000000005", "name": "tap-a", "node_type": "cloud", "x": -60, "y": 0,
+       "properties": {"ports_mapping": [{"interface": "__TAP_A__", "name": "__TAP_A__", "port_number": 0, "type": "tap"}]}},
+      {"compute_id": "local", "node_id": "00000001-0000-4000-8000-000000000006", "name": "tap-b", "node_type": "cloud", "x": 60, "y": 0,
+       "properties": {"ports_mapping": [{"interface": "__TAP_B__", "name": "__TAP_B__", "port_number": 0, "type": "tap"}]}}
+    ],
+    "links": [
+      {"link_id": "00000001-0000-4000-9000-000000000001", "nodes": [
+        {"node_id": "00000001-0000-4000-8000-000000000001", "adapter_number": 0, "port_number": 0},
+        {"node_id": "00000001-0000-4000-8000-000000000002", "adapter_number": 0, "port_number": 0}]},
+      {"link_id": "00000001-0000-4000-9000-000000000002", "nodes": [
+        {"node_id": "00000001-0000-4000-8000-000000000002", "adapter_number": 1, "port_number": 0},
+        {"node_id": "00000001-0000-4000-8000-000000000005", "adapter_number": 0, "port_number": 0}]},
+      {"link_id": "00000001-0000-4000-9000-000000000003", "nodes": [
+        {"node_id": "00000001-0000-4000-8000-000000000006", "adapter_number": 0, "port_number": 0},
+        {"node_id": "00000001-0000-4000-8000-000000000003", "adapter_number": 1, "port_number": 0}]},
+      {"link_id": "00000001-0000-4000-9000-000000000004", "nodes": [
+        {"node_id": "00000001-0000-4000-8000-000000000003", "adapter_number": 0, "port_number": 0},
+        {"node_id": "00000001-0000-4000-8000-000000000004", "adapter_number": 0, "port_number": 0}]}
+    ]
+  }
+}
