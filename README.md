@@ -73,6 +73,15 @@ sudo ./scripts/r770-portal-deploy.sh htpasswd   # needs Malcolm's auth step alre
 sudo ./scripts/r770-portal-deploy.sh nginx
 ```
 
+With GNS3's `labnet` done (and Malcolm's live capture on, to see the traffic),
+a scenario from the pack is three commands:
+
+```bash
+sudo ./scripts/r770-scenario.sh up ipsec-esp --bundle /srv/bundles/bundle-YYYYMMDD
+sudo ./scripts/r770-scenario.sh traffic ipsec-esp     # 60 s of known traffic, a run record in r770-evidence/
+sudo ./scripts/r770-scenario.sh down ipsec-esp
+```
+
 Exit **0** every step clean · **2** finished with warnings to disposition ·
 **1** a step refused or failed — fix it, then rerun with `--from <step>`
 (`full` only).
@@ -94,6 +103,8 @@ and the build repo's Phase 5 don't gate anything in this kit.
 | `scripts/r770-malcolm-deploy.sh` | Malcolm: `full` runs its own bundle-in prep, then load/assert-tags (as in the build repo), unpack, configure by replaying the kit's config template through the installer, secrets, auth, the port rebind, start with Malcolm's own script; then `inventory` (read-only, what Dashboards holds), `dashboards` and `arkime-views` (the lab's IPsec saved searches and views, each asserted back after install) |
 | `scripts/r770-gns3-deploy.sh` | GNS3: `full` runs its own bundle-in prep, then load/assert-tags for the docker-node images, venv from the wheelhouse (`--no-index`), service user, config owned by that user, systemd unit on 127.0.0.1, then `labnet`: the hub-mode lab bridge whose mirror (`lab-mirror0`) Malcolm captures with `--capture-ifs` |
 | `scripts/r770-docs-deploy.sh` | The analyst wiki: `full` runs its own bundle-in prep, then load/assert-tags for the mkdocs image, then `build` (`--network none`) with an atomic publish to `/srv/www/docs` — a failed build never leaves `docs.lab` empty |
+| `scripts/r770-scenario.sh` | The scenario pack's driver: `list`, `up` (import into GNS3, start, configure each node, wait until ready), `traffic` (a bounded window and a run record under `r770-evidence/`), `down`, `status`. Not gated: it touches only the projects it imported |
+| `scenarios/` | Five repeatable GNS3 scenarios built from bundled images (`client-server`, `ipsec-esp`, `ospf`, `bgp`, and `ipsec-ike`, which waits for a strongSwan image upstream), each with one link on the mirrored `br-lab` |
 | `scripts/r770-portal-deploy.sh` | The optional front door, run after Malcolm: easy-rsa CA generated here, one three-SAN cert (`malcolm gns3 docs`.lab), vhosts (`nginx -t` before reload, probe after); serves the wiki the docs pipeline built |
 | `scripts/r770-airgap-check.sh` | Read-only posture report: no APT source, resolver, mirror, proxy, snap or pip index points outside |
 | `scripts/r770-validate.sh` | The success-criteria suite as a check · expected · observed · verdict · evidence table; SKIP with a reason, never silence |

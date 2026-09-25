@@ -40,6 +40,7 @@ Each script has more than `full` calls. These are operator-invoked:
 | malcolm | `dashboards` `arkime-views` | need a started stack; a failed dashboard import must not fail a deployment that stood every service up |
 | gns3 | `assert-tags` `status` | the tag check alone / read-only |
 | docs | `assert-tags` `status` | the tag check alone / read-only |
+| scenario | `list` `up` `traffic` `down` `status` | an operator tool, not a deployment step: runs the scenario pack on a deployed GNS3 (after `labnet`); not gated — it touches only the GNS3 projects it imported |
 | portal | `ca` `cert` `htpasswd` `nginx` | the whole front door is optional and hand-run — see above |
 | portal | `status`, `--print-sans` | read-only |
 

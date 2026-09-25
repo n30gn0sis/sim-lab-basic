@@ -364,6 +364,38 @@ issues a token); once the front door is up, `--area portal` covers
 
 ---
 
+## Scenarios (after GNS3's `labnet`)
+
+```bash
+B=/srv/bundles/bundle-YYYYMMDD
+sudo ./scripts/r770-scenario.sh list --bundle $B        # which scenarios this bundle can run
+sudo ./scripts/r770-scenario.sh up ospf --bundle $B     # import, start, configure, wait until ready
+sudo ./scripts/r770-scenario.sh traffic ospf            # known traffic for traffic_secs; run record in r770-evidence/
+sudo ./scripts/r770-scenario.sh status                  # what is up, on which TAPs, last run
+sudo ./scripts/r770-scenario.sh down ospf               # stop and delete the imported project
+```
+
+Each scenario under `scenarios/` is a GNS3 project built only from bundled
+images, with exactly one link on `br-lab` through two Cloud nodes bound to
+kit TAPs (TAP type, picked free by `up`, or `--taps lab-tapN,lab-tapM`).
+`up` configures every node from the scenario's `nodes/` files over
+`docker exec` and waits for the scenario's readiness check; if that never
+passes, the nodes are left running for inspection and `down` removes them.
+`traffic` runs only when the scenario is ready and writes
+`scenario-<name>-<host>-<ts>.run` (UTC start/end, range, TAPs) beside the
+transcript. `ipsec-ike` refuses until a bundle carries a strongSwan image.
+Each scenario owns one /16 (`client-server` 10.205, `ipsec-esp` 10.201,
+`ipsec-ike` 10.202, `ospf` 10.203, `bgp` 10.204), so two can share the hub.
+
+What only the staging rehearsal proves — check each once on VM 9770:
+the admin login and the project import answer as the kit expects; a Cloud
+bound through the TAP tab brings `lab-tapN` to carrier; GNS3's docker nodes
+allow `ip addr`, `sysctl` and `ip xfrm`; the FRR nodes' `ospfd`/`bgpd` start
+(`vtysh -c 'show ip ospf neighbor'`, `show bgp summary`); with Malcolm's live
+capture on, a run's window shows up in Arkime from the scenario's range.
+
+---
+
 ## Docs procedure
 
 Steps D1–D4 (`preflight` `gate` `copy` `apt` `phone-home` `docker` `files`)
