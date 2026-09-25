@@ -206,3 +206,136 @@ PY
     [[ "$output" == *"has no kit marker"* ]]
     ! grep -q '^DELETE' "$FAKE_GNS3/requests.log"
 }
+
+# ── up ─────────────────────────────────────────────────────────────────────
+
+@test "up imports the rendered project, opens it, starts it, configures each node and waits until ready" {
+    run scenario up demo --bundle "$BUNDLE"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    r=$(grep -nE '^POST /v3/projects/[^/]+/import\?name=lab-scenario-demo$' "$FAKE_GNS3/requests.log" | cut -d: -f1)
+    o=$(grep -nE '^POST /v3/projects/[^/]+/open$' "$FAKE_GNS3/requests.log" | cut -d: -f1)
+    s=$(grep -nE '^POST /v3/projects/[^/]+/nodes/start$' "$FAKE_GNS3/requests.log" | cut -d: -f1)
+    [ -n "$r" ] && [ -n "$o" ] && [ -n "$s" ] && [ "$r" -lt "$o" ] && [ "$o" -lt "$s" ]
+    python3 - "$FAKE_GNS3/projects.json" <<'PY'
+import json, sys
+p = json.load(open(sys.argv[1]))[0]
+assert p["name"] == "lab-scenario-demo", p["name"]
+assert {"name": "r770_scenario", "value": "demo"} in p["variables"]
+nodes = {n["name"]: n for n in p["topology"]["nodes"]}
+assert nodes["a"]["properties"]["image"] == "docker.io/nicolaka/netshoot:0.0.0-fixture"
+assert nodes["tap-a"]["properties"]["ports_mapping"][0]["interface"] == "lab-tap0"
+assert nodes["tap-b"]["properties"]["ports_mapping"][0]["interface"] == "lab-tap1"
+assert nodes["tap-a"]["properties"]["ports_mapping"][0]["type"] == "tap"
+PY
+    grep -q '^docker exec -i cid-a sh -s$' "$STUB_LOG"
+    grep -q '^docker exec -i cid-b sh -s$' "$STUB_LOG"
+    grep -q '10.209.0.1/24' "$BATS_TEST_TMPDIR/stdin-cid-a"
+    [[ "$output" == *"PASS  every node started"* ]]
+    [[ "$output" == *"PASS  ready: a: true"* ]]
+}
+
+@test "up refuses an image the bundle does not carry, naming it, and imports nothing" {
+    run scenario up needs-ike --bundle "$BUNDLE"
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"strongswan"* ]]
+    [[ "$output" == *"strongSwan arrives with the next bundle cut"* ]]
+    ! grep -q import "$FAKE_GNS3/requests.log" 2>/dev/null
+}
+
+@test "up refuses an image that is in the bundle but not loaded" {
+    : > "$BATS_TEST_TMPDIR/images.txt"
+    run scenario up demo --bundle "$BUNDLE"
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"docker.io/nicolaka/netshoot:0.0.0-fixture is not loaded"* ]]
+}
+
+@test "up refuses a scenario that is already up, and --force takes it down first" {
+    seed_project p1 lab-scenario-demo opened demo
+    run scenario up demo --bundle "$BUNDLE"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"demo is already up"* ]]
+    run scenario up demo --bundle "$BUNDLE" --force
+    echo "$output"
+    [ "$status" -eq 0 ]
+    d=$(grep -n '^DELETE /v3/projects/p1$' "$FAKE_GNS3/requests.log" | cut -d: -f1)
+    i=$(grep -n '/import?name=lab-scenario-demo$' "$FAKE_GNS3/requests.log" | cut -d: -f1)
+    [ -n "$d" ] && [ -n "$i" ] && [ "$d" -lt "$i" ]
+}
+
+@test "up refuses a same-named project without the kit's marker" {
+    seed_project p9 lab-scenario-demo opened ""
+    run scenario up demo --bundle "$BUNDLE" --force
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"without the kit's marker"* ]]
+    ! grep -q '^DELETE' "$FAKE_GNS3/requests.log"
+}
+
+@test "up skips TAPs an opened project holds, and refuses when fewer than two are free, naming the holder" {
+    seed_project p2 other-lab opened "" lab-tap0 lab-tap1
+    run scenario up demo --bundle "$BUNDLE"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"taps: lab-tap2 lab-tap3"* ]]
+    rm -f "$FAKE_GNS3/projects.json"
+    seed_project p2 other-lab opened "" lab-tap0 lab-tap1 lab-tap2
+    run scenario up demo --bundle "$BUNDLE"
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"fewer than two free kit TAPs (held by: other-lab"* ]]
+}
+
+@test "up --taps binds the named TAPs, and refuses one that is held or is not a kit TAP" {
+    run scenario up demo --bundle "$BUNDLE" --taps lab-tap3,lab-tap1
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"taps: lab-tap3 lab-tap1"* ]]
+    run scenario down demo
+    seed_project p2 other-lab opened "" lab-tap2
+    run scenario up demo --bundle "$BUNDLE" --taps lab-tap2,lab-tap0
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"lab-tap2 is held by GNS3 project other-lab"* ]]
+    run scenario up demo --bundle "$BUNDLE" --taps eth0,lab-tap0
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"eth0 is not a kit TAP"* ]]
+    run scenario up demo --bundle "$BUNDLE" --taps lab-tap0
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"--taps takes two different kit TAPs"* ]]
+}
+
+@test "up FAILs when the scenario never becomes ready, leaves the nodes up, and prints the down command" {
+    echo 1 > "$BATS_TEST_TMPDIR/rc-exec-cid-a"
+    run scenario up demo --bundle "$BUNDLE"
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"FAIL  demo did not become ready within 4s"* ]]
+    [[ "$output" == *"r770-scenario.sh down demo"* ]]
+    ! grep -q '^DELETE' "$FAKE_GNS3/requests.log"
+}
+
+@test "up FAILs when the nodes never start, and says how to take them down" {
+    touch "$FAKE_GNS3/never-starts"
+    run scenario up demo --bundle "$BUNDLE"
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"FAIL  not started after 4s: a b"* ]]
+    [[ "$output" == *"r770-scenario.sh down demo"* ]]
+}
+
+@test "up dies when GNS3 refuses the import, and starts nothing" {
+    touch "$FAKE_GNS3/import-fails"
+    run scenario up demo --bundle "$BUNDLE"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"GNS3 refused the import"* ]]
+    ! grep -q '/nodes/start' "$FAKE_GNS3/requests.log"
+}
+
+@test "up --dry-run prints the calls and imports nothing" {
+    run scenario up demo --bundle "$BUNDLE" --dry-run
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"DRY-RUN: POST /projects/"*"/import?name=lab-scenario-demo"* ]]
+    [ ! -s "$FAKE_GNS3/projects.json" ] || ! grep -q lab-scenario-demo "$FAKE_GNS3/projects.json"
+}

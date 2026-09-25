@@ -42,6 +42,9 @@ ADMIN_USER="${GNS3_ADMIN_USER:-admin}"
 SECRET="/etc/lab/secrets/gns3-admin.pw"
 MARKER="r770_scenario"
 BUNDLE=""; NAME=""; WORK=""; AUTH_HDR=""
+WAIT_SECS="${SCENARIO_WAIT_SECS:-120}"
+LAB_TAPS="${GNS3_LAB_TAPS:-4}"
+TAPS=""; TAP_A=""; TAP_B=""
 usage() { usage_from_header 3; exit 0; }
 
 # ── the pack ─────────────────────────────────────────────────────────────────
@@ -118,6 +121,132 @@ take_down() {  # take_down <pid>
     call DELETE "/projects/$1" || die "GNS3 refused to delete project $1"
 }
 
+# ── up ───────────────────────────────────────────────────────────────────────
+taps_in_use() {  # taps_in_use — "<tap> <project-name>" for every TAP a Cloud node of an opened project holds
+    local pid pname
+    api GET /projects | py "
+for p in d:
+    if p.get('status') == 'opened':
+        print(p['project_id'] + '\t' + p.get('name', ''))" |
+    while IFS=$'\t' read -r pid pname; do
+        nodes "$pid" | awk -F'\t' -v p="$pname" '$5 != "" { n = split($5, t, ","); for (i = 1; i <= n; i++) print t[i], p }'
+    done
+}
+pick_taps() {  # pick_taps — sets TAP_A and TAP_B: --taps, or the first two free kit TAPs
+    local used t i cand="" holder extra=""
+    used=$(taps_in_use) || die "could not ask GNS3 which TAPs are in use"
+    if [ -n "$TAPS" ]; then
+        IFS=, read -r TAP_A TAP_B extra <<< "$TAPS"
+        if [ -z "$TAP_A" ] || [ -z "$TAP_B" ] || [ -n "$extra" ] || [ "$TAP_A" = "$TAP_B" ]; then
+            die "--taps takes two different kit TAPs, e.g. --taps lab-tap0,lab-tap1"
+        fi
+        for t in "$TAP_A" "$TAP_B"; do
+            [[ "$t" =~ ^lab-tap[0-9]+$ ]] || die "$t is not a kit TAP (lab-tapN, created by r770-gns3-deploy.sh labnet)"
+            [ -e "$(p /sys/class/net)/$t" ] || die "$t does not exist — run r770-gns3-deploy.sh labnet"
+            holder=$(printf '%s\n' "$used" | awk -v t="$t" '$1 == t {print $2; exit}')
+            [ -z "$holder" ] || die "$t is held by GNS3 project $holder"
+        done
+        return 0
+    fi
+    for ((i = 0; i < LAB_TAPS; i++)); do
+        t="lab-tap$i"
+        [ -e "$(p /sys/class/net)/$t" ] || continue
+        printf '%s\n' "$used" | awk -v t="$t" '$1 == t {f = 1} END {exit !f}' && continue
+        cand="$cand $t"
+    done
+    read -r TAP_A TAP_B _ <<< "$cand"
+    if [ -z "$TAP_B" ]; then
+        holder=$(printf '%s\n' "$used" | awk 'NF {print $2}' | sort -u | tr '\n' ' ')
+        die "fewer than two free kit TAPs (held by: ${holder:-nothing — create them with r770-gns3-deploy.sh labnet})"
+    fi
+}
+render_project() {  # render_project <scenario> <bundle> <out.gns3> <pid>
+    local s=$1 b=$2 out=$3 pid=$4 i
+    local -a kv=()
+    for i in $(conf "$s" images); do kv+=("$(img_token "$i")=$(image_ref "$b" "$i")"); done
+    DRY=0 render "$SCEN_DIR/$s/project/$s.gns3" "$out" "${kv[@]}" \
+        "TAP_A=$TAP_A" "TAP_B=$TAP_B" "PROJECT_NAME=lab-scenario-$s" "PROJECT_ID=$pid" "SCENARIO=$s" >/dev/null
+}
+wait_started() {  # wait_started <pid> — every docker node reports started; writes $WORK/nodes.tsv
+    local waited=0 st
+    while :; do
+        nodes "$1" > "$WORK/nodes.tsv" || die "could not read the project's nodes"
+        st=$(awk -F'\t' '$2 == "docker" && $3 != "started" {print $1}' "$WORK/nodes.tsv" | tr '\n' ' ')
+        if [ -z "$st" ]; then pass "every node started"; return 0; fi
+        if [ "$waited" -ge "$WAIT_SECS" ]; then fail "not started after ${WAIT_SECS}s: ${st% }"; return 1; fi
+        sleep 2; waited=$((waited + 2))
+    done
+}
+configure_nodes() {  # configure_nodes <scenario> — feed each node its files, addresses first
+    local s=$1 kind f base node cid
+    for kind in sh frr.conf swanctl.conf; do
+        for f in "$SCEN_DIR/$s/nodes"/*."$kind"; do
+            [ -e "$f" ] || continue
+            base=$(basename "$f"); node=${base%%.*}
+            cid=$(container_of "$WORK/nodes.tsv" "$node") || exit 1
+            case "$kind" in
+                sh)           run docker exec -i "$cid" sh -s < "$f" ;;
+                frr.conf)     run docker exec -i "$cid" sh -c 'cat > /tmp/lab-frr.conf && vtysh -f /tmp/lab-frr.conf' < "$f" ;;
+                swanctl.conf) run docker exec -i "$cid" sh -c 'mkdir -p /etc/swanctl && cat > /etc/swanctl/swanctl.conf && swanctl --load-all' < "$f" ;;
+            esac || die "configuring $node from $base failed — the nodes are left running for inspection; when done: r770-scenario.sh down $s"
+            note "$node configured from $base"
+        done
+    done
+}
+ready_check() {  # ready_check <scenario> [<limit-secs>] — the scenario's ready command, retried
+    local s=$1 limit=${2:-$WAIT_SECS} spec node cmd cid waited=0
+    spec=$(conf "$s" ready); node=${spec%%|*}; cmd=${spec#*|}
+    if [ -z "$node" ] || [ -z "$cmd" ] || [ "$node" = "$spec" ]; then die "scenario $s has no ready=<node>|<command> line"; fi
+    cid=$(container_of "$WORK/nodes.tsv" "$node") || exit 1
+    while :; do
+        if docker exec "$cid" sh -c "$cmd" >/dev/null 2>&1; then pass "ready: $node: $cmd"; return 0; fi
+        [ "$waited" -ge "$limit" ] && return 1
+        sleep 2; waited=$((waited + 2))
+    done
+}
+cmd_up() {
+    banner "up — $NAME"
+    need_root
+    scenario_check "$NAME"
+    local b miss i ref loaded pid
+    b=$(bundle_dir "$BUNDLE") || exit 1
+    miss=$(missing_images "$b" "$NAME")
+    [ -z "$miss" ] || die "image(s) not in this bundle's gns3/docker-nodes/image-list.txt: $miss$(ike_hint "$miss")"
+    loaded=$(docker image ls --format '{{.Repository}}:{{.Tag}}' 2>/dev/null || true)
+    for i in $(conf "$NAME" images); do
+        ref=$(image_ref "$b" "$i")
+        printf '%s\n' "$loaded" | grep -qxF "$ref" || die "$ref is not loaded — run r770-gns3-deploy.sh load --bundle <dir>"
+    done
+    gns3_login
+    pid=$(our_project "$NAME") || die "could not list GNS3 projects"
+    [ "$pid" != "FOREIGN" ] || die "a GNS3 project named lab-scenario-$NAME exists without the kit's marker ($MARKER) — not ours; rename or remove it by hand"
+    if [ -n "$pid" ]; then
+        [ "$FORCE" = "1" ] || die "$NAME is already up (project lab-scenario-$NAME) — r770-scenario.sh down $NAME, or up --force"
+        take_down "$pid"
+    fi
+    pick_taps
+    note "taps: $TAP_A $TAP_B"
+    pid=$(python3 -c 'import uuid; print(uuid.uuid4())')
+    render_project "$NAME" "$b" "$WORK/project.gns3" "$pid"
+    python3 -c 'import sys, zipfile; z = zipfile.ZipFile(sys.argv[1], "w", zipfile.ZIP_DEFLATED); z.write(sys.argv[2], "project.gns3"); z.close()' \
+        "$WORK/project.zip" "$WORK/project.gns3" || die "could not build the project archive"
+    call POST "/projects/$pid/import?name=lab-scenario-$NAME" -H 'Content-Type: application/octet-stream' --data-binary @"$WORK/project.zip" \
+        || die "GNS3 refused the import — nothing was started"
+    call POST "/projects/$pid/open" || die "GNS3 could not open the imported project — r770-scenario.sh down $NAME"
+    call POST "/projects/$pid/nodes/start" || die "starting the nodes failed — r770-scenario.sh down $NAME"
+    [ "$DRY" = "1" ] && footer "up"
+    if ! wait_started "$pid"; then
+        note "the nodes are left as they are for inspection — when done: r770-scenario.sh down $NAME"
+        footer "up"
+    fi
+    configure_nodes "$NAME"
+    if ! ready_check "$NAME"; then
+        fail "$NAME did not become ready within ${WAIT_SECS}s ($(conf "$NAME" ready))"
+        note "the nodes are left running for inspection — when done: r770-scenario.sh down $NAME"
+    fi
+    footer "up"
+}
+
 # ── list ─────────────────────────────────────────────────────────────────────
 cmd_list() {
     banner "scenario pack ($SCEN_DIR)"
@@ -160,6 +289,7 @@ esac
 while [ $# -gt 0 ]; do
     case "$1" in
         --bundle)  BUNDLE="${2:-}"; shift ;;
+        --taps)    TAPS="${2:-}"; shift ;;
         -h|--help) usage ;;
         *)         common_flag "$1" || die "unknown option: $1 (try --help)" ;;
     esac
@@ -168,9 +298,9 @@ done
 kit_init "r770-scenario"
 case "$SUB" in
     list) cmd_list ;;
-    down)
+    up|down)
         [ -n "$NAME" ] || die "$SUB needs a scenario name (see: r770-scenario.sh list)"
-        cmd_down ;;
+        "cmd_$SUB" ;;
     -h|--help|help|"") usage ;;
     *) die "unknown subcommand: $SUB (try --help)" ;;
 esac
