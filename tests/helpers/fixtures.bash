@@ -115,7 +115,9 @@ make_root() {
 # malcolm/ with its compose file (carrying the 0.0.0.0:443 publish line the
 # rebind must rewrite, at the indentation the installer's YAML writer emits
 # -- measured 2026-09-12), auth_setup and start. All stubs: each prints a --help
-# listing the flags the kit relies on and records its argv to MALCOLM_STUB_LOG.
+# listing the flags the kit relies on and records its argv to MALCOLM_STUB_LOG;
+# install.py copies the imported config to the export path, as the real one
+# writes back what it kept.
 make_malcolm_tree() {
     local r=$1 home="$1/opt/malcolm"
     mkdir -p "$home/scripts" "$home/malcolm/scripts" "$home/malcolm/config" "$home/malcolm/nginx" "$home/malcolm/pcap/upload"
@@ -128,6 +130,16 @@ case " $* " in *" --help "*)
     echo "  --export-malcolm-config-file FILE   export configuration"
     exit 0 ;;
 esac
+# the export is the imported config as the installer kept it: a copy, minus
+# any key named in MALCOLM_STUB_EXPORT_DROP (an installer that ignored it)
+imp=""; exp=""; prev=""
+for a in "$@"; do
+    case "$prev" in --import-malcolm-config-file) imp=$a ;; --export-malcolm-config-file) exp=$a ;; esac
+    prev=$a
+done
+if [ -n "$imp" ] && [ -n "$exp" ] && [ -f "$imp" ]; then
+    if [ -n "${MALCOLM_STUB_EXPORT_DROP:-}" ]; then grep -v -- "\"$MALCOLM_STUB_EXPORT_DROP\"" "$imp" > "$exp"; else cp "$imp" "$exp"; fi
+fi
 exit 0
 STUB
     cat > "$home/malcolm/scripts/auth_setup" <<'STUB'

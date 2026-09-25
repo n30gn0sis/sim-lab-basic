@@ -141,9 +141,10 @@ cmd_unpack() {
 # not given). Each name must look like an interface, exist, carry no address
 # (rule 8), and appear once. Interfaces are given, never guessed.
 capture_json() {
-    local i seen=" " json="" n=0
+    local i seen=" " json="" n=0 ifs=()
     [ "$CAPTURE_SET" = "1" ] || { printf '[]'; return 0; }
-    for i in $CAPTURE_IFS; do
+    read -ra ifs <<< "$CAPTURE_IFS"
+    for i in "${ifs[@]}"; do
         [[ "$i" =~ ^[A-Za-z0-9._-]{1,15}$ ]] || die "--capture-ifs: '$i' is not an interface name"
         case "$seen" in *" $i "*) die "--capture-ifs names $i twice" ;; esac
         seen="$seen$i "
@@ -161,6 +162,35 @@ capture_json() {
     printf '[%s]' "$json"
 }
 
+# pcap_ifaces_of <config.json> — the pcapIface list, on one line, whether the
+# file writes it on one line or one element per line.
+pcap_ifaces_of() {
+    awk '/"pcapIface"/ { f = 1 } f { printf "%s", $0; if (/]/) exit }' "$1" \
+        | sed -e 's/.*"pcapIface"[[:space:]]*:[[:space:]]*\(\[[^]]*\]\).*/\1/' \
+              -e 's/\[[[:space:]]*/[/' -e 's/[[:space:]]*\]/]/' -e 's/,[[:space:]]*/, /g'
+}
+# live_kept <exported> <iface...> — the installer rewrites what it imports;
+# prove its export still says live capture is on, on every given interface.
+# Whitespace-tolerant, and pcapIface is read by pcap_ifaces_of.
+live_kept() {
+    local x=$1 k i lst missing=0; shift
+    if [ ! -f "$x" ]; then
+        fail "the installer wrote no exported config at $x — live capture is unconfirmed; read its output above"
+        return 0
+    fi
+    for k in captureLiveNetworkTraffic liveArkime liveZeek; do
+        grep -qE "\"$k\"[[:space:]]*:[[:space:]]*true" "$x" && continue
+        fail "the installer did not keep \"$k\": true — live capture will not start; read $x"
+        missing=1
+    done
+    lst=$(pcap_ifaces_of "$x")
+    for i in "$@"; do
+        [[ "$lst" == *"\"$i\""* ]] && continue
+        fail "the installer did not keep \"pcapIface\" with $i — live capture will not start on it; read $x"
+        missing=1
+    done
+    [ "$missing" -eq 1 ] || pass "the installer kept live capture on $* (captureLiveNetworkTraffic, liveArkime, liveZeek, pcapIface)"
+}
 malcolm_version_from_zip() {  # numeric components lose their leading zeros, as the installer's own export writes them
     local name=$1 v part out=""
     v=${name#malcolm-}; v=${v%-docker_install.zip}
@@ -213,6 +243,7 @@ cmd_configure() {
     if [ "$DRY" != "1" ]; then
         [ -f "$(compose)" ] || die "the installer did not produce $(compose) — read its output"
         pass "installer configured $(stack); exported config at $exported"
+        if [ "$live" = "true" ]; then local ifl; read -ra ifl <<< "$CAPTURE_IFS"; live_kept "$exported" "${ifl[@]}"; fi
         if [ -d "$(stack)/pcap/upload" ]; then
             if run chown 1000:1000 "$(stack)/pcap/upload"; then pass "pcap/upload owned by 1000:1000 (the drop-off the rehearsal measured)"; fi
         fi
@@ -341,13 +372,14 @@ cmd_status() {
         if grep -qF -- "$REBIND_TO" "$(compose)"; then printf '%-28s %s\n' "nginx-proxy bind" "127.0.0.1:8443 (rebound)"; else printf '%-28s %s\n' "nginx-proxy bind" "NOT rebound"; fi
     fi
     printf '%-28s %s\n' "auth material" "$([ -s "$(stack)/nginx/htpasswd" ] && echo present || echo absent)"
-    local rc live="off"
-    rc="$(home)/malcolm-config.rendered.json"
+    local rc live="off" label=""
+    rc="$(home)/malcolm-config.exported.json"   # what the installer kept
+    if [ ! -f "$rc" ]; then rc="$(home)/malcolm-config.rendered.json"; label=" (rendered, not yet confirmed)"; fi
     if [ -f "$rc" ]; then
-        if grep -q '"captureLiveNetworkTraffic": true' "$rc"; then
-            live="on $(sed -n 's/.*"pcapIface": \(\[.*\]\),*/\1/p' "$rc")"
+        if grep -qE '"captureLiveNetworkTraffic"[[:space:]]*:[[:space:]]*true' "$rc"; then
+            live="on $(pcap_ifaces_of "$rc")"
         fi
-        printf '%-28s %s\n' "live capture" "$live"
+        printf '%-28s %s\n' "live capture" "$live$label"
     fi
     printf '%-28s %s\n' "admin credential" "$([ -s "$(p "$SECRET")" ] && echo "present at $SECRET" || echo absent)"
     if command -v docker >/dev/null 2>&1 && [ -f "$(compose)" ]; then

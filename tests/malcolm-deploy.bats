@@ -220,6 +220,43 @@ STUB
     grep -q '"pcapIface": \["lab-mirror0", "cap0"\],' "$ROOT/opt/malcolm/malcolm-config.rendered.json"
 }
 
+@test "configure --capture-ifs proves the installer kept every live key in its exported config (F5)" {
+    make_malcolm_tree "$ROOT"
+    mkdir -p "$ROOT/sys/class/net/lab-mirror0" "$ROOT/sys/class/net/cap0"
+    stub ip 'exit 0'
+    run malcolm configure --bundle "$BUNDLE" --capture-ifs "lab-mirror0 cap0"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"PASS  the installer kept live capture on lab-mirror0 cap0 (captureLiveNetworkTraffic, liveArkime, liveZeek, pcapIface)"* ]]
+}
+
+@test "configure --capture-ifs FAILs, naming the key, when the installer's export dropped liveZeek (F5)" {
+    make_malcolm_tree "$ROOT"
+    mkdir -p "$ROOT/sys/class/net/lab-mirror0"
+    stub ip 'exit 0'
+    MALCOLM_STUB_EXPORT_DROP=liveZeek run malcolm configure --bundle "$BUNDLE" --capture-ifs lab-mirror0
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"FAIL  the installer did not keep \"liveZeek\": true — live capture will not start; read $ROOT/opt/malcolm/malcolm-config.exported.json"* ]]
+    [[ "$output" != *"did not keep \"liveArkime\""* ]]
+}
+
+@test "status reads live capture from the installer's export, and labels a rendered-only config unconfirmed (F5)" {
+    make_malcolm_tree "$ROOT"
+    mkdir -p "$ROOT/sys/class/net/lab-mirror0"
+    stub ip 'exit 0'
+    run malcolm configure --bundle "$BUNDLE" --capture-ifs lab-mirror0
+    [ "$status" -eq 0 ]
+    run malcolm status
+    echo "$output"
+    [[ "$output" == *'live capture'*'on ["lab-mirror0"]'* ]]
+    [[ "$output" != *"not yet confirmed"* ]]
+    rm -f "$ROOT/opt/malcolm/malcolm-config.exported.json"
+    run malcolm status
+    echo "$output"
+    [[ "$output" == *'on ["lab-mirror0"] (rendered, not yet confirmed)'* ]]
+}
+
 @test "configure refuses a capture interface that does not exist, pointing a lab-* name at labnet" {
     make_malcolm_tree "$ROOT"
     run malcolm configure --bundle "$BUNDLE" --capture-ifs lab-mirror0
