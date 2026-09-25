@@ -122,9 +122,10 @@ sudo ./scripts/r770-portal-deploy.sh nginx --dry-run          # the optional fro
    the operator supplies from discovery output. No script picks one, and no
    placeholder like `/dev/sdX` or `eno1` is ever executed.
 2. **Gated changes.** APT sources, phone-home services, Docker install, the
-   nginx site set, the GNS3 unit and a volume purge each print *current ·
-   proposed · rollback* and need `--yes` or a `y`. `--non-interactive` without
-   `--yes` stops at the gate. Never bypass a gate to make a run "go".
+   nginx site set, the GNS3 unit, the lab network and a volume purge each
+   print *current · proposed · rollback* and need `--yes` or a `y`.
+   `--non-interactive` without `--yes` stops at the gate. Never bypass a gate
+   to make a run "go".
 3. **The verifier is the bundle's** (`<bundle>/r770-bundle.sh verify`). Never
    add a checksum routine to this kit, never gate on a raw checksum command.
 4. **One pin owner.** `staging/r770-offline-fetch.sh` holds the pin block and

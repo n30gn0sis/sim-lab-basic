@@ -111,3 +111,12 @@ is asserted against those tools' `--help` before use.
   a config-file import. If a future installer drops that, the fallback is the
   build repo's runbook procedure (`--defaults --configure`) plus the same
   rebind; the kit dies naming the flag rather than guessing.
+- **Lab mirror mechanism (to carry to the build repo).** The kit mirrors lab
+  traffic with a hub-mode bridge (`br-lab`, `ageing_time 0`) and a veth
+  (`lab-mon0` ⇄ `lab-mirror0`) instead of the buildout plan §7's `tc mirred`
+  per port: no per-port rules to follow GNS3's ports as they come and go.
+  Record the decision in the build repo's buildout plan §7.
+- **Wiki mirror procedure (to carry to the build repo).** `docs/wiki/gns3.md`'s
+  "mirror … TBD" can now read: bind a GNS3 Cloud node to a `lab-tapN`;
+  everything on `br-lab` reaches Malcolm. `docs/wiki/` is build-repo content
+  and is edited there.

@@ -30,7 +30,7 @@ The install is **not** a single sitting.
 | Steps | Build-repo phase | Blocked by |
 |---|---|---|
 | Bundle-in prep: `preflight` `gate` `copy` `apt` `phone-home` `docker` `files` (shared by all three pipelines) | 4, 6 | — ready (needs the Phase 3 volumes mounted) |
-| GNS3 pipeline: `load` `venv` `secrets` `config` `service` | 8 | needs Phase 8 built |
+| GNS3 pipeline: `load` `venv` `secrets` `config` `service` `labnet` | 8 | needs Phase 8 built |
 | Malcolm pipeline: `load` `unpack` `configure` `secrets` `auth` `rebind` `start` | 10 | needs Phase 10 built, capture-port prep (Phase 9) |
 | Docs pipeline: `load` `build` | 13 | needs Phase 13 built (the docs site is part of it) |
 | Front door: `ca` `cert` `htpasswd` `nginx` | 13 | needs Phase 13 built, and Malcolm's `auth` step already run |
@@ -196,6 +196,7 @@ hand.
 B=/srv/bundles/bundle-YYYYMMDD
 sudo ./scripts/r770-malcolm-deploy.sh unpack --bundle $B       # needs python3-ruamel.yaml, python3-dotenv (apt/)
 sudo ./scripts/r770-malcolm-deploy.sh configure --bundle $B    # renders the kit's config template, replays it through install.py
+#   add --capture-ifs lab-mirror0 for live capture of the lab (run GNS3's labnet first)
 sudo ./scripts/r770-malcolm-deploy.sh secrets                  # /etc/lab/secrets/malcolm-admin.pw, once
 sudo ./scripts/r770-malcolm-deploy.sh auth --bundle $B         # auth_setup, hashes generated on the box
 sudo ./scripts/r770-malcolm-deploy.sh rebind                   # 0.0.0.0:443 -> 127.0.0.1:8443, the front door owns 443
@@ -209,9 +210,11 @@ surprise. The template pins PCAP to `/data/pcap/raw` and indexes to
 `/var/lib/docker`), sizes the JVM heaps from this host, turns Suricata and the
 Zeek feed pulls off. `--arkime-free-space-g N` turns on oldest-first deletion
 of raw PCAP below N GB free; Phase 10 sets that from measured feed rates, so
-the default is off. `rebind` is re-applied after every installer run because a
-compose override file is ignored. `start` refuses before `auth` and before
-`rebind`. Arkime and logstash are the last to go healthy; `start` waits up to
+the default is off. `--capture-ifs "<if ...>"` turns on live Arkime and Zeek
+capture on those interfaces (each must exist and carry no address); without
+it live capture stays off. `rebind` is re-applied after every installer run
+because a compose override file is ignored. `start` refuses before `auth` and
+before `rebind`. Arkime and logstash are the last to go healthy; `start` waits up to
 `MALCOLM_WAIT_SECS` and can be rerun to keep waiting.
 
 Once the stack is healthy, the lab's own saved objects and views go on top.
@@ -299,6 +302,34 @@ pip) and refuses while a pip index is configured. `config` chowns `/etc/gns3`
 to the service user because GNS3 v3 writes its database and JWT key beside its
 config — root-owned, it fails with "unable to open database file". `service`
 FAILs if the server listens on anything but loopback.
+
+### Step G10 — labnet  *(GATED)*
+
+```bash
+sudo ./scripts/r770-gns3-deploy.sh labnet     # br-lab (hub mode), lab-tap0..3, lab-mon0 <-> lab-mirror0
+```
+
+The lab bridge every scenario shares, mirrored into Malcolm by construction:
+`br-lab` runs with `ageing_time 0`, so it floods every frame to every port —
+including `lab-mon0`, whose veth peer `lab-mirror0` is what Malcolm captures.
+A scenario puts a link on the bridge by binding a GNS3 Cloud node to a
+`lab-tapN` (owned by the `gns3` user). The step installs
+`/etc/systemd/network/05-*lab*` files and runs `networkctl reload`; it refuses
+while systemd-networkd is inactive, before `config` has created the service
+user, and when one of its names already belongs to something else. After the
+reload it proves hub mode, the ports, that no physical interface joined the
+bridge (rule 8), and that `lab-mirror0` is up, promiscuous and address-less.
+`GNS3_LAB_TAPS` changes the TAP count (default 4). Nothing on `br-lab` is
+bridged to a physical port or NATed: lab traffic cannot leave the box.
+
+Then turn Malcolm's live capture on (Malcolm procedure, `configure`):
+`r770-malcolm-deploy.sh configure --bundle $B --capture-ifs lab-mirror0`.
+
+Evidence that the feed is live, once a scenario runs:
+`tcpdump -c 5 -i lab-mirror0` shows frames; Arkime shows sessions from the
+scenario's address range within about a minute, with matching Zeek logs;
+`r770-validate.sh --area network --lab-bridge br-lab --capture-ifs lab-mirror0`
+and `--area capture` report the wiring and `capture_loss`.
 
 ### GNS3 — validate note
 

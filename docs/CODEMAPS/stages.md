@@ -12,7 +12,7 @@ proposed · rollback, needs `--yes` or a `y`).
 | Pipeline | Script | `full` step sequence | Operator-invoked extras |
 |---|---|---|---|
 | Malcolm | `scripts/r770-malcolm-deploy.sh` | `preflight` `gate` `copy` `apt` 🔒 `phone-home` 🔒 `docker` 🔒 `files` `load` `unpack` `configure` `secrets` `auth` `rebind` `start` | `assert-tags`, `stop`, `status`, `inventory`, `dashboards`, `arkime-views` |
-| GNS3 | `scripts/r770-gns3-deploy.sh` | `preflight` `gate` `copy` `apt` 🔒 `phone-home` 🔒 `docker` 🔒 `files` `load` `venv` `secrets` `config` `service` 🔒 | `assert-tags`, `status` |
+| GNS3 | `scripts/r770-gns3-deploy.sh` | `preflight` `gate` `copy` `apt` 🔒 `phone-home` 🔒 `docker` 🔒 `files` `load` `venv` `secrets` `config` `service` 🔒 `labnet` 🔒 | `assert-tags`, `status` |
 | Docs | `scripts/r770-docs-deploy.sh` | `preflight` `gate` `copy` `apt` 🔒 `phone-home` 🔒 `docker` 🔒 `files` `load` `build` | `assert-tags`, `status` |
 | Front door | `scripts/r770-portal-deploy.sh` | none — never part of a `full`; run by hand as `ca` `cert` `htpasswd` `nginx` 🔒, in that order, after Malcolm's `auth` step | `status`, `--print-sans` |
 
@@ -46,7 +46,8 @@ Each script has more than `full` calls. These are operator-invoked:
 ## The gates
 
 `apt` (sources rewrite) · `phone-home` (timers, snapd) · `docker` (engine
-install) · `gns3 service` (the unit) · `portal nginx` (the site set).
+install) · `gns3 service` (the unit) · `gns3 labnet` (the lab bridge) ·
+`portal nginx` (the site set).
 `--non-interactive` without `--yes` stops at the first one, on purpose.
 
 ## Config each pipeline installs
@@ -57,6 +58,7 @@ deltas from the build repo. Renderer → destination:
 | Config | Installed by |
 |---|---|
 | `config/gns3/gns3_server.conf.template`, `config/systemd/gns3.service` | `gns3-deploy config` / `service` |
+| `config/networkd/*` | `gns3-deploy labnet` |
 | `config/malcolm/malcolm-config.json.template` | `malcolm-deploy configure` |
 | `config/malcolm/dashboards/*.ndjson.template` | `malcolm-deploy dashboards` |
 | `config/malcolm/arkime-views/*.views` | `malcolm-deploy arkime-views` |
