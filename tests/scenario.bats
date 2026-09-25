@@ -98,15 +98,16 @@ EOF
 }
 
 # seed_project <id> <name> <status> <marker-or-empty> [<tap>...] — put a
-# project into the fake controller; each tap becomes a Cloud port of it
+# project into the fake controller; each tap becomes a Cloud port of it, of
+# type $SEED_PORT_TYPE (default tap)
 seed_project() {
     local id=$1 name=$2 st=$3 marker=$4; shift 4
-    python3 - "$FAKE_GNS3/projects.json" "$id" "$name" "$st" "$marker" "$@" <<'PY'
+    python3 - "$FAKE_GNS3/projects.json" "$id" "$name" "$st" "$marker" "${SEED_PORT_TYPE:-tap}" "$@" <<'PY'
 import json, os, sys
-f, pid, name, st, marker, *taps = sys.argv[1:]
+f, pid, name, st, marker, ptype, *taps = sys.argv[1:]
 projects = json.load(open(f)) if os.path.exists(f) else []
 nodes = [{"node_id": f"n{i}", "name": f"cloud{i}", "node_type": "cloud",
-          "properties": {"ports_mapping": [{"interface": t, "name": t, "port_number": 0, "type": "tap"}]}}
+          "properties": {"ports_mapping": [{"interface": t, "name": t, "port_number": 0, "type": ptype}]}}
          for i, t in enumerate(taps)]
 projects.append({"project_id": pid, "name": name, "status": st,
                  "variables": [{"name": "r770_scenario", "value": marker}] if marker else [],
@@ -295,6 +296,33 @@ PY
     [[ "$output" == *"fewer than two free kit TAPs (held by: other-lab"* ]]
 }
 
+@test "up counts a kit TAP as held whatever the Cloud port's type" {
+    SEED_PORT_TYPE=ethernet seed_project p2 other-lab opened "" lab-tap0 lab-tap1
+    run scenario up demo --bundle "$BUNDLE"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"taps: lab-tap2 lab-tap3"* ]]
+}
+
+@test "up applies FRR and strongSwan config with a bounded retry until the daemon takes it" {
+    printf 'hostname a\n' > "$SCENARIO_DIR/demo/nodes/a.frr.conf"
+    printf 'connections {}\n' > "$SCENARIO_DIR/demo/nodes/b.swanctl.conf"
+    run scenario up demo --bundle "$BUNDLE"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    grep -q '^docker exec -i cid-a sh -c cat > /tmp/lab-frr.conf && i=0; until vtysh -f /tmp/lab-frr.conf; do i=$((i+1)); \[ "$i" -ge 15 \] && exit 1; sleep 2; done$' "$STUB_LOG"
+    grep -q '^docker exec -i cid-b sh -c mkdir -p /etc/swanctl && cat > /etc/swanctl/swanctl.conf && i=0; until swanctl --load-all; do i=$((i+1)); \[ "$i" -ge 15 \] && exit 1; sleep 2; done$' "$STUB_LOG"
+    grep -q 'hostname a' "$BATS_TEST_TMPDIR/stdin-cid-a"
+}
+
+@test "up dies naming the down command when a node file names a node with no container" {
+    printf 'true\n' > "$SCENARIO_DIR/demo/nodes/tap-a.sh"
+    run scenario up demo --bundle "$BUNDLE"
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"GNS3 reports no container for node tap-a"*"— r770-scenario.sh down demo"* ]]
+}
+
 @test "up --taps binds the named TAPs, and refuses one that is held or is not a kit TAP" {
     run scenario up demo --bundle "$BUNDLE" --taps lab-tap3,lab-tap1
     echo "$output"
@@ -425,4 +453,22 @@ up_demo() { run scenario up demo --bundle "$BUNDLE"; [ "$status" -eq 0 ]; : > "$
     [ "$status" -eq 0 ]
     [[ "$output" == *"running state unknown"* ]]
     [[ "$output" == *"demo"*"unknown"* ]]
+}
+
+@test "status reports unknown, not down, when GNS3 cannot list its projects" {
+    touch "$FAKE_GNS3/projects-fail"
+    run scenario status
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"demo"*"unknown"* ]]
+    [[ "$output" != *" down "* ]]
+}
+
+@test "status reports a closed marked project as closed, not up" {
+    seed_project p1 lab-scenario-demo closed demo lab-tap0 lab-tap1
+    run scenario status
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"demo             closed"* ]]
+    [[ "$output" != *"demo             up"* ]]
 }

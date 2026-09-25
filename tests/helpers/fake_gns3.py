@@ -11,6 +11,7 @@ directory, $FAKE_GNS3:
   login-refused   if present: the login fails
   import-fails    if present: the import fails
   never-starts    if present: docker nodes stay "stopped" after nodes/start
+  projects-fail   if present: GET /projects fails (the login still works)
 
 Only the calls the kit makes are implemented; anything else fails. Like
 `curl --fail`, a failure prints nothing and exits 22.
@@ -127,7 +128,9 @@ def main():
         return 22
     pid, rest = m.group(1), m.group(2) or ""
     if pid is None:
-        return reply([public(p) for p in projects]) if method == "GET" else 22
+        if method != "GET" or flag("projects-fail"):
+            return 22
+        return reply([public(p) for p in projects])
     proj = next((p for p in projects if p["project_id"] == pid), None)
     if rest == "/import" and method == "POST":
         if flag("import-fails") or proj is not None:

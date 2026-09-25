@@ -49,7 +49,7 @@ usage() { usage_from_header 3; exit 0; }
 
 # ── the pack ─────────────────────────────────────────────────────────────────
 # py <program> — run a python3 program over JSON read from stdin as `d`
-py() { python3 -c "import json, sys; d = json.load(sys.stdin)
+py() { python3 -c "import json, re, sys; d = json.load(sys.stdin)
 $1"; }
 conf() { sed -n "s/^$2=//p" "$SCEN_DIR/$1/scenario.conf" | head -1; }  # conf <scenario> <key>
 scenario_check() {  # scenario_check <name> — refuse a malformed or unknown name
@@ -95,25 +95,29 @@ call() {  # call <METHOD> <path> [extra args...] — shown, then made (only show
     echo "+ $1 $2"
     api "$@" >/dev/null
 }
-our_project() {  # our_project <scenario> — our copy's project id; empty if none; FOREIGN if the name is taken
+our_project_state() {  # our_project_state <scenario> — "<id> <status>" of our copy; empty if none; FOREIGN if the name is taken
     api GET /projects | py "
 for p in d:
     if p.get('name') != 'lab-scenario-$1':
         continue
     ours = any(v.get('name') == '$MARKER' and v.get('value') == '$1' for v in (p.get('variables') or []))
-    print(p['project_id'] if ours else 'FOREIGN')
+    print(p['project_id'] + ' ' + (p.get('status') or '') if ours else 'FOREIGN')
     break"
 }
-nodes() {  # nodes <pid> — TSV: name, node_type, status, container_id, comma-joined TAP interfaces
+our_project() {  # our_project <scenario> — our copy's project id; empty if none; FOREIGN if the name is taken
+    local st; st=$(our_project_state "$1") || return 1
+    printf '%s' "${st%% *}"
+}
+nodes() {  # nodes <pid> — TSV: name, node_type, status, container_id, comma-joined kit TAPs (lab-tapN) its ports bind, whatever the port type
     api GET "/projects/$1/nodes" | py "
 for n in d:
     pr = n.get('properties') or {}
-    taps = ','.join(m.get('interface', '') for m in (pr.get('ports_mapping') or []) if m.get('type') == 'tap')
+    taps = ','.join(m.get('interface', '') for m in (pr.get('ports_mapping') or []) if re.fullmatch(r'lab-tap[0-9]+', m.get('interface') or ''))
     print('\t'.join([n.get('name', ''), n.get('node_type', ''), n.get('status', ''), pr.get('container_id') or '', taps]))"
 }
 container_of() {  # container_of <nodes-tsv> <node> — its container id, or die
     local c; c=$(awk -F'\t' -v n="$2" '$1 == n {print $4}' "$1")
-    [ -n "$c" ] || die "GNS3 reports no container for node $2 — is it a docker node, and did it start?"
+    [ -n "$c" ] || die "GNS3 reports no container for node $2 — is it a docker node, and did it start? — r770-scenario.sh down $NAME"
     printf '%s' "$c"
 }
 take_down() {  # take_down <pid>
@@ -122,7 +126,7 @@ take_down() {  # take_down <pid>
 }
 
 # ── up ───────────────────────────────────────────────────────────────────────
-taps_in_use() {  # taps_in_use — "<tap> <project-name>" for every TAP a Cloud node of an opened project holds
+taps_in_use() {  # taps_in_use — "<tap> <project-name>" for every kit TAP a node of an opened project holds
     local pid pname
     api GET /projects | py "
 for p in d:
@@ -186,8 +190,9 @@ configure_nodes() {  # configure_nodes <scenario> — feed each node its files, 
             cid=$(container_of "$WORK/nodes.tsv" "$node") || exit 1
             case "$kind" in
                 sh)           run docker exec -i "$cid" sh -s < "$f" ;;
-                frr.conf)     run docker exec -i "$cid" sh -c 'cat > /tmp/lab-frr.conf && vtysh -f /tmp/lab-frr.conf' < "$f" ;;
-                swanctl.conf) run docker exec -i "$cid" sh -c 'mkdir -p /etc/swanctl && cat > /etc/swanctl/swanctl.conf && swanctl --load-all' < "$f" ;;
+                # the daemons may still be starting: retry the apply (idempotent) for up to ~30s
+                frr.conf)     run docker exec -i "$cid" sh -c 'cat > /tmp/lab-frr.conf && i=0; until vtysh -f /tmp/lab-frr.conf; do i=$((i+1)); [ "$i" -ge 15 ] && exit 1; sleep 2; done' < "$f" ;;
+                swanctl.conf) run docker exec -i "$cid" sh -c 'mkdir -p /etc/swanctl && cat > /etc/swanctl/swanctl.conf && i=0; until swanctl --load-all; do i=$((i+1)); [ "$i" -ge 15 ] && exit 1; sleep 2; done' < "$f" ;;
             esac || die "configuring $node from $base failed — the nodes are left running for inspection; when done: r770-scenario.sh down $s"
             note "$node configured from $base"
         done
@@ -331,7 +336,7 @@ cmd_traffic() {
 # ── status ───────────────────────────────────────────────────────────────────
 cmd_status() {
     banner "scenario status"
-    local c n pid state taps last live=0 ev="${KIT_EVIDENCE_DIR:-$PWD/r770-evidence}"
+    local c n st state taps last live=0 ev="${KIT_EVIDENCE_DIR:-$PWD/r770-evidence}"
     if curl -sS --max-time 5 --fail http://127.0.0.1:3080/v3/version >/dev/null 2>&1 && [ -s "$(p "$SECRET")" ]; then
         gns3_login; live=1
     else
@@ -341,12 +346,15 @@ cmd_status() {
         [ -e "$c" ] || continue
         n=$(basename "$(dirname "$c")"); state="unknown"; taps="-"
         if [ "$live" = "1" ]; then
-            pid=$(our_project "$n") || pid=""
-            case "$pid" in
-                "")      state="down" ;;
-                FOREIGN) state="name-taken" ;;
-                *)       state="up"; taps=$(nodes "$pid" 2>/dev/null | awk -F'\t' '$5 != "" {print $5}' | paste -sd, -) ;;
-            esac
+            # a failed lookup is unobserved, not "down"; only an opened project is up
+            if st=$(our_project_state "$n" 2>/dev/null); then
+                case "$st" in
+                    "")        state="down" ;;
+                    FOREIGN)   state="name-taken" ;;
+                    *" opened") state="up"; taps=$(nodes "${st%% *}" 2>/dev/null | awk -F'\t' '$5 != "" {print $5}' | paste -sd, -) ;;
+                    *)         state="closed" ;;
+                esac
+            fi
         fi
         last=$(find "$ev" -maxdepth 1 -name "scenario-$n-*.run" 2>/dev/null | sort | tail -1)
         printf '%-16s %-10s taps %-26s last run %s\n' "$n" "$state" "${taps:--}" "${last:-none}"
