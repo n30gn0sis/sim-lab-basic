@@ -352,6 +352,20 @@ own_stack() {  # give the stack to its recorded owner (after every installer run
     read -r user uid gid <<< "$o"
     run chown -R "$uid:$gid" "$(stack)" || die "could not give $(stack) to $user"
     [ "$DRY" = "1" ] || pass "$(stack) owned by $user ($uid:$gid, from config/process.env) — Malcolm's control scripts run as this user"
+    # Malcolm writes its indexes and PCAP as that user too, and those live on
+    # root-owned mount points (Phase 3). The directories are the ones the
+    # installer's exported config names -- read back, never restated.
+    local x k d dirs=""
+    x="$(home)/malcolm-config.exported.json"
+    [ -f "$x" ] || return 0
+    for k in indexDir pcapDir; do
+        d=$(sed -n "s/.*\"$k\"[[:space:]]*:[[:space:]]*\"\(\/[^\"]*\)\".*/\1/p" "$x" | head -1)
+        [ -n "$d" ] || continue
+        run mkdir -p "$(p "$d")" || die "could not create $d"
+        run chown -R "$uid:$gid" "$(p "$d")" || die "could not give $d to $user"
+        dirs="$dirs $d"
+    done
+    [ "$DRY" = "1" ] || [ -z "$dirs" ] || pass "data dirs owned by $user:$dirs"
 }
 owner_for_docker() {  # the owner's name, once it is known to reach docker
     local o user

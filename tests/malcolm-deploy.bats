@@ -713,6 +713,12 @@ ipsec_ids() {  # every id the shipped template declares
     [ "$status" -eq 0 ]
     grep -q "^chown -R 1000:1000 $ROOT/opt/malcolm/malcolm$" "$STUB_LOG"
     [[ "$output" == *"PASS  $ROOT/opt/malcolm/malcolm owned by labop (1000:1000, from config/process.env)"* ]]
+    # Malcolm writes its indexes and PCAP as that user too (start died on a
+    # root-owned /data/index on staging): the dirs the exported config names
+    grep -q "^chown -R 1000:1000 $ROOT/data/index$" "$STUB_LOG"
+    grep -q "^chown -R 1000:1000 $ROOT/data/pcap/raw$" "$STUB_LOG"
+    [ -d "$ROOT/data/pcap/raw" ]
+    [[ "$output" == *"PASS  data dirs owned by labop: /data/index /data/pcap/raw"* ]]
 }
 
 @test "configure refuses a stack whose recorded PUID is root" {
