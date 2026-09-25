@@ -65,7 +65,11 @@ scenarios/<name>/
   `__IMG_<BASENAME>__` token in the project is rendered with the full
   reference read from the bundle's `gns3/docker-nodes/image-list.txt`
   (`image_ref_from_list`), so `scenarios/` carries no pin.
-- Cloud nodes reference `__TAP_A__` / `__TAP_B__`, rendered at `up`.
+- Cloud nodes reference `__TAP_A__` / `__TAP_B__`, rendered at `up`, as
+  TAP bindings: each Cloud's `ports_mapping` entry has `"type": "tap"` and
+  `"interface": "__TAP_A__"` (or `__TAP_B__`), never `"type": "ethernet"` —
+  gns3-server opens an ethernet-typed `lab-tapN` with a raw socket whose
+  frames never reach `br-lab` (lab mirror feed spec, Decisions).
 - The project's comment field carries the marker `r770-scenario:<name>`;
   the imported project is named `lab-scenario-<name>`.
 
@@ -173,7 +177,8 @@ The fixture bundle's GNS3 image list gains `netshoot`.
 - `tests/scenarios.bats` (the content): each scenario has `scenario.conf`,
   `project/*.gns3`, `traffic.sh`, `expect.txt` and a `ready` key; each `.gns3`
   parses as JSON (`python3 -m json.tool`); Cloud nodes use only
-  `__TAP_A__`/`__TAP_B__` and exactly one link attaches to them; images are
+  `__TAP_A__`/`__TAP_B__`, every Cloud `ports_mapping` entry has
+  `"type": "tap"`, and exactly one link attaches to them; images are
   basenames present in the staging fetch's `GNS3_NODE_IMAGES`, or
   `strongswan` flagged upstream-pending; ranges unique; `traffic.sh` and
   `expect.txt` address only their own range; `traffic.sh` is shellcheck-clean.

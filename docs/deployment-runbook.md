@@ -313,23 +313,47 @@ The lab bridge every scenario shares, mirrored into Malcolm by construction:
 `br-lab` runs with `ageing_time 0`, so it floods every frame to every port —
 including `lab-mon0`, whose veth peer `lab-mirror0` is what Malcolm captures.
 A scenario puts a link on the bridge by binding a GNS3 Cloud node to a
-`lab-tapN` (owned by the `gns3` user). The step installs
-`/etc/systemd/network/05-*lab*` files and runs `networkctl reload`; it refuses
-while systemd-networkd is inactive, before `config` has created the service
-user, and when one of its names already belongs to something else. After the
-reload it proves hub mode, the ports, that no physical interface joined the
-bridge (rule 8), and that `lab-mirror0` is up, promiscuous and address-less.
-`GNS3_LAB_TAPS` changes the TAP count (default 4). Nothing on `br-lab` is
-bridged to a physical port or NATed: lab traffic cannot leave the box.
+`lab-tapN` (owned by the `gns3` user) **on the Cloud's TAP tab, never its
+Ethernet tab** — in a project file, the Cloud's `ports_mapping` entry has
+`"type": "tap"` and `"interface": "lab-tapN"`. gns3-server types an interface
+as a TAP only when its name starts with `tap`; bound from the Ethernet tab,
+`lab-tapN` is opened with a raw packet socket, and a TAP that no process holds
+open drops those frames, so nothing reaches `br-lab`. (That behaviour was read
+from gns3-server's master branch; the staging rehearsal confirms it against
+the bundled GNS3 before this procedure is relied on.)
+
+The step installs `/etc/systemd/network/05-*lab*` files (the bridge with
+MAC learning and multicast snooping off, the veth, the TAPs, and
+`05-lab-mirror0.link`, which turns offloads off on the capture end) and runs
+`networkctl reload`; it refuses while systemd-networkd is inactive, before
+`config` has created the service user, and when one of its names already
+belongs to something else. After the reload it waits for the whole end state,
+then proves hub mode, no multicast snooping, the ports, that no physical
+interface joined the bridge directly or through a VLAN or bond (rule 8), that
+`lab-mirror0` is up, promiscuous and address-less with gro/lro/tso off, and
+whether Docker's `br_netfilter` + `FORWARD DROP` could drop bridged IP (a
+WARN with the rule to add by hand — the kit adds none). `GNS3_LAB_TAPS`
+changes the TAP count (default 4); lowering it removes the TAPs and files it
+no longer declares, through the gate. Files in place but interfaces missing
+(after someone deleted one) is an ungated `networkctl reload`. Nothing on
+`br-lab` is bridged to a physical port or NATed: lab traffic cannot leave the
+box.
 
 Then turn Malcolm's live capture on (Malcolm procedure, `configure`):
 `r770-malcolm-deploy.sh configure --bundle $B --capture-ifs lab-mirror0`.
 
 Evidence that the feed is live, once a scenario runs:
-`tcpdump -c 5 -i lab-mirror0` shows frames; Arkime shows sessions from the
-scenario's address range within about a minute, with matching Zeek logs;
-`r770-validate.sh --area network --lab-bridge br-lab --capture-ifs lab-mirror0`
-and `--area capture` report the wiring and `capture_loss`.
+- the Cloud's TAP binding brings `lab-tapN` to carrier — `ip link show
+  lab-tap0` no longer says `NO-CARRIER` while the node runs;
+- `tcpdump -c 5 -i lab-mirror0` shows frames;
+- labnet's netfilter line is a PASS, or — if it WARNed — a ping between two
+  scenario nodes shows up in `tcpdump -ni lab-mirror0` in both directions (if
+  it does not, add `iptables -I DOCKER-USER -i br-lab -o br-lab -j ACCEPT`,
+  record it, and rerun labnet);
+- Arkime shows sessions from the scenario's address range within about a
+  minute, with matching Zeek logs;
+- `r770-validate.sh --area network --lab-bridge br-lab --capture-ifs
+  lab-mirror0` and `--area capture` report the wiring and `capture_loss`.
 
 ### GNS3 — validate note
 

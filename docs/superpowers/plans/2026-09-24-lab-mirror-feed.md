@@ -1107,3 +1107,45 @@ git commit -m "Document the lab mirror feed: labnet, --capture-ifs, rollback and
 Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01NA7yRJiVMCwNVKPai6qjCA"
 ```
+
+---
+
+## Post-review corrections
+
+The final whole-branch review raised F1–F12; all were applied on this branch
+after the tasks above (which are left as written). Each is covered by a test
+where it is code.
+
+- **F1 — Cloud TAP tab.** gns3-server opens a Cloud interface whose name does
+  not start with `tap` as ethernet (AF_PACKET), which an unheld TAP drops.
+  Names kept; the runbook (G10 and its evidence), `docs/kit-sync.md`, the
+  labnet header/comment, the lab-mirror spec (Decisions, Data flow) and the
+  scenario-pack spec (`"type": "tap"` in `ports_mapping`, checked by the
+  future `tests/scenarios.bats`) now say TAP tab. Read from gns3-server
+  master; the staging rehearsal confirms it against the bundled release.
+- **F2 — br_netfilter.** `labnet_assert` WARNs when
+  `bridge-nf-call-iptables` is 1 and FORWARD's policy is DROP, naming the
+  staging check and the `DOCKER-USER` rule; the kit adds no rule.
+- **F3 — offloads.** `config/networkd/lab-mirror0.link` (installed
+  `05-lab-mirror0.link`), `ethtool -K lab-mirror0 ...` after a reload, and an
+  offload assertion in labnet; validate's offload row is tested both ways.
+- **F4 — wait.** `labnet_wait` polls the whole end state (bridge, every port,
+  `lab-mirror0` up).
+- **F5 — installer export.** `configure --capture-ifs` FAILs on each live key
+  or interface missing from the installer's exported config; `status` reads
+  the export.
+- **F6 — physical ports.** `bridge_physical_ports` in `scripts/lib/common.sh`
+  follows `lower_*` devices (VLAN, bond); labnet and validate share it.
+- **F7 — multicast snooping.** `MulticastSnooping=no`; labnet and validate
+  check `multicast_snooping` is 0.
+- **F8 — `--allow-vm` on `br-lab`.** `docs/validation.md` notes the guest's
+  DHCP/ARP appear in Malcolm.
+- **F9 — ordering and rule 8.** `CLAUDE.md` names the one ordering exception
+  and says `lab-mirror0` is fed by, never a port of, the lab fabric; validate
+  adds a "capture <if> master" row.
+- **F10 — files in place, interfaces missing.** Says so and reloads, ungated.
+- **F11 — EXIT trap.** Commented: labnet owns its process; common.sh sets no
+  EXIT trap.
+- **F12 — deferred items.** A smaller `GNS3_LAB_TAPS` removes the stale TAP
+  files and TAPs through the gate; validate tests a missing `--lab-bridge`;
+  `--capture-ifs` is split with `read -ra` in both scripts.

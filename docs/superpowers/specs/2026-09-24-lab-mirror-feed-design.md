@@ -30,6 +30,18 @@ This is the live half of build-repo Phase 11 ("virtual mirror feed").
 - **GNS3 links reach the bridge through kit-created TAPs.** GNS3 node-to-node
   links are ubridge UDP tunnels that no host tool can see; a scenario binds a
   GNS3 Cloud node to a `lab-tapN` to put a link on `br-lab`.
+- **Cloud nodes bind `lab-tapN` on the TAP tab, never the Ethernet tab.**
+  gns3-server types a Cloud interface as `tap` only when its name starts with
+  `tap`; any other name is typed `ethernet` and ubridge opens it with an
+  AF_PACKET raw socket. A persistent TAP that no process holds open (its fd
+  is what ubridge's TAP binding supplies) drops frames written that way, so
+  an Ethernet-tab binding of `lab-tap0` puts nothing on `br-lab`. The kit
+  keeps the `lab-tapN` names (they mark the interfaces as the kit's) and every
+  instruction and scenario says TAP tab — in a project file, the Cloud's
+  `ports_mapping` entry has `"type": "tap"` and `"interface": "lab-tapN"`.
+  This was read from gns3-server's master branch, not the bundled release;
+  the staging rehearsal confirms it against the bundled GNS3 (evidence: the
+  bound `lab-tapN` leaves `NO-CARRIER` while the node runs).
 
 ## Components
 
@@ -99,7 +111,8 @@ otherwise independent.
 
 ## Data flow
 
-GNS3 node → ubridge → Cloud node bound to `lab-tapN` → `br-lab` (hub: flooded
+GNS3 node → ubridge → Cloud node bound to `lab-tapN` on its TAP tab
+(`"type": "tap"`: ubridge holds the TAP's fd) → `br-lab` (hub: flooded
 to every port) → peer TAP (the other side of the scenario's link) and
 `lab-mon0` → veth → `lab-mirror0` → Malcolm live Arkime + Zeek (host network,
 AF_PACKET) → `/data/pcap/raw` + OpenSearch → Dashboards / Arkime views.

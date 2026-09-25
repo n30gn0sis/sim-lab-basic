@@ -117,6 +117,8 @@ is asserted against those tools' `--help` before use.
   per port: no per-port rules to follow GNS3's ports as they come and go.
   Record the decision in the build repo's buildout plan §7.
 - **Wiki mirror procedure (to carry to the build repo).** `docs/wiki/gns3.md`'s
-  "mirror … TBD" can now read: bind a GNS3 Cloud node to a `lab-tapN`;
-  everything on `br-lab` reaches Malcolm. `docs/wiki/` is build-repo content
+  "mirror … TBD" can now read: bind a GNS3 Cloud node to a `lab-tapN` on
+  the Cloud's **TAP** tab (never the Ethernet tab: gns3-server opens a name
+  not starting with `tap` as an ethernet interface with a raw socket, whose
+  frames an unheld TAP drops); everything on `br-lab` reaches Malcolm. `docs/wiki/` is build-repo content
   and is edited there.
