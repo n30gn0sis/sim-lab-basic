@@ -125,7 +125,8 @@ area_storage() {
 # ── network ──────────────────────────────────────────────────────────────────
 # The lab bridge (Phase 11 live mirror): hub mode, no physical port, and a
 # veth port whose peer is one of --capture-ifs. A veth's iflink is its peer's
-# ifindex; a physical NIC has a device link in sysfs, a virtual one does not.
+# ifindex; a port is physical if it, or a lower device under it (VLAN, bond),
+# has a device link in sysfs -- bridge_physical_ports in lib/common.sh.
 area_network_lab() {
     if [ -z "$LAB_BRIDGE" ]; then row "lab-bridge" "hub mode, no physical port, mirrored" "no --lab-bridge given" SKIP "bridges are never guessed"; return; fi
     local sys b at port n phys="" fed="" i pidx
@@ -138,13 +139,9 @@ area_network_lab() {
     at=$(cat "$b/bridge/ageing_time" 2>/dev/null || echo unreadable)
     if [ "$at" = "0" ]; then row "lab-bridge $LAB_BRIDGE hub" "ageing_time 0" "ageing_time 0" PASS "cat /sys/class/net/$LAB_BRIDGE/bridge/ageing_time"
     else row "lab-bridge $LAB_BRIDGE hub" "ageing_time 0" "ageing_time $at" FAIL "cat /sys/class/net/$LAB_BRIDGE/bridge/ageing_time"; diag "lab-bridge $LAB_BRIDGE hub" "a learning bridge forwards port-to-port frames past the mirror — rerun r770-gns3-deploy.sh labnet"; fi
-    for port in "$b"/brif/*; do
-        [ -e "$port" ] || continue
-        n=$(basename "$port")
-        [ -e "$sys/$n/device" ] && phys="$phys $n"
-    done
+    phys=$(bridge_physical_ports "$LAB_BRIDGE")
     if [ -z "$phys" ]; then row "lab-bridge $LAB_BRIDGE physical ports" "none" "none" PASS "ls /sys/class/net/$LAB_BRIDGE/brif"
-    else row "lab-bridge $LAB_BRIDGE physical ports" "none" "${phys# }" FAIL "ls /sys/class/net/$LAB_BRIDGE/brif"; diag "lab-bridge $LAB_BRIDGE physical ports" "rule 8: the lab fabric never touches a physical port — remove it from the bridge"; fi
+    else row "lab-bridge $LAB_BRIDGE physical ports" "none" "$phys" FAIL "ls /sys/class/net/$LAB_BRIDGE/brif"; diag "lab-bridge $LAB_BRIDGE physical ports" "rule 8: the lab fabric never touches a physical port — remove it from the bridge"; fi
     for i in $CAPTURE_IFS; do
         pidx=$(cat "$sys/$i/iflink" 2>/dev/null || true)
         [ -n "$pidx" ] || continue

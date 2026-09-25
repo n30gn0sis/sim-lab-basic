@@ -337,6 +337,37 @@ secret_read() {
     head -1 "$f"
 }
 
+# ── network ──────────────────────────────────────────────────────────────────
+# net_is_physical <ifname> [depth] — 0 if the interface is backed by hardware:
+# it has a sysfs `device` link, or one of its lower devices (a VLAN's parent,
+# a bond's slaves, recursively) does. Depth-limited, so a lower-device cycle
+# ends instead of looping. Read through p(), so a suite fakes sysfs under ROOT.
+net_is_physical() {
+    local n=$1 depth=${2:-0} sys l
+    [ "$depth" -le 8 ] || return 1
+    sys="$(p /sys/class/net)"
+    [ -e "$sys/$n/device" ] && return 0
+    for l in "$sys/$n"/lower_*; do
+        [ -e "$l" ] || [ -L "$l" ] || continue
+        net_is_physical "${l##*/lower_}" $((depth + 1)) && return 0
+    done
+    return 1
+}
+
+# bridge_physical_ports <bridge> — the bridge's ports that are physical, per
+# net_is_physical, space-separated (nothing when there are none or the
+# bridge is absent). Rule 8: the lab fabric never touches a physical port,
+# not even through a VLAN or a bond.
+bridge_physical_ports() {
+    local port n out=""
+    for port in "$(p /sys/class/net)/$1"/brif/*; do
+        [ -e "$port" ] || continue
+        n=${port##*/}
+        net_is_physical "$n" && out="${out:+$out }$n"
+    done
+    printf '%s' "$out"
+}
+
 # ── misc ─────────────────────────────────────────────────────────────────────
 # usage_from_header <first-line> — the caller's header comment block, from
 # <first-line> to the last line before the first line that is not a comment.

@@ -268,13 +268,9 @@ labnet_assert() {
     done
     if [ -z "$missing" ]; then pass "lab-mon0 and $LAB_TAPS TAP(s) are ports of br-lab"
     else fail "not ports of br-lab:$missing — networkctl status <name>"; fi
-    for port in "$b"/brif/*; do
-        [ -e "$port" ] || continue
-        n=$(basename "$port")
-        [ -e "$sys/$n/device" ] && phys="$phys $n"
-    done
-    if [ -z "$phys" ]; then pass "br-lab has no physical port (rule 8: capture ports never join the lab fabric)"
-    else fail "physical interface(s) on br-lab:$phys — remove them; the lab fabric never touches a physical port"; fi
+    phys=$(bridge_physical_ports br-lab)
+    if [ -z "$phys" ]; then pass "br-lab has no physical port, directly or through a VLAN/bond (rule 8: capture ports never join the lab fabric)"
+    else fail "physical interface(s) on br-lab: $phys — remove them; the lab fabric never touches a physical port"; fi
     flags=$(cat "$m/flags" 2>/dev/null || echo 0)
     if [ "$(cat "$m/operstate" 2>/dev/null)" = "up" ] && [ $(( flags & 0x100 )) -ne 0 ]; then pass "lab-mirror0 is up and promiscuous"
     else fail "lab-mirror0 is not up and promiscuous — networkctl status lab-mirror0"; fi

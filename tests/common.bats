@@ -185,3 +185,21 @@ lib() { kit_run bash -c "set -uo pipefail; . '$LIB'; kit_init test; $1"; }
     run lib 'warn b; fail c; footer'
     [ "$status" -eq 1 ]; [[ "$output" == *"NOT READY"* ]]
 }
+
+@test "bridge_physical_ports() follows lower devices: a VLAN and a bond over physical NICs count, a veth does not" {
+    s="$ROOT/sys/class/net"
+    mkdir -p "$s/br-x/bridge" "$s/br-x/brif" "$s/eno1/device" "$s/eno2/device" \
+             "$s/eno1.100" "$s/bond0" "$s/veth0" "$s/loopa" "$s/loopb"
+    ln -s ../eno1 "$s/eno1.100/lower_eno1"
+    ln -s ../eno2 "$s/bond0/lower_eno2"
+    ln -s ../loopb "$s/loopa/lower_loopb"      # a lower-device cycle must terminate
+    ln -s ../loopa "$s/loopb/lower_loopa"
+    touch "$s/br-x/brif/eno1.100" "$s/br-x/brif/bond0" "$s/br-x/brif/veth0" "$s/br-x/brif/loopa"
+    run lib 'bridge_physical_ports br-x'
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [ "$output" = "bond0 eno1.100" ]
+    run lib 'bridge_physical_ports br-none'
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
