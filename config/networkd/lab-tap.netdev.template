@@ -1,0 +1,9 @@
+# One persistent TAP for a GNS3 Cloud node to bind; owned by the GNS3
+# service user so gns3server (via ubridge) can open it.
+[NetDev]
+Name=__TAP_NAME__
+Kind=tap
+
+[Tap]
+User=__TAP_USER__
+Group=__TAP_USER__

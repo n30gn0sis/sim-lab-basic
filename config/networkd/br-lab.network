@@ -1,0 +1,11 @@
+# br-lab carries no address: it is a lab fabric, never a host interface.
+[Match]
+Name=br-lab
+
+[Network]
+LinkLocalAddressing=no
+IPv6AcceptRA=no
+ConfigureWithoutCarrier=yes
+
+[Link]
+RequiredForOnline=no

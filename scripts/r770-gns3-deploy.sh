@@ -14,10 +14,13 @@
 #   config     service user, /etc/gns3 rendered from the kit template and
 #              OWNED BY THE SERVICE USER, data dirs under /srv/gns3
 #   service    install + enable the systemd unit, assert 127.0.0.1:3080  (GATED)
+#   labnet     the mirrored lab bridge: br-lab (hub mode), lab-tap0..N-1 for
+#              GNS3 Cloud nodes, lab-mon0 <-> lab-mirror0 for Malcolm's
+#              capture; systemd-networkd files, then proven from sysfs (GATED)
 #   status     what is in place
 #   full       the whole GNS3 pipeline, in order, stopping at the first step
 #              that refuses: preflight gate copy apt phone-home docker files
-#              load venv secrets config service (see --from/--to/--only)
+#              load venv secrets config service labnet (see --from/--to/--only)
 #
 #   --bundle <dir>          the bundle (on the media for preflight/gate/copy
 #                           under `full`, local after)
@@ -29,6 +32,7 @@
 #   --from STEP / --to STEP restrict `full` to a slice of its steps
 #   --only STEP             sugar for --from STEP --to STEP
 #   GNS3_HOME /opt/gns3 · GNS3_USER gns3 · GNS3_ETC /etc/gns3 · GNS3_WAIT_SECS 60
+#   GNS3_LAB_TAPS 4 · GNS3_LABNET_WAIT_SECS 10
 #   --yes / --non-interactive / --dry-run / --force   as everywhere in the kit
 #
 #   0  done · 2  done with warnings · 1  refused or failed
@@ -51,7 +55,11 @@ GNS3_USER="${GNS3_USER:-gns3}"
 GNS3_ETC="${GNS3_ETC:-/etc/gns3}"
 WAIT_SECS="${GNS3_WAIT_SECS:-60}"
 SECRET="/etc/lab/secrets/gns3-admin.pw"
-STEPS=(preflight gate copy apt phone-home docker files load venv secrets config service)
+LAB_TAPS="${GNS3_LAB_TAPS:-4}"
+LABNET_WAIT_SECS="${GNS3_LABNET_WAIT_SECS:-10}"
+NETD="/etc/systemd/network"
+LABNET_STAGE=""
+STEPS=(preflight gate copy apt phone-home docker files load venv secrets config service labnet)
 # test seam: lets a suite stub out every call this script makes to
 # r770-import-bundle.sh under `full`, and record what was called.
 IMPORT_BUNDLE_CMD="${IMPORT_BUNDLE_CMD:-$KIT_DIR/scripts/r770-import-bundle.sh}"
@@ -191,6 +199,127 @@ cmd_status() {
     return 0
 }
 
+# ── labnet — the mirrored lab bridge ─────────────────────────────────────────
+# br-lab runs with ageing_time 0, so it keeps no MAC table and floods every
+# frame to every port -- including lab-mon0, whose veth peer lab-mirror0 is
+# the interface Malcolm captures. A scenario puts a link on the bridge by
+# binding a GNS3 Cloud node to a lab-tapN. Declared as systemd-networkd files
+# so it survives a reboot and leaves netplan and every existing interface
+# alone. The names are the kit's own: it creates them, it never picks one.
+lab_names() {  # every interface name this step owns, one per line
+    local i
+    printf '%s\n' br-lab lab-mon0 lab-mirror0
+    for ((i = 0; i < LAB_TAPS; i++)); do printf 'lab-tap%s\n' "$i"; done
+}
+lab_owner_file() {  # lab_owner_file <ifname> — the installed .netdev that declares it
+    case "$1" in
+        br-lab)               echo 05-br-lab.netdev ;;
+        lab-mon0|lab-mirror0) echo 05-lab-mirror.netdev ;;
+        *)                    echo "05-$1.netdev" ;;
+    esac
+}
+labnet_stage() {  # labnet_stage <dir> — every file this step installs, rendered into <dir>
+    local d=$1 src="$KIT_CONFIG_DIR/networkd" i
+    cp "$src/br-lab.netdev" "$d/05-br-lab.netdev"
+    cp "$src/br-lab.network" "$d/05-br-lab.network"
+    cp "$src/lab-mirror.netdev" "$d/05-lab-mirror.netdev"
+    cp "$src/lab-mon0.network" "$d/05-lab-mon0.network"
+    cp "$src/lab-mirror0.network" "$d/05-lab-mirror0.network"
+    for ((i = 0; i < LAB_TAPS; i++)); do
+        DRY=0 render "$src/lab-tap.netdev.template" "$d/05-lab-tap$i.netdev" "TAP_NAME=lab-tap$i" "TAP_USER=$GNS3_USER" >/dev/null
+        DRY=0 render "$src/lab-tap.network.template" "$d/05-lab-tap$i.network" "TAP_NAME=lab-tap$i" >/dev/null
+    done
+}
+labnet_current() {
+    local n sys; sys="$(p /sys/class/net)"
+    for n in $(lab_names); do
+        printf '    %-12s %s\n' "$n" "$([ -e "$sys/$n" ] && echo present || echo absent)"
+    done
+    printf '    kit files in %s: %s\n' "$NETD" "$(find "$(p "$NETD")" -maxdepth 1 -name '05-*lab*' -printf '%f ' 2>/dev/null)"
+}
+labnet_proposed() {
+    local f
+    echo "    install into $NETD, then networkctl reload:"
+    for f in "$LABNET_STAGE"/*; do
+        echo "    == $(basename "$f")"
+        sed 's/^/    | /' "$f"
+    done
+}
+labnet_wait() {  # the reload creates the links asynchronously; give it a moment
+    local sys waited=0; sys="$(p /sys/class/net)"
+    while [ ! -d "$sys/br-lab/bridge" ] || [ ! -e "$sys/lab-mirror0" ]; do
+        [ "$waited" -ge "$LABNET_WAIT_SECS" ] && return 0
+        sleep 1; waited=$((waited + 1))
+    done
+}
+labnet_assert() {
+    local sys b m n port at flags addrs missing="" phys=""
+    sys="$(p /sys/class/net)"; b="$sys/br-lab"; m="$sys/lab-mirror0"
+    if [ ! -d "$b/bridge" ]; then
+        fail "br-lab did not appear after networkctl reload — networkctl status br-lab; journalctl -u systemd-networkd"
+        return 0
+    fi
+    at=$(cat "$b/bridge/ageing_time" 2>/dev/null || echo unreadable)
+    if [ "$at" = "0" ]; then pass "br-lab is in hub mode (ageing_time 0): every frame reaches lab-mon0"
+    else fail "br-lab ageing_time is $at, not 0 — frames between two ports would not all reach the mirror"; fi
+    for n in $(lab_names); do
+        case "$n" in br-lab|lab-mirror0) continue ;; esac
+        [ -e "$b/brif/$n" ] || missing="$missing $n"
+    done
+    if [ -z "$missing" ]; then pass "lab-mon0 and $LAB_TAPS TAP(s) are ports of br-lab"
+    else fail "not ports of br-lab:$missing — networkctl status <name>"; fi
+    for port in "$b"/brif/*; do
+        [ -e "$port" ] || continue
+        n=$(basename "$port")
+        [ -e "$sys/$n/device" ] && phys="$phys $n"
+    done
+    if [ -z "$phys" ]; then pass "br-lab has no physical port (rule 8: capture ports never join the lab fabric)"
+    else fail "physical interface(s) on br-lab:$phys — remove them; the lab fabric never touches a physical port"; fi
+    flags=$(cat "$m/flags" 2>/dev/null || echo 0)
+    if [ "$(cat "$m/operstate" 2>/dev/null)" = "up" ] && [ $(( flags & 0x100 )) -ne 0 ]; then pass "lab-mirror0 is up and promiscuous"
+    else fail "lab-mirror0 is not up and promiscuous — networkctl status lab-mirror0"; fi
+    addrs=$(ip -o addr show dev lab-mirror0 2>/dev/null | grep -c . || true)
+    if [ "$addrs" -eq 0 ]; then pass "lab-mirror0 carries no address (IPv4, IPv6 or link-local)"
+    else fail "lab-mirror0 has $addrs address(es) — the capture end must be silent; networkctl status lab-mirror0"; fi
+}
+cmd_labnet() {
+    banner "labnet — the mirrored lab bridge"
+    need_root
+    case "$LAB_TAPS" in ''|*[!0-9]*) die "GNS3_LAB_TAPS must be a whole number (got '$LAB_TAPS')" ;; esac
+    [ "$LAB_TAPS" -ge 1 ] || die "GNS3_LAB_TAPS must be at least 1"
+    [ "$(systemctl is-active systemd-networkd 2>/dev/null)" = "active" ] \
+        || die "systemd-networkd is not active — the lab network is declared as networkd files, which would do nothing without it"
+    getent passwd "$GNS3_USER" >/dev/null 2>&1 || die "service user $GNS3_USER does not exist — run config first (the TAPs are owned by it)"
+    local n sys netd f i rb changed=0
+    sys="$(p /sys/class/net)"; netd="$(p "$NETD")"
+    for n in $(lab_names); do
+        if [ -e "$sys/$n" ] && [ ! -e "$netd/$(lab_owner_file "$n")" ]; then
+            die "interface $n already exists and no kit file ($NETD/$(lab_owner_file "$n")) declares it — something else owns that name; nothing was changed"
+        fi
+    done
+    LABNET_STAGE=$(mktemp -d)
+    trap 'rm -rf "$LABNET_STAGE"' EXIT
+    labnet_stage "$LABNET_STAGE"
+    for f in "$LABNET_STAGE"/*; do cmp -s "$f" "$netd/$(basename "$f")" || changed=1; done
+    if [ "$changed" -eq 0 ]; then
+        pass "lab network files already in place in $NETD"
+    else
+        rb="rm $NETD/05-*lab*; networkctl reload; ip link del br-lab; ip link del lab-mon0"
+        for ((i = 0; i < LAB_TAPS; i++)); do rb="$rb; ip link del lab-tap$i"; done
+        gate "install the mirrored lab bridge (br-lab)" labnet_current labnet_proposed "$rb"
+        run mkdir -p "$netd" || die "could not create $NETD"
+        for f in "$LABNET_STAGE"/*; do
+            run install -m 0644 "$f" "$netd/$(basename "$f")" || die "could not install $(basename "$f")"
+        done
+        run networkctl reload || die "networkctl reload failed — journalctl -u systemd-networkd"
+        [ "$DRY" = "1" ] || pass "$(find "$LABNET_STAGE" -type f | wc -l) networkd files installed into $NETD"
+    fi
+    [ "$DRY" = "1" ] && footer "labnet"
+    labnet_wait
+    labnet_assert
+    footer "labnet"
+}
+
 # ── full ─────────────────────────────────────────────────────────────────────
 # The whole GNS3 pipeline, in order, stopping at the first step that refuses.
 # Independent of r770-malcolm-deploy.sh's own `full` and of the retired
@@ -233,6 +362,7 @@ cmd_full() {
             secrets) run_step "$step" cmd_secrets ;;
             config)  run_step "$step" cmd_config ;;
             service) run_step "$step" cmd_service ;;
+            labnet)  run_step "$step" cmd_labnet ;;
         esac
     done
     echo
@@ -267,6 +397,7 @@ case "$SUB" in
     secrets) cmd_secrets ;;
     config)  cmd_config ;;
     service) cmd_service ;;
+    labnet)  cmd_labnet ;;
     status)  cmd_status ;;
     full)    cmd_full ;;
     -h|--help|help|"") usage ;;
