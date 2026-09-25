@@ -17,6 +17,7 @@ These keep the spec's intent. The implementer follows the plan; the spec is not 
 1. **Node config is applied at `up` by `docker exec`, not baked into GNS3 persistent volumes.** GNS3's per-node persistence depends on image internals (ifupdown, volume paths); feeding each node's file over `docker exec -i ... sh -s` works for every image, is testable with a stubbed `docker`, and keeps "configs ship with the scenario, never hand-typed". Layout: `scenarios/<name>/nodes/<node>.sh` (addresses, routes, `ip xfrm`), `<node>.frr.conf` (applied with `vtysh -f`), `<node>.swanctl.conf` (installed, then `swanctl --load-all`).
 2. **The kit's marker is a GNS3 project variable** `r770_scenario=<name>` (GNS3 projects have `variables`, not a comment field).
 3. **`client-server` drops iperf3.** The bundled alpine image has busybox `httpd` but no `iperf3`; the scenario generates HTTP GETs and ICMP only.
+   *Correction (final review, F1):* stock alpine's busybox is built without `httpd` (it lives in busybox-extras). The server is a detached busybox `nc` loop answering every connection on port 80 with a fixed HTTP reply; the image, the readiness check and the traffic are unchanged.
 4. **Readiness for `ospf` and `bgp` is an end-to-end ping** from one host to the other: it only succeeds once routes have converged, which is a stronger proof than a neighbour state.
 5. **Project files carry no `"version"` field** (`tests/no-pins.bats` forbids three-part version numbers); `"revision": 9` identifies the file format.
 
@@ -2070,6 +2071,8 @@ traffic_secs=60
 ready=gw-a|swanctl --list-sas | grep -q INSTALLED
 traffic_nodes=cl-b cl-a
 ```
+
+*Correction (final review, F2):* as shipped, `ipsec-ike`'s readiness is `ready=cl-a|ping -c 1 -W 2 10.202.2.10` and both gateways use `start_action = trap`. With gw-a on `start`, its IKE_SA_INIT can reach gw-b before gw-b's config is loaded; gw-b answers NO_PROPOSAL_CHOSEN and strongSwan does not retry. With both on `trap`, each ping retry re-fires the trap, the same end-to-end readiness as the other scenarios.
 
 `scenarios/ipsec-ike/project/ipsec-ike.gns3`:
 ```json

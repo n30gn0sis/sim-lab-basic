@@ -387,7 +387,13 @@ transcript. `ipsec-ike` refuses until a bundle carries a strongSwan image.
 Each scenario owns one /16 (`client-server` 10.205, `ipsec-esp` 10.201,
 `ipsec-ike` 10.202, `ospf` 10.203, `bgp` 10.204), so two can share the hub.
 
-What only the staging rehearsal proves — check each once on VM 9770:
+What only the staging rehearsal proves — check each once on VM 9770.
+First, the images themselves:
+`docker run --rm --network none <alpine ref> sh -c 'command -v nc'` prints a
+path (`client-server`'s server is a busybox `nc` loop — stock alpine has no
+`httpd`), and `docker image ls --format '{{.Repository}}:{{.Tag}}'` shows how
+names display (short, like `alpine:latest`, or as the list writes them; the
+kit normalises either form). Then:
 the admin login and the project import answer as the kit expects; a Cloud
 bound through the TAP tab brings `lab-tapN` to carrier; GNS3's docker nodes
 allow `ip addr`, `sysctl` and `ip xfrm`; the FRR nodes' `ospfd`/`bgpd` start
