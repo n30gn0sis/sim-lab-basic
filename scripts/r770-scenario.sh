@@ -281,6 +281,79 @@ cmd_down() {
     footer "down"
 }
 
+# ── traffic ──────────────────────────────────────────────────────────────────
+cmd_traffic() {
+    banner "traffic — $NAME"
+    need_root
+    scenario_check "$NAME"
+    gns3_login
+    local pid secs start end n cid taps rec ok=0 okn="" badn=""
+    pid=$(our_project "$NAME") || die "could not list GNS3 projects"
+    if [ -z "$pid" ] || [ "$pid" = "FOREIGN" ]; then die "$NAME is not up — r770-scenario.sh up $NAME --bundle <dir>"; fi
+    nodes "$pid" > "$WORK/nodes.tsv" || die "could not read the project's nodes"
+    ready_check "$NAME" 0 || die "$NAME is up but not ready ($(conf "$NAME" ready)) — nothing was generated"
+    secs=${SCENARIO_TRAFFIC_SECS:-$(conf "$NAME" traffic_secs)}
+    case "$secs" in ''|*[!0-9]*) die "the traffic window must be whole seconds (got '$secs')" ;; esac
+    taps=$(awk -F'\t' '$5 != "" {print $5}' "$WORK/nodes.tsv" | paste -sd, -)
+    start=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    for n in $(conf "$NAME" traffic_nodes); do
+        cid=$(container_of "$WORK/nodes.tsv" "$n") || exit 1
+        if run docker exec -i "$cid" sh -s "$n" "$secs" < "$SCEN_DIR/$NAME/traffic.sh"; then
+            ok=$((ok + 1)); okn="$okn $n"
+        else
+            badn="$badn $n"
+        fi
+    done
+    end=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    if [ "$DRY" != "1" ]; then
+        rec="${KIT_EVIDENCE_DIR:-$PWD/r770-evidence}/scenario-$NAME-$(hostname -s 2>/dev/null || echo host)-$(date +%Y%m%d-%H%M%S).run"
+        mkdir -p "$(dirname "$rec")"
+        {
+            echo "scenario=$NAME"
+            echo "range=$(conf "$NAME" range)"
+            echo "project=lab-scenario-$NAME"
+            echo "taps=$taps"
+            echo "start=$start"
+            echo "end=$end"
+            echo "secs=$secs"
+            echo "nodes_ok=$ok"
+            echo "nodes_failed=$(printf '%s' "$badn" | wc -w)"
+            echo "expect=scenarios/$NAME/expect.txt"
+        } > "$rec"
+        note "run record: $rec"
+    fi
+    if [ -z "$badn" ]; then pass "traffic ran in every node:$okn"
+    elif [ "$ok" -gt 0 ]; then warn "traffic failed in:$badn (ran in:$okn)"
+    else fail "no traffic generator ran (failed in:$badn)"; fi
+    footer "traffic"
+}
+
+# ── status ───────────────────────────────────────────────────────────────────
+cmd_status() {
+    banner "scenario status"
+    local c n pid state taps last live=0 ev="${KIT_EVIDENCE_DIR:-$PWD/r770-evidence}"
+    if curl -sS --max-time 5 --fail http://127.0.0.1:3080/v3/version >/dev/null 2>&1 && [ -s "$(p "$SECRET")" ]; then
+        gns3_login; live=1
+    else
+        note "GNS3 is not answering on 127.0.0.1:3080 (or there is no admin credential) — running state unknown"
+    fi
+    for c in "$SCEN_DIR"/*/scenario.conf; do
+        [ -e "$c" ] || continue
+        n=$(basename "$(dirname "$c")"); state="unknown"; taps="-"
+        if [ "$live" = "1" ]; then
+            pid=$(our_project "$n") || pid=""
+            case "$pid" in
+                "")      state="down" ;;
+                FOREIGN) state="name-taken" ;;
+                *)       state="up"; taps=$(nodes "$pid" 2>/dev/null | awk -F'\t' '$5 != "" {print $5}' | paste -sd, -) ;;
+            esac
+        fi
+        last=$(find "$ev" -maxdepth 1 -name "scenario-$n-*.run" 2>/dev/null | sort | tail -1)
+        printf '%-16s %-10s taps %-26s last run %s\n' "$n" "$state" "${taps:--}" "${last:-none}"
+    done
+    return 0
+}
+
 # ── dispatch ─────────────────────────────────────────────────────────────────
 SUB="${1:-}"; [ $# -gt 0 ] && shift
 case "$SUB" in
@@ -298,9 +371,10 @@ done
 kit_init "r770-scenario"
 case "$SUB" in
     list) cmd_list ;;
-    up|down)
+    up|traffic|down)
         [ -n "$NAME" ] || die "$SUB needs a scenario name (see: r770-scenario.sh list)"
         "cmd_$SUB" ;;
+    status) cmd_status ;;
     -h|--help|help|"") usage ;;
     *) die "unknown subcommand: $SUB (try --help)" ;;
 esac

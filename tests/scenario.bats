@@ -339,3 +339,82 @@ PY
     [[ "$output" == *"DRY-RUN: POST /projects/"*"/import?name=lab-scenario-demo"* ]]
     [ ! -s "$FAKE_GNS3/projects.json" ] || ! grep -q lab-scenario-demo "$FAKE_GNS3/projects.json"
 }
+
+# ── traffic / status ───────────────────────────────────────────────────────────
+
+up_demo() { run scenario up demo --bundle "$BUNDLE"; [ "$status" -eq 0 ]; : > "$STUB_LOG"; }
+
+@test "traffic refuses a scenario that is not up" {
+    run scenario traffic demo
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"demo is not up"* ]]
+}
+
+@test "traffic runs traffic.sh in each traffic node, in order, and writes a run record" {
+    up_demo
+    run scenario traffic demo
+    echo "$output"
+    [ "$status" -eq 0 ]
+    b=$(grep -n '^docker exec -i cid-b sh -s b 5$' "$STUB_LOG" | cut -d: -f1)
+    a=$(grep -n '^docker exec -i cid-a sh -s a 5$' "$STUB_LOG" | cut -d: -f1)
+    [ -n "$b" ] && [ -n "$a" ] && [ "$b" -lt "$a" ]
+    rec=$(find "$KIT_EVIDENCE_DIR" -name 'scenario-demo-fixturehost-*.run')
+    [ -n "$rec" ]
+    for k in scenario=demo range=10.209.0.0/16 project=lab-scenario-demo taps=lab-tap0,lab-tap1 secs=5 nodes_ok=2 nodes_failed=0 expect=scenarios/demo/expect.txt; do
+        grep -qx "$k" "$rec"
+    done
+    grep -qE '^start=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z$' "$rec"
+    grep -qE '^end=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z$' "$rec"
+    [[ "$output" == *"PASS  traffic ran in every node: b a"* ]]
+}
+
+@test "SCENARIO_TRAFFIC_SECS overrides the scenario's window" {
+    up_demo
+    SCENARIO_TRAFFIC_SECS=9 run scenario traffic demo
+    [ "$status" -eq 0 ]
+    grep -q '^docker exec -i cid-a sh -s a 9$' "$STUB_LOG"
+}
+
+@test "traffic WARNs when one node's generator fails and FAILs when none ran" {
+    up_demo
+    echo 1 > "$BATS_TEST_TMPDIR/rc-execi-cid-b"
+    run scenario traffic demo
+    echo "$output"
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"WARN  traffic failed in: b (ran in: a)"* ]]
+    echo 1 > "$BATS_TEST_TMPDIR/rc-execi-cid-a"
+    run scenario traffic demo
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"FAIL  no traffic generator ran (failed in: b a)"* ]]
+}
+
+@test "traffic refuses when the scenario is up but not ready, and generates nothing" {
+    up_demo
+    echo 1 > "$BATS_TEST_TMPDIR/rc-exec-cid-a"
+    run scenario traffic demo
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"up but not ready"* ]]
+    ! grep -q 'sh -s b' "$STUB_LOG"
+}
+
+@test "status lists each scenario's state, TAPs and last run record" {
+    up_demo
+    run scenario traffic demo
+    run scenario status
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"demo"*"up"*"lab-tap0,lab-tap1"*"scenario-demo-fixturehost-"* ]]
+    [[ "$output" == *"needs-ike"*"down"*"none"* ]]
+}
+
+@test "status without a reachable GNS3 still lists the pack, state unknown" {
+    touch "$FAKE_GNS3/down"
+    run scenario status
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"running state unknown"* ]]
+    [[ "$output" == *"demo"*"unknown"* ]]
+}
