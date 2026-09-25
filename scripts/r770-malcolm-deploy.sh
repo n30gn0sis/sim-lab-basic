@@ -90,7 +90,9 @@ IMPORT_BUNDLE_CMD="${IMPORT_BUNDLE_CMD:-$KIT_DIR/scripts/r770-import-bundle.sh}"
 
 usage() { usage_from_header 3; exit 0; }
 home()      { p "$MALCOLM_HOME"; }
-installer() { printf '%s/scripts/install.py' "$(home)"; }
+# The docker_install.zip puts install.py at its root, beside the stack tarball
+# (measured on staging VM 9770, 2026-09-25) -- not under scripts/.
+installer() { printf '%s/install.py' "$(home)"; }
 stack()     { printf '%s/malcolm' "$(home)"; }
 compose()   { printf '%s/docker-compose.yml' "$(stack)"; }
 local_bundle() {  # after copy, the bundle lives under /srv/bundles

@@ -123,7 +123,9 @@ STUB
 }
 
 @test "unpack unzips the one bundled installer into /opt/malcolm and is idempotent" {
-    stub unzip 'echo "unzip $*" >> "$STUB_LOG"; mkdir -p "$ROOT/opt/malcolm/scripts"; touch "$ROOT/opt/malcolm/scripts/install.py"'
+    # the real docker_install.zip (measured on staging VM 9770, 2026-09-25) puts
+    # install.py at its root, beside the stack tarball -- not under scripts/
+    stub unzip 'echo "unzip $*" >> "$STUB_LOG"; mkdir -p "$ROOT/opt/malcolm"; touch "$ROOT/opt/malcolm/install.py" "$ROOT/opt/malcolm/malcolm_fixture.tar.gz"'
     export ROOT
     run malcolm unpack --bundle "$BUNDLE"
     echo "$output"
@@ -166,7 +168,7 @@ STUB
 
 @test "configure refuses when the bundled installer no longer advertises a flag the kit relies on" {
     make_malcolm_tree "$ROOT"
-    cat > "$ROOT/opt/malcolm/scripts/install.py" <<'STUB'
+    cat > "$ROOT/opt/malcolm/install.py" <<'STUB'
 #!/usr/bin/env bash
 echo "install.py $*" >> "$MALCOLM_STUB_LOG"
 case " $* " in *" --help "*) echo "usage: install.py [--non-interactive] [--configure] [--skip-splash]"; exit 0;; esac

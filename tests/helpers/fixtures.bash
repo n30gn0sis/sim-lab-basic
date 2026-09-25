@@ -111,7 +111,7 @@ make_root() {
 }
 
 # make_malcolm_tree <root> — what /opt/malcolm looks like AFTER `unpack` and
-# the installer's extraction: the installer at scripts/install.py, the stack at
+# the installer's extraction: the installer at the zip's root (install.py), the stack at
 # malcolm/ with its compose file (carrying the 0.0.0.0:443 publish line the
 # rebind must rewrite, at the indentation the installer's YAML writer emits
 # -- measured 2026-09-12), auth_setup and start. All stubs: each prints a --help
@@ -120,8 +120,8 @@ make_root() {
 # writes back what it kept.
 make_malcolm_tree() {
     local r=$1 home="$1/opt/malcolm"
-    mkdir -p "$home/scripts" "$home/malcolm/scripts" "$home/malcolm/config" "$home/malcolm/nginx" "$home/malcolm/pcap/upload"
-    cat > "$home/scripts/install.py" <<'STUB'
+    mkdir -p "$home/malcolm/scripts" "$home/malcolm/config" "$home/malcolm/nginx" "$home/malcolm/pcap/upload"
+    cat > "$home/install.py" <<'STUB'
 #!/usr/bin/env bash
 [ -n "${MALCOLM_STUB_LOG:-}" ] && echo "install.py $*" >> "$MALCOLM_STUB_LOG"
 case " $* " in *" --help "*)
@@ -162,7 +162,7 @@ STUB
 exit 0
 STUB
     done
-    chmod +x "$home/scripts/install.py" "$home/malcolm/scripts/"*
+    chmod +x "$home/install.py" "$home/malcolm/scripts/"*
     cat > "$home/malcolm/docker-compose.yml" <<'YAML'
 services:
   nginx-proxy:
