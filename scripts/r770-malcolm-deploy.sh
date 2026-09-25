@@ -42,6 +42,12 @@
 #                              attach to. Needed only when the stack carries
 #                              more than one: the kit refuses to pick for you,
 #                              it does not guess (run `inventory` to see them)
+#   --capture-ifs "<if ...>"   live capture (Arkime + Zeek) on these interfaces,
+#                              for configure (and full). Each must exist and
+#                              carry no address: discovered names, never
+#                              guessed -- on staging, the lab mirror
+#                              lab-mirror0 (r770-gns3-deploy.sh labnet first).
+#                              Without it, live capture stays off.
 #   --yes / --non-interactive / --dry-run / --force   as everywhere in the kit
 #
 #   MALCOLM_HOME        /opt/malcolm        MALCOLM_ADMIN_USER   analyst
@@ -63,6 +69,7 @@ set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
 
 BUNDLE=""; FREE_G=""; IDX=""; OSD_NETRC=""
+CAPTURE_IFS=""; CAPTURE_SET=0
 MEDIA=""; DEVICE=""; FROM=""; TO=""; ONLY=""
 MALCOLM_HOME="${MALCOLM_HOME:-/opt/malcolm}"
 ADMIN_USER="${MALCOLM_ADMIN_USER:-analyst}"
@@ -129,6 +136,31 @@ cmd_unpack() {
 }
 
 # ── configure ────────────────────────────────────────────────────────────────
+
+# capture_json — check --capture-ifs and print it as a JSON list ("[]" when
+# not given). Each name must look like an interface, exist, carry no address
+# (rule 8), and appear once. Interfaces are given, never guessed.
+capture_json() {
+    local i seen=" " json="" n=0
+    [ "$CAPTURE_SET" = "1" ] || { printf '[]'; return 0; }
+    for i in $CAPTURE_IFS; do
+        [[ "$i" =~ ^[A-Za-z0-9._-]{1,15}$ ]] || die "--capture-ifs: '$i' is not an interface name"
+        case "$seen" in *" $i "*) die "--capture-ifs names $i twice" ;; esac
+        seen="$seen$i "
+        if [ ! -e "$(p /sys/class/net)/$i" ]; then
+            case "$i" in
+                lab-*) die "capture interface $i does not exist — create the lab network first: r770-gns3-deploy.sh labnet" ;;
+                *)     die "capture interface $i does not exist — capture interfaces come from discovery (ip -br link), never guessed" ;;
+            esac
+        fi
+        [ -z "$(ip -o addr show dev "$i" 2>/dev/null)" ] || die "capture interface $i carries an address — capture interfaces never get one (rule 8)"
+        json="$json${json:+, }\"$i\""
+        n=$((n + 1))
+    done
+    [ "$n" -gt 0 ] || die "--capture-ifs was given but names no interface"
+    printf '[%s]' "$json"
+}
+
 malcolm_version_from_zip() {  # numeric components lose their leading zeros, as the installer's own export writes them
     local name=$1 v part out=""
     v=${name#malcolm-}; v=${v%-docker_install.zip}
@@ -153,7 +185,7 @@ heap_sizes() {  # prints "<os-g> <ls-m>" from the host's memory, unless overridd
 cmd_configure() {
     banner "configure — replay the kit's config through the installer"
     need_root
-    local b zip ver os ls rendered exported manage free
+    local b zip ver os ls rendered exported manage free ifaces live
     b=$(bundle_dir "$BUNDLE") || exit 1
     [ -f "$(installer)" ] || die "$(installer) not found — run unpack first"
     require_pkg python3-ruamel.yaml python3-dotenv
@@ -162,15 +194,19 @@ cmd_configure() {
     ver=$(malcolm_version_from_zip "$(basename "$zip")")
     read -r os ls <<< "$(heap_sizes)"
     if [ -n "$FREE_G" ]; then manage=true; free="$FREE_G"; else manage=false; free='<MALCOLM_CONFIG_NONE>'; fi
+    ifaces=$(capture_json) || exit 1
+    if [ "$ifaces" = "[]" ]; then live=false; else live=true; fi
     rendered="$(home)/malcolm-config.rendered.json"
     exported="$(home)/malcolm-config.exported.json"
     note "version from the bundled installer's filename: $ver"
     note "heaps from this host: OpenSearch ${os}g, Logstash ${ls}m (override: MALCOLM_OS_MEM_G / MALCOLM_LS_MEM_M)"
     note "PCAP -> /data/pcap/raw, indexes -> /data/index, Suricata off, no feed pulls; Arkime PCAP management: $manage"
+    if [ "$live" = "true" ]; then note "live capture on: $CAPTURE_IFS (Arkime + Zeek; Suricata stays off)"; else note "live capture off (no --capture-ifs)"; fi
     run mkdir -p "$(home)"
     render "$KIT_CONFIG_DIR/malcolm/malcolm-config.json.template" "$rendered" \
         "PCAP_NODE_NAME=$(hostname -s)" "OS_MEMORY=${os}g" "LS_MEMORY=${ls}m" \
-        "ARKIME_MANAGE_PCAP=$manage" "ARKIME_FREE_SPACE_G=$free" "MALCOLM_VER=$ver"
+        "ARKIME_MANAGE_PCAP=$manage" "ARKIME_FREE_SPACE_G=$free" "MALCOLM_VER=$ver" \
+        "PCAP_IFACE=$ifaces" "CAPTURE_LIVE=$live" "LIVE_ARKIME=$live" "LIVE_ZEEK=$live"
     run python3 "$(installer)" --non-interactive --skip-splash --configure \
         --import-malcolm-config-file "$rendered" --export-malcolm-config-file "$exported" \
         || die "the installer failed — its output above is the evidence; nothing else was changed"
@@ -305,6 +341,14 @@ cmd_status() {
         if grep -qF -- "$REBIND_TO" "$(compose)"; then printf '%-28s %s\n' "nginx-proxy bind" "127.0.0.1:8443 (rebound)"; else printf '%-28s %s\n' "nginx-proxy bind" "NOT rebound"; fi
     fi
     printf '%-28s %s\n' "auth material" "$([ -s "$(stack)/nginx/htpasswd" ] && echo present || echo absent)"
+    local rc live="off"
+    rc="$(home)/malcolm-config.rendered.json"
+    if [ -f "$rc" ]; then
+        if grep -q '"captureLiveNetworkTraffic": true' "$rc"; then
+            live="on $(sed -n 's/.*"pcapIface": \(\[.*\]\),*/\1/p' "$rc")"
+        fi
+        printf '%-28s %s\n' "live capture" "$live"
+    fi
     printf '%-28s %s\n' "admin credential" "$([ -s "$(p "$SECRET")" ] && echo "present at $SECRET" || echo absent)"
     if command -v docker >/dev/null 2>&1 && [ -f "$(compose)" ]; then
         ( cd "$(stack)" && docker compose ps --format '{{.Service}} {{.State}} {{.Health}}' 2>/dev/null | sed 's/^/    /' ) || true
@@ -590,6 +634,7 @@ while [ $# -gt 0 ]; do
         --only)                ONLY="${2:-}"; shift ;;
         --arkime-free-space-g) FREE_G="${2:-}"; shift ;;
         --index-pattern)       IDX="${2:-}"; shift ;;
+        --capture-ifs)         CAPTURE_IFS="${2:-}"; CAPTURE_SET=1; shift ;;
         -h|--help)             usage ;;
         *)
             if common_flag "$1"; then :

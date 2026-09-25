@@ -179,6 +179,84 @@ STUB
     ! grep -q -- '--configure' "$MALCOLM_STUB_LOG"
 }
 
+@test "configure without --capture-ifs keeps live capture off, exactly as before" {
+    make_malcolm_tree "$ROOT"
+    run malcolm configure --bundle "$BUNDLE"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    r="$ROOT/opt/malcolm/malcolm-config.rendered.json"
+    grep -q '"pcapIface": \[\],' "$r"
+    grep -q '"captureLiveNetworkTraffic": false,' "$r"
+    grep -q '"liveArkime": false,' "$r"
+    grep -q '"liveZeek": false,' "$r"
+    grep -q '"liveSuricata": false,' "$r"
+    grep -q '"tweakIface": false,' "$r"
+}
+
+@test "configure --capture-ifs turns on live Arkime and Zeek on exactly those interfaces" {
+    make_malcolm_tree "$ROOT"
+    mkdir -p "$ROOT/sys/class/net/lab-mirror0"
+    stub ip 'exit 0'
+    run malcolm configure --bundle "$BUNDLE" --capture-ifs lab-mirror0
+    echo "$output"
+    [ "$status" -eq 0 ]
+    r="$ROOT/opt/malcolm/malcolm-config.rendered.json"
+    grep -q '"pcapIface": \["lab-mirror0"\],' "$r"
+    grep -q '"captureLiveNetworkTraffic": true,' "$r"
+    grep -q '"liveArkime": true,' "$r"
+    grep -q '"liveZeek": true,' "$r"
+    grep -q '"liveSuricata": false,' "$r"
+    grep -q '"tweakIface": false,' "$r"
+    [[ "$output" == *"live capture on: lab-mirror0"* ]]
+}
+
+@test "configure --capture-ifs renders several interfaces as one JSON list" {
+    make_malcolm_tree "$ROOT"
+    mkdir -p "$ROOT/sys/class/net/lab-mirror0" "$ROOT/sys/class/net/cap0"
+    stub ip 'exit 0'
+    run malcolm configure --bundle "$BUNDLE" --capture-ifs "lab-mirror0 cap0"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    grep -q '"pcapIface": \["lab-mirror0", "cap0"\],' "$ROOT/opt/malcolm/malcolm-config.rendered.json"
+}
+
+@test "configure refuses a capture interface that does not exist, pointing a lab-* name at labnet" {
+    make_malcolm_tree "$ROOT"
+    run malcolm configure --bundle "$BUNDLE" --capture-ifs lab-mirror0
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"capture interface lab-mirror0 does not exist"* ]]
+    [[ "$output" == *"r770-gns3-deploy.sh labnet"* ]]
+    ! grep -q -- '--configure' "$MALCOLM_STUB_LOG"
+}
+
+@test "configure refuses a capture interface that carries an address (rule 8)" {
+    make_malcolm_tree "$ROOT"
+    mkdir -p "$ROOT/sys/class/net/cap0"
+    stub ip 'case "$*" in *"addr show dev cap0"*) echo "3: cap0    inet 10.0.0.9/24 scope global cap0";; esac; exit 0'
+    run malcolm configure --bundle "$BUNDLE" --capture-ifs cap0
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"capture interface cap0 carries an address"* ]]
+    ! grep -q -- '--configure' "$MALCOLM_STUB_LOG"
+}
+
+@test "configure refuses a repeated, empty or malformed --capture-ifs" {
+    make_malcolm_tree "$ROOT"
+    mkdir -p "$ROOT/sys/class/net/lab-mirror0"
+    stub ip 'exit 0'
+    run malcolm configure --bundle "$BUNDLE" --capture-ifs "lab-mirror0 lab-mirror0"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"names lab-mirror0 twice"* ]]
+    run malcolm configure --bundle "$BUNDLE" --capture-ifs ""
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"names no interface"* ]]
+    run malcolm configure --bundle "$BUNDLE" --capture-ifs 'bad"name'
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"not an interface name"* ]]
+    ! grep -q -- '--configure' "$MALCOLM_STUB_LOG"
+}
+
 # ── rebind ──────────────────────────────────────────────────────────────────
 
 @test "rebind rewrites exactly one publish line and is idempotent" {
