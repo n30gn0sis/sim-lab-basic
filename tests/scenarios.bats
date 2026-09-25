@@ -47,3 +47,22 @@ PY
     [ "$status" -eq 1 ]
     [[ "$output" == *"expected two Cloud nodes"* ]]
 }
+
+@test "the layout lint rejects a node file the script would silently ignore" {
+    d="$BATS_TEST_TMPDIR/pack"; mkdir -p "$d"; cp -r scenarios/client-server "$d/"
+    echo 'hostname srv' > "$d/client-server/nodes/srv.conf"
+    SCENARIOS_ROOT="$d" run python3 tests/helpers/lint_scenarios.py layout
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"nodes/srv.conf"* ]]
+}
+
+@test "the json lint rejects a project revision of 10 or more" {
+    d="$BATS_TEST_TMPDIR/pack"; mkdir -p "$d"; cp -r scenarios/client-server "$d/"
+    sed -i 's/"revision": [0-9]*/"revision": 10/' "$d/client-server/project/client-server.gns3"
+    grep -q '"revision": 10' "$d/client-server/project/client-server.gns3"
+    SCENARIOS_ROOT="$d" run python3 tests/helpers/lint_scenarios.py json
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"revision"* ]]
+}

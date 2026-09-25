@@ -14,6 +14,7 @@ ROOT = os.environ.get("SCENARIOS_ROOT", "scenarios")
 KEYS = ["name", "description", "range", "images", "traffic_secs", "ready", "traffic_nodes"]
 UPSTREAM_PENDING = {"strongswan"}  # added to the build repo's pin block, not yet in a bundle
 PROTOS = {"tcp", "udp", "icmp", "esp", "ospf"}
+NODE_SUFFIXES = (".sh", ".frr.conf", ".swanctl.conf")  # the only kinds r770-scenario.sh applies
 
 
 def scenarios():
@@ -60,6 +61,10 @@ def check_layout(s, c, errs):
         errs.append(f"{s}: ready= must be <node>|<command>")
     if not c.get("traffic_secs", "").isdigit():
         errs.append(f"{s}: traffic_secs= must be whole seconds")
+    nd = os.path.join(ROOT, s, "nodes")
+    for f in sorted(os.listdir(nd)) if os.path.isdir(nd) else []:
+        if not f.endswith(NODE_SUFFIXES):
+            errs.append(f"{s}: nodes/{f} is not .sh, .frr.conf or .swanctl.conf — r770-scenario.sh would ignore it")
 
 
 def check_json(s, c, errs):
@@ -74,6 +79,10 @@ def check_json(s, c, errs):
         errs.append(f"{s}: project lacks the r770_scenario=__SCENARIO__ variable")
     if "version" in p:
         errs.append(f"{s}: project carries a version field (no pins; revision identifies the format)")
+    rev = p.get("revision")
+    if not isinstance(rev, int) or rev >= 10:
+        errs.append(f"{s}: project revision {rev!r} must be an integer below 10 — the server converts an older "
+                    "file and sets its version itself, but a revision-10 file without a version field fails import")
 
 
 def check_topology(s, c, errs):
