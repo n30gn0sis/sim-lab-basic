@@ -1,7 +1,7 @@
 # The capture end must be silent: no address of any kind, no ARP, and
 # promiscuous so it hands Malcolm every frame the hub floods to lab-mon0.
 [Match]
-Name=lab-mirror0
+Name=lab_mirror0
 
 [Network]
 LinkLocalAddressing=no

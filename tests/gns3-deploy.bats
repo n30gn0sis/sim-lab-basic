@@ -319,25 +319,25 @@ sys_after_reload() {
     cat > "$BATS_TEST_TMPDIR/on-reload" <<EOF
 #!/usr/bin/env bash
 s="$ROOT/sys/class/net"
-mkdir -p "\$s/br-lab/bridge" "\$s/br-lab/brif" "\$s/lab-mirror0" "\$s/lab-mon0"
+mkdir -p "\$s/br-lab/bridge" "\$s/br-lab/brif" "\$s/lab_mirror0" "\$s/lab-mon0"
 echo "${1:-0}" > "\$s/br-lab/bridge/ageing_time"
 echo "${4:-0}" > "\$s/br-lab/bridge/multicast_snooping"
 for i in 0 1 2 3; do mkdir -p "\$s/lab-tap\$i"; touch "\$s/br-lab/brif/lab-tap\$i"; done
 touch "\$s/br-lab/brif/lab-mon0"
-echo up > "\$s/lab-mirror0/operstate"
-echo "${3:-0x1103}" > "\$s/lab-mirror0/flags"
+echo up > "\$s/lab_mirror0/operstate"
+echo "${3:-0x1103}" > "\$s/lab_mirror0/flags"
 if [ -n "${2:-}" ]; then mkdir -p "\$s/${2:-}/device"; touch "\$s/br-lab/brif/${2:-}"; fi
 EOF
     chmod +x "$BATS_TEST_TMPDIR/on-reload"
 }
 
 # stub_labnet_host — networkd active, the service user present, networkctl
-# reload "creates" the interfaces, and ip reports an address on lab-mirror0
+# reload "creates" the interfaces, and ip reports an address on lab_mirror0
 # only when MIRROR_ADDR is set.
 stub_labnet_host() {
     stub systemctl 'echo "systemctl $*" >> "$STUB_LOG"; [ "$*" = "is-active systemd-networkd" ] && echo active; exit 0'
     stub networkctl 'echo "networkctl $*" >> "$STUB_LOG"; [ "$1" = reload ] && [ -x "$BATS_TEST_TMPDIR/on-reload" ] && "$BATS_TEST_TMPDIR/on-reload"; exit 0'
-    stub ip 'echo "ip $*" >> "$STUB_LOG"; case "$*" in *"addr show dev lab-mirror0"*) [ -n "${MIRROR_ADDR:-}" ] && echo "9: lab-mirror0    inet6 fe80::1/64 scope link";; esac; exit 0'
+    stub ip 'echo "ip $*" >> "$STUB_LOG"; case "$*" in *"addr show dev lab_mirror0"*) [ -n "${MIRROR_ADDR:-}" ] && echo "9: lab_mirror0    inet6 fe80::1/64 scope link";; esac; exit 0'
     [ -e "$BATS_TEST_TMPDIR/on-reload" ] || sys_after_reload
 }
 labnet_user() { stub getent 'case "$1 $2" in "passwd gns3") exit 0;; *) exit 1;; esac'; }
@@ -368,16 +368,16 @@ labnet_user() { stub getent 'case "$1 $2" in "passwd gns3") exit 0;; *) exit 1;;
     done
     [ ! -e "$d/05-lab-tap4.netdev" ]
     grep -qx 'Bridge=br-lab' "$d/05-lab-mon0.network"
-    grep -qx 'Name=lab-mirror0' "$d/05-lab-mirror.netdev"
-    for k in 'LinkLocalAddressing=no' 'IPv6AcceptRA=no' 'ARP=no' 'Promiscuous=yes'; do grep -qx "$k" "$d/05-lab-mirror0.network"; done
+    grep -qx 'Name=lab_mirror0' "$d/05-lab-mirror.netdev"
+    for k in 'LinkLocalAddressing=no' 'IPv6AcceptRA=no' 'ARP=no' 'Promiscuous=yes'; do grep -qx "$k" "$d/05-lab_mirror0.network"; done
     ! grep -rq '^Address=' "$d"
     ! grep -rq '__[A-Z_]*__' "$d"
     grep -q '^networkctl reload' "$STUB_LOG"
     [[ "$output" == *"PASS  br-lab is in hub mode"* ]]
     [[ "$output" == *"PASS  lab-mon0 and 4 TAP(s) are ports of br-lab"* ]]
     [[ "$output" == *"PASS  br-lab has no physical port"* ]]
-    [[ "$output" == *"PASS  lab-mirror0 is up and promiscuous"* ]]
-    [[ "$output" == *"PASS  lab-mirror0 carries no address"* ]]
+    [[ "$output" == *"PASS  lab_mirror0 is up and promiscuous"* ]]
+    [[ "$output" == *"PASS  lab_mirror0 carries no address"* ]]
 }
 
 @test "labnet honours GNS3_LAB_TAPS" {
@@ -453,8 +453,8 @@ labnet_user() { stub getent 'case "$1 $2" in "passwd gns3") exit 0;; *) exit 1;;
     MIRROR_ADDR=1 run gns3 labnet
     echo "$output"
     [ "$status" -eq 1 ]
-    [[ "$output" == *"FAIL  lab-mirror0 has 1 address(es)"* ]]
-    [[ "$output" == *"FAIL  lab-mirror0 is not up and promiscuous"* ]]
+    [[ "$output" == *"FAIL  lab_mirror0 has 1 address(es)"* ]]
+    [[ "$output" == *"FAIL  lab_mirror0 is not up and promiscuous"* ]]
 }
 
 @test "labnet --dry-run prints the files and writes nothing" {
@@ -482,23 +482,23 @@ labnet_user() { stub getent 'case "$1 $2" in "passwd gns3") exit 0;; *) exit 1;;
     [[ "$output" == *"FAIL  br-lab multicast_snooping is 1"* ]]
 }
 
-@test "labnet ships a .link that keeps offloads off on lab-mirror0, applies them now with ethtool, and proves them (F3)" {
+@test "labnet ships a .link that keeps offloads off on lab_mirror0, applies them now with ethtool, and proves them (F3)" {
     stub_labnet_host; labnet_user
     stub ethtool 'echo "ethtool $*" >> "$STUB_LOG"; [ "$1" = -k ] && printf "tcp-segmentation-offload: %s\ngeneric-receive-offload: %s\nlarge-receive-offload: off [fixed]\n" "${OFFL:-off}" "${OFFL:-off}"; exit 0'
     run gns3 labnet
     echo "$output"
     [ "$status" -eq 0 ]
-    l="$(NETD_DIR)/05-lab-mirror0.link"
-    grep -qx 'OriginalName=lab-mirror0' "$l"
+    l="$(NETD_DIR)/05-lab_mirror0.link"
+    grep -qx 'OriginalName=lab_mirror0' "$l"
     for k in TCPSegmentationOffload GenericSegmentationOffload GenericReceiveOffload LargeReceiveOffload; do grep -qx "$k=no" "$l"; done
-    grep -q '^ethtool -K lab-mirror0 tso off gso off gro off lro off' "$STUB_LOG"
+    grep -q '^ethtool -K lab_mirror0 tso off gso off gro off lro off' "$STUB_LOG"
     [ "$(grep -n '^ethtool -K' "$STUB_LOG" | cut -d: -f1)" -gt "$(grep -n '^networkctl reload' "$STUB_LOG" | cut -d: -f1)" ]
-    [[ "$output" == *"PASS  lab-mirror0 offloads (gro/lro/tso) are off"* ]]
+    [[ "$output" == *"PASS  lab_mirror0 offloads (gro/lro/tso) are off"* ]]
     rm -rf "$(NETD_DIR)" "$ROOT/sys"
     OFFL=on run gns3 labnet
     echo "$output"
     [ "$status" -eq 1 ]
-    [[ "$output" == *"FAIL  lab-mirror0 has 2 offload(s) still on"* ]]
+    [[ "$output" == *"FAIL  lab_mirror0 has 2 offload(s) still on"* ]]
 }
 
 @test "labnet SKIPs the offload proof when ethtool is not installed" {
@@ -506,7 +506,7 @@ labnet_user() { stub getent 'case "$1 $2" in "passwd gns3") exit 0;; *) exit 1;;
     run gns3 labnet
     echo "$output"
     [ "$status" -eq 0 ]
-    [[ "$output" == *"SKIP  lab-mirror0 offloads unchecked: ethtool not installed"* ]]
+    [[ "$output" == *"SKIP  lab_mirror0 offloads unchecked: ethtool not installed"* ]]
 }
 
 @test "labnet WARNs when br_netfilter sends bridged IP through a FORWARD chain whose policy is DROP (F2)" {
@@ -544,7 +544,7 @@ labnet_user() { stub getent 'case "$1 $2" in "passwd gns3") exit 0;; *) exit 1;;
 @test "labnet waits for the whole end state, not just the bridge, before proving it (F4)" {
     stub_labnet_host; labnet_user
     mv "$BATS_TEST_TMPDIR/on-reload" "$BATS_TEST_TMPDIR/complete-sys"
-    printf '#!/usr/bin/env bash\nmkdir -p "%s/br-lab/bridge" "%s/br-lab/brif" "%s/lab-mirror0"\n' \
+    printf '#!/usr/bin/env bash\nmkdir -p "%s/br-lab/bridge" "%s/br-lab/brif" "%s/lab_mirror0"\n' \
         "$ROOT/sys/class/net" "$ROOT/sys/class/net" "$ROOT/sys/class/net" > "$BATS_TEST_TMPDIR/on-reload"
     chmod +x "$BATS_TEST_TMPDIR/on-reload"
     stub sleep 'echo "sleep $*" >> "$STUB_LOG"; "$BATS_TEST_TMPDIR/complete-sys"; exit 0'

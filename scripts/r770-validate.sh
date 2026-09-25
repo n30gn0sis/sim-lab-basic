@@ -156,7 +156,7 @@ area_network_lab() {
         done
     done
     if [ "${#fed[@]}" -gt 0 ]; then row "lab-bridge $LAB_BRIDGE mirror" "a capture interface fed by a bridge port" "${fed[*]}" PASS "cat /sys/class/net/<if>/iflink vs brif/*/ifindex"
-    else row "lab-bridge $LAB_BRIDGE mirror" "a capture interface fed by a bridge port" "no --capture-ifs interface is fed by a port of $LAB_BRIDGE" FAIL "cat /sys/class/net/<if>/iflink vs brif/*/ifindex"; diag "lab-bridge $LAB_BRIDGE mirror" "Malcolm would see nothing from the lab — pass lab-mirror0 in --capture-ifs, and rerun labnet if the veth is missing"; fi
+    else row "lab-bridge $LAB_BRIDGE mirror" "a capture interface fed by a bridge port" "no --capture-ifs interface is fed by a port of $LAB_BRIDGE" FAIL "cat /sys/class/net/<if>/iflink vs brif/*/ifindex"; diag "lab-bridge $LAB_BRIDGE mirror" "Malcolm would see nothing from the lab — pass lab_mirror0 in --capture-ifs, and rerun labnet if the veth is missing"; fi
     local cnt
     for i in "${fed[@]}"; do
         cnt=$(ip -o addr show "$i" 2>/dev/null | grep -E ' inet6? ' | grep -c . || true)
@@ -181,13 +181,13 @@ area_network() {
         addrs=$(ip -o addr show "$i" 2>/dev/null | grep -E ' inet6? ' | grep -v 'scope link' | grep -c . || true)
         if [ "$addrs" -eq 0 ]; then row "capture $i address" "none" "none" PASS "ip -o addr show $i"; else row "capture $i address" "none" "$addrs address(es)" FAIL "ip -o addr show $i"; diag "capture $i address" "a capture port has an address — capture ports never get an IP and never join the lab fabric; remove it from Netplan"; fi
         master="$(p /sys/class/net)/$i/master"
-        if [ -e "$master" ] || [ -L "$master" ]; then row "capture $i master" "none" "$(basename "$(readlink "$master" 2>/dev/null || echo "$master")")" FAIL "readlink /sys/class/net/$i/master"; diag "capture $i master" "rule 8: a capture port is never bridged to the lab fabric (lab-mirror0 is fed BY br-lab through its veth peer, never a port of it) — remove $i from its bridge or bond"
+        if [ -e "$master" ] || [ -L "$master" ]; then row "capture $i master" "none" "$(basename "$(readlink "$master" 2>/dev/null || echo "$master")")" FAIL "readlink /sys/class/net/$i/master"; diag "capture $i master" "rule 8: a capture port is never bridged to the lab fabric (lab_mirror0 is fed BY br-lab through its veth peer, never a port of it) — remove $i from its bridge or bond"
         else row "capture $i master" "none" "none" PASS "readlink /sys/class/net/$i/master"; fi
         link=$(ip -o link show "$i" 2>/dev/null | head -1)
         if printf '%s' "$link" | grep -q PROMISC; then row "capture $i promisc" "PROMISC" "PROMISC" PASS "ip -o link show $i"; else row "capture $i promisc" "PROMISC" "not promiscuous" FAIL "ip -o link show $i"; diag "capture $i promisc" "capture-prep has not run on this port (Phase 9)"; fi
         if command -v ethtool >/dev/null 2>&1; then
             offl=$(ethtool -k "$i" 2>/dev/null | grep -E '^(generic-receive-offload|large-receive-offload|tcp-segmentation-offload):' | grep -c ': on' || true)
-            if [ "$offl" -eq 0 ]; then row "capture $i offloads" "gro/lro/tso off" "off" PASS "ethtool -k $i"; else row "capture $i offloads" "gro/lro/tso off" "$offl still on" FAIL "ethtool -k $i"; diag "capture $i offloads" "offloads merge packets before capture sees them — capture-prep (Phase 9) turns them off; on lab-mirror0, r770-gns3-deploy.sh labnet does (05-lab-mirror0.link + ethtool -K)"; fi
+            if [ "$offl" -eq 0 ]; then row "capture $i offloads" "gro/lro/tso off" "off" PASS "ethtool -k $i"; else row "capture $i offloads" "gro/lro/tso off" "$offl still on" FAIL "ethtool -k $i"; diag "capture $i offloads" "offloads merge packets before capture sees them — capture-prep (Phase 9) turns them off; on lab_mirror0, r770-gns3-deploy.sh labnet does (05-lab_mirror0.link + ethtool -K)"; fi
         else row "capture $i offloads" "gro/lro/tso off" "ethtool not installed" SKIP "package not installed yet"; fi
     done
 }

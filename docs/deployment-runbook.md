@@ -196,7 +196,7 @@ hand.
 B=/srv/bundles/bundle-YYYYMMDD
 sudo ./scripts/r770-malcolm-deploy.sh unpack --bundle $B       # needs python3-ruamel.yaml, python3-dotenv (apt/)
 sudo ./scripts/r770-malcolm-deploy.sh configure --bundle $B    # renders the kit's config template, replays it through install.py
-#   add --capture-ifs lab-mirror0 for live capture of the lab (run GNS3's labnet first)
+#   add --capture-ifs lab_mirror0 for live capture of the lab (run GNS3's labnet first)
 sudo ./scripts/r770-malcolm-deploy.sh secrets                  # /etc/lab/secrets/malcolm-admin.pw, once
 sudo ./scripts/r770-malcolm-deploy.sh auth --bundle $B         # auth_setup, hashes generated on the box
 sudo ./scripts/r770-malcolm-deploy.sh rebind                   # 0.0.0.0:443 -> 127.0.0.1:8443, the front door owns 443
@@ -306,12 +306,12 @@ FAILs if the server listens on anything but loopback.
 ### Step G10 — labnet  *(GATED)*
 
 ```bash
-sudo ./scripts/r770-gns3-deploy.sh labnet     # br-lab (hub mode), lab-tap0..3, lab-mon0 <-> lab-mirror0
+sudo ./scripts/r770-gns3-deploy.sh labnet     # br-lab (hub mode), lab-tap0..3, lab-mon0 <-> lab_mirror0
 ```
 
 The lab bridge every scenario shares, mirrored into Malcolm by construction:
 `br-lab` runs with `ageing_time 0`, so it floods every frame to every port —
-including `lab-mon0`, whose veth peer `lab-mirror0` is what Malcolm captures.
+including `lab-mon0`, whose veth peer `lab_mirror0` is what Malcolm captures.
 A scenario puts a link on the bridge by binding a GNS3 Cloud node to a
 `lab-tapN` (owned by the `gns3` user) **on the Cloud's TAP tab, never its
 Ethernet tab** — in a project file, the Cloud's `ports_mapping` entry has
@@ -324,13 +324,13 @@ the bundled GNS3 before this procedure is relied on.)
 
 The step installs `/etc/systemd/network/05-*lab*` files (the bridge with
 MAC learning and multicast snooping off, the veth, the TAPs, and
-`05-lab-mirror0.link`, which turns offloads off on the capture end) and runs
+`05-lab_mirror0.link`, which turns offloads off on the capture end) and runs
 `networkctl reload`; it refuses while systemd-networkd is inactive, before
 `config` has created the service user, and when one of its names already
 belongs to something else. After the reload it waits for the whole end state,
 then proves hub mode, no multicast snooping, the ports, that no physical
 interface joined the bridge directly or through a VLAN or bond (rule 8), that
-`lab-mirror0` is up, promiscuous and address-less with gro/lro/tso off, and
+`lab_mirror0` is up, promiscuous and address-less with gro/lro/tso off, and
 whether Docker's `br_netfilter` + `FORWARD DROP` could drop bridged IP (a
 WARN with the rule to add by hand — the kit adds none). `GNS3_LAB_TAPS`
 changes the TAP count (default 4); lowering it removes the TAPs and files it
@@ -340,20 +340,20 @@ no longer declares, through the gate. Files in place but interfaces missing
 box.
 
 Then turn Malcolm's live capture on (Malcolm procedure, `configure`):
-`r770-malcolm-deploy.sh configure --bundle $B --capture-ifs lab-mirror0`.
+`r770-malcolm-deploy.sh configure --bundle $B --capture-ifs lab_mirror0`.
 
 Evidence that the feed is live, once a scenario runs:
 - the Cloud's TAP binding brings `lab-tapN` to carrier — `ip link show
   lab-tap0` no longer says `NO-CARRIER` while the node runs;
-- `tcpdump -c 5 -i lab-mirror0` shows frames;
+- `tcpdump -c 5 -i lab_mirror0` shows frames;
 - labnet's netfilter line is a PASS, or — if it WARNed — a ping between two
-  scenario nodes shows up in `tcpdump -ni lab-mirror0` in both directions (if
+  scenario nodes shows up in `tcpdump -ni lab_mirror0` in both directions (if
   it does not, add `iptables -I DOCKER-USER -i br-lab -o br-lab -j ACCEPT`,
   record it, and rerun labnet);
 - Arkime shows sessions from the scenario's address range within about a
   minute, with matching Zeek logs;
 - `r770-validate.sh --area network --lab-bridge br-lab --capture-ifs
-  lab-mirror0` and `--area capture` report the wiring and `capture_loss`.
+  lab_mirror0` and `--area capture` report the wiring and `capture_loss`.
 
 ### GNS3 — validate note
 

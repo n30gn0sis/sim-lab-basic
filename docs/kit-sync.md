@@ -113,7 +113,7 @@ is asserted against those tools' `--help` before use.
   rebind; the kit dies naming the flag rather than guessing.
 - **Lab mirror mechanism (to carry to the build repo).** The kit mirrors lab
   traffic with a hub-mode bridge (`br-lab`, `ageing_time 0`) and a veth
-  (`lab-mon0` ⇄ `lab-mirror0`) instead of the buildout plan §7's `tc mirred`
+  (`lab-mon0` ⇄ `lab_mirror0`) instead of the buildout plan §7's `tc mirred`
   per port: no per-port rules to follow GNS3's ports as they come and go.
   Record the decision in the build repo's buildout plan §7.
 - **Wiki mirror procedure (to carry to the build repo).** `docs/wiki/gns3.md`'s

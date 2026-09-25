@@ -46,7 +46,7 @@
 #                              for configure (and full). Each must exist and
 #                              carry no address: discovered names, never
 #                              guessed -- on staging, the lab mirror
-#                              lab-mirror0 (r770-gns3-deploy.sh labnet first).
+#                              lab_mirror0 (r770-gns3-deploy.sh labnet first).
 #                              Without it, live capture stays off.
 #   --yes / --non-interactive / --dry-run / --force   as everywhere in the kit
 #
@@ -148,11 +148,15 @@ capture_json() {
     read -ra ifs <<< "$CAPTURE_IFS"
     for i in "${ifs[@]}"; do
         [[ "$i" =~ ^[A-Za-z0-9._-]{1,15}$ ]] || die "--capture-ifs: '$i' is not an interface name"
+        # Malcolm's pcap-capture runs `export $IFACE` for each capture interface,
+        # so the name must be a shell identifier; netsniff dies at start on
+        # anything else (measured on staging VM 9770, 2026-09-25).
+        [[ "$i" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || die "$i cannot be a Malcolm capture interface — its pcap-capture container uses each name as a shell variable, so only letters, digits and _ work (no - or .)"
         case "$seen" in *" $i "*) die "--capture-ifs names $i twice" ;; esac
         seen="$seen$i "
         if [ ! -e "$(p /sys/class/net)/$i" ]; then
             case "$i" in
-                lab-*) die "capture interface $i does not exist — create the lab network first: r770-gns3-deploy.sh labnet" ;;
+                lab_*) die "capture interface $i does not exist — create the lab network first: r770-gns3-deploy.sh labnet" ;;
                 *)     die "capture interface $i does not exist — capture interfaces come from discovery (ip -br link), never guessed" ;;
             esac
         fi

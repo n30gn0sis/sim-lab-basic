@@ -203,58 +203,58 @@ STUB
 
 @test "configure --capture-ifs turns on live Arkime and Zeek on exactly those interfaces" {
     make_malcolm_tree "$ROOT"
-    mkdir -p "$ROOT/sys/class/net/lab-mirror0"
+    mkdir -p "$ROOT/sys/class/net/lab_mirror0"
     stub ip 'exit 0'
-    run malcolm configure --bundle "$BUNDLE" --capture-ifs lab-mirror0
+    run malcolm configure --bundle "$BUNDLE" --capture-ifs lab_mirror0
     echo "$output"
     [ "$status" -eq 0 ]
     r="$ROOT/opt/malcolm/malcolm-config.rendered.json"
-    grep -q '"pcapIface": \["lab-mirror0"\],' "$r"
+    grep -q '"pcapIface": \["lab_mirror0"\],' "$r"
     grep -q '"captureLiveNetworkTraffic": true,' "$r"
     grep -q '"liveArkime": true,' "$r"
     grep -q '"liveZeek": true,' "$r"
     grep -q '"liveSuricata": false,' "$r"
     grep -q '"tweakIface": false,' "$r"
-    [[ "$output" == *"live capture on: lab-mirror0"* ]]
+    [[ "$output" == *"live capture on: lab_mirror0"* ]]
 }
 
 @test "configure --capture-ifs renders several interfaces as one JSON list" {
     make_malcolm_tree "$ROOT"
-    mkdir -p "$ROOT/sys/class/net/lab-mirror0" "$ROOT/sys/class/net/cap0"
+    mkdir -p "$ROOT/sys/class/net/lab_mirror0" "$ROOT/sys/class/net/cap0"
     stub ip 'exit 0'
-    run malcolm configure --bundle "$BUNDLE" --capture-ifs "lab-mirror0 cap0"
+    run malcolm configure --bundle "$BUNDLE" --capture-ifs "lab_mirror0 cap0"
     echo "$output"
     [ "$status" -eq 0 ]
-    grep -q '"pcapIface": \["lab-mirror0", "cap0"\],' "$ROOT/opt/malcolm/malcolm-config.rendered.json"
+    grep -q '"pcapIface": \["lab_mirror0", "cap0"\],' "$ROOT/opt/malcolm/malcolm-config.rendered.json"
 }
 
 @test "configure --capture-ifs proves the installer kept every live key in its exported config (F5)" {
     make_malcolm_tree "$ROOT"
-    mkdir -p "$ROOT/sys/class/net/lab-mirror0" "$ROOT/sys/class/net/cap0"
+    mkdir -p "$ROOT/sys/class/net/lab_mirror0" "$ROOT/sys/class/net/cap0"
     stub ip 'exit 0'
-    run malcolm configure --bundle "$BUNDLE" --capture-ifs "lab-mirror0 cap0"
+    run malcolm configure --bundle "$BUNDLE" --capture-ifs "lab_mirror0 cap0"
     echo "$output"
     [ "$status" -eq 0 ]
-    [[ "$output" == *"PASS  the installer kept live capture on lab-mirror0 cap0 (Zeek live; Arkime via liveArkime)"* ]]
+    [[ "$output" == *"PASS  the installer kept live capture on lab_mirror0 cap0 (Zeek live; Arkime via liveArkime)"* ]]
 }
 
 @test "configure accepts Arkime capture through netsniff when the installer turns liveArkime off (measured on staging)" {
     make_malcolm_tree "$ROOT"
-    mkdir -p "$ROOT/sys/class/net/lab-mirror0"
+    mkdir -p "$ROOT/sys/class/net/lab_mirror0"
     stub ip 'exit 0'
     MALCOLM_STUB_EXPORT_SED='s/"liveArkime": true/"liveArkime": false/; s/"pcapNetSniff": false/"pcapNetSniff": true/' \
-        run malcolm configure --bundle "$BUNDLE" --capture-ifs lab-mirror0
+        run malcolm configure --bundle "$BUNDLE" --capture-ifs lab_mirror0
     echo "$output"
     [ "$status" -eq 0 ]
-    [[ "$output" == *"PASS  the installer kept live capture on lab-mirror0 (Zeek live; Arkime via pcapNetSniff)"* ]]
+    [[ "$output" == *"PASS  the installer kept live capture on lab_mirror0 (Zeek live; Arkime via pcapNetSniff)"* ]]
 }
 
 @test "configure FAILs when the installer kept no capture path into Arkime" {
     make_malcolm_tree "$ROOT"
-    mkdir -p "$ROOT/sys/class/net/lab-mirror0"
+    mkdir -p "$ROOT/sys/class/net/lab_mirror0"
     stub ip 'exit 0'
     MALCOLM_STUB_EXPORT_SED='s/"liveArkime": true/"liveArkime": false/' \
-        run malcolm configure --bundle "$BUNDLE" --capture-ifs lab-mirror0
+        run malcolm configure --bundle "$BUNDLE" --capture-ifs lab_mirror0
     echo "$output"
     [ "$status" -eq 1 ]
     [[ "$output" == *"FAIL  the installer kept no capture path into Arkime (liveArkime, pcapNetSniff, pcapTcpDump all off)"* ]]
@@ -275,9 +275,9 @@ STUB
 
 @test "configure --capture-ifs FAILs, naming the key, when the installer's export dropped liveZeek (F5)" {
     make_malcolm_tree "$ROOT"
-    mkdir -p "$ROOT/sys/class/net/lab-mirror0"
+    mkdir -p "$ROOT/sys/class/net/lab_mirror0"
     stub ip 'exit 0'
-    MALCOLM_STUB_EXPORT_DROP=liveZeek run malcolm configure --bundle "$BUNDLE" --capture-ifs lab-mirror0
+    MALCOLM_STUB_EXPORT_DROP=liveZeek run malcolm configure --bundle "$BUNDLE" --capture-ifs lab_mirror0
     echo "$output"
     [ "$status" -eq 1 ]
     [[ "$output" == *"FAIL  the installer did not keep \"liveZeek\": true — live capture will not start; read $ROOT/opt/malcolm/malcolm-config.exported.json"* ]]
@@ -286,26 +286,26 @@ STUB
 
 @test "status reads live capture from the installer's export, and labels a rendered-only config unconfirmed (F5)" {
     make_malcolm_tree "$ROOT"
-    mkdir -p "$ROOT/sys/class/net/lab-mirror0"
+    mkdir -p "$ROOT/sys/class/net/lab_mirror0"
     stub ip 'exit 0'
-    run malcolm configure --bundle "$BUNDLE" --capture-ifs lab-mirror0
+    run malcolm configure --bundle "$BUNDLE" --capture-ifs lab_mirror0
     [ "$status" -eq 0 ]
     run malcolm status
     echo "$output"
-    [[ "$output" == *'live capture'*'on ["lab-mirror0"]'* ]]
+    [[ "$output" == *'live capture'*'on ["lab_mirror0"]'* ]]
     [[ "$output" != *"not yet confirmed"* ]]
     rm -f "$ROOT/opt/malcolm/malcolm-config.exported.json"
     run malcolm status
     echo "$output"
-    [[ "$output" == *'on ["lab-mirror0"] (rendered, not yet confirmed)'* ]]
+    [[ "$output" == *'on ["lab_mirror0"] (rendered, not yet confirmed)'* ]]
 }
 
 @test "configure refuses a capture interface that does not exist, pointing a lab-* name at labnet" {
     make_malcolm_tree "$ROOT"
-    run malcolm configure --bundle "$BUNDLE" --capture-ifs lab-mirror0
+    run malcolm configure --bundle "$BUNDLE" --capture-ifs lab_mirror0
     echo "$output"
     [ "$status" -eq 1 ]
-    [[ "$output" == *"capture interface lab-mirror0 does not exist"* ]]
+    [[ "$output" == *"capture interface lab_mirror0 does not exist"* ]]
     [[ "$output" == *"r770-gns3-deploy.sh labnet"* ]]
     ! grep -q -- '--configure' "$MALCOLM_STUB_LOG"
 }
@@ -323,11 +323,11 @@ STUB
 
 @test "configure refuses a repeated, empty or malformed --capture-ifs" {
     make_malcolm_tree "$ROOT"
-    mkdir -p "$ROOT/sys/class/net/lab-mirror0"
+    mkdir -p "$ROOT/sys/class/net/lab_mirror0"
     stub ip 'exit 0'
-    run malcolm configure --bundle "$BUNDLE" --capture-ifs "lab-mirror0 lab-mirror0"
+    run malcolm configure --bundle "$BUNDLE" --capture-ifs "lab_mirror0 lab_mirror0"
     [ "$status" -eq 1 ]
-    [[ "$output" == *"names lab-mirror0 twice"* ]]
+    [[ "$output" == *"names lab_mirror0 twice"* ]]
     run malcolm configure --bundle "$BUNDLE" --capture-ifs ""
     [ "$status" -eq 1 ]
     [[ "$output" == *"names no interface"* ]]
@@ -754,4 +754,15 @@ ipsec_ids() {  # every id the shipped template declares
     echo "$output"
     [ "$status" -eq 1 ]
     [[ "$output" == *"labop is not in the docker group"* ]]
+}
+
+@test "configure refuses a capture interface whose name is not a shell identifier (Malcolm's pcap-capture exports it)" {
+    make_malcolm_tree "$ROOT"
+    mkdir -p "$ROOT/sys/class/net/lab-mirror0"
+    stub ip 'exit 0'
+    run malcolm configure --bundle "$BUNDLE" --capture-ifs lab-mirror0
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"lab-mirror0 cannot be a Malcolm capture interface"* ]]
+    ! grep -q -- '--configure' "$MALCOLM_STUB_LOG"
 }
