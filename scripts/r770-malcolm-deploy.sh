@@ -180,18 +180,30 @@ live_kept() {
         fail "the installer wrote no exported config at $x — live capture is unconfirmed; read its output above"
         return 0
     fi
-    for k in captureLiveNetworkTraffic liveArkime liveZeek; do
+    for k in captureLiveNetworkTraffic liveZeek; do
         grep -qE "\"$k\"[[:space:]]*:[[:space:]]*true" "$x" && continue
         fail "the installer did not keep \"$k\": true — live capture will not start; read $x"
         missing=1
     done
+    # Arkime gets live packets either by capturing itself (liveArkime) or from
+    # the PCAP a capture container writes (netsniff or tcpdump). The installer
+    # picks: asked for liveArkime it kept netsniff instead (measured on staging
+    # VM 9770, 2026-09-25). Any one path is enough; none means Arkime is blind.
+    local via=""
+    for k in liveArkime pcapNetSniff pcapTcpDump; do
+        grep -qE "\"$k\"[[:space:]]*:[[:space:]]*true" "$x" && via="${via:+$via, }$k"
+    done
+    if [ -z "$via" ]; then
+        fail "the installer kept no capture path into Arkime (liveArkime, pcapNetSniff, pcapTcpDump all off) — live packets will not reach Arkime; read $x"
+        missing=1
+    fi
     lst=$(pcap_ifaces_of "$x")
     for i in "$@"; do
         [[ "$lst" == *"\"$i\""* ]] && continue
         fail "the installer did not keep \"pcapIface\" with $i — live capture will not start on it; read $x"
         missing=1
     done
-    [ "$missing" -eq 1 ] || pass "the installer kept live capture on $* (captureLiveNetworkTraffic, liveArkime, liveZeek, pcapIface)"
+    [ "$missing" -eq 1 ] || pass "the installer kept live capture on $* (Zeek live; Arkime via $via)"
 }
 malcolm_version_from_zip() {  # numeric components lose their leading zeros, as the installer's own export writes them
     local name=$1 v part out=""
@@ -217,11 +229,20 @@ heap_sizes() {  # prints "<os-g> <ls-m>" from the host's memory, unless overridd
 cmd_configure() {
     banner "configure — replay the kit's config through the installer"
     need_root
-    local b zip ver os ls rendered exported manage free ifaces live
+    local b zip ver os ls rendered exported manage free ifaces live cdir cinst
     b=$(bundle_dir "$BUNDLE") || exit 1
     [ -f "$(installer)" ] || die "$(installer) not found — run unpack first"
     require_pkg python3-ruamel.yaml python3-dotenv
-    help_has_flags python3 "$(installer)" -- "${INSTALL_FLAGS[@]}"
+    # The zip-root installer extracts the stack and refuses once it exists
+    # ("already exists, please specify a different installation path"); the
+    # extracted stack carries its own scripts/install.py to reconfigure itself.
+    # Each runs from its own directory (both measured on staging VM 9770).
+    cdir=$(home); cinst=$(installer)
+    if [ -f "$(stack)/scripts/install.py" ]; then
+        cdir=$(stack); cinst="$(stack)/scripts/install.py"
+        note "reconfiguring the extracted stack with its own installer ($cinst)"
+    fi
+    help_has_flags python3 "$cinst" -- "${INSTALL_FLAGS[@]}"
     zip=$(glob_one "$b/malcolm" 'malcolm-*-docker_install.zip') || exit 1
     ver=$(malcolm_version_from_zip "$(basename "$zip")")
     read -r os ls <<< "$(heap_sizes)"
@@ -239,10 +260,10 @@ cmd_configure() {
         "PCAP_NODE_NAME=$(hostname -s)" "OS_MEMORY=${os}g" "LS_MEMORY=${ls}m" \
         "ARKIME_MANAGE_PCAP=$manage" "ARKIME_FREE_SPACE_G=$free" "MALCOLM_VER=$ver" \
         "PCAP_IFACE=$ifaces" "CAPTURE_LIVE=$live" "LIVE_ARKIME=$live" "LIVE_ZEEK=$live"
-    # From its own directory: the installer looks for the stack tarball it
-    # extracts to malcolm/ in its working directory, and anywhere else fails on
-    # missing .env.example templates (measured on staging VM 9770, 2026-09-25).
-    ( cd "$(home)" && run python3 "$(installer)" --non-interactive --skip-splash --configure \
+    # From its own directory: the zip-root installer looks for the stack
+    # tarball in its working directory, and anywhere else fails on missing
+    # .env.example templates (measured on staging VM 9770, 2026-09-25).
+    ( cd "$cdir" && run python3 "$cinst" --non-interactive --skip-splash --configure \
         --import-malcolm-config-file "$rendered" --export-malcolm-config-file "$exported" ) \
         || die "the installer failed — its output above is the evidence; nothing else was changed"
     if [ "$DRY" != "1" ]; then

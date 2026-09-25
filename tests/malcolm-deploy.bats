@@ -232,7 +232,42 @@ STUB
     run malcolm configure --bundle "$BUNDLE" --capture-ifs "lab-mirror0 cap0"
     echo "$output"
     [ "$status" -eq 0 ]
-    [[ "$output" == *"PASS  the installer kept live capture on lab-mirror0 cap0 (captureLiveNetworkTraffic, liveArkime, liveZeek, pcapIface)"* ]]
+    [[ "$output" == *"PASS  the installer kept live capture on lab-mirror0 cap0 (Zeek live; Arkime via liveArkime)"* ]]
+}
+
+@test "configure accepts Arkime capture through netsniff when the installer turns liveArkime off (measured on staging)" {
+    make_malcolm_tree "$ROOT"
+    mkdir -p "$ROOT/sys/class/net/lab-mirror0"
+    stub ip 'exit 0'
+    MALCOLM_STUB_EXPORT_SED='s/"liveArkime": true/"liveArkime": false/; s/"pcapNetSniff": false/"pcapNetSniff": true/' \
+        run malcolm configure --bundle "$BUNDLE" --capture-ifs lab-mirror0
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"PASS  the installer kept live capture on lab-mirror0 (Zeek live; Arkime via pcapNetSniff)"* ]]
+}
+
+@test "configure FAILs when the installer kept no capture path into Arkime" {
+    make_malcolm_tree "$ROOT"
+    mkdir -p "$ROOT/sys/class/net/lab-mirror0"
+    stub ip 'exit 0'
+    MALCOLM_STUB_EXPORT_SED='s/"liveArkime": true/"liveArkime": false/' \
+        run malcolm configure --bundle "$BUNDLE" --capture-ifs lab-mirror0
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"FAIL  the installer kept no capture path into Arkime (liveArkime, pcapNetSniff, pcapTcpDump all off)"* ]]
+}
+
+@test "configure reconfigures an extracted stack with the stack's own installer, from inside the stack" {
+    make_malcolm_tree "$ROOT"
+    # once the stack is extracted, the zip-root installer refuses ("already
+    # exists"); the stack carries scripts/install.py to reconfigure itself
+    cp "$ROOT/opt/malcolm/install.py" "$ROOT/opt/malcolm/malcolm/scripts/install.py"
+    run malcolm configure --bundle "$BUNDLE"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    grep -qx "install.py cwd $ROOT/opt/malcolm/malcolm" "$MALCOLM_STUB_LOG"
+    ! grep -qx "install.py cwd $ROOT/opt/malcolm" "$MALCOLM_STUB_LOG"
+    [[ "$output" == *"reconfiguring the extracted stack with its own installer"* ]]
 }
 
 @test "configure --capture-ifs FAILs, naming the key, when the installer's export dropped liveZeek (F5)" {

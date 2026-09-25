@@ -132,7 +132,8 @@ case " $* " in *" --help "*)
     exit 0 ;;
 esac
 # the export is the imported config as the installer kept it: a copy, minus
-# any key named in MALCOLM_STUB_EXPORT_DROP (an installer that ignored it)
+# any key named in MALCOLM_STUB_EXPORT_DROP (an installer that ignored it),
+# then MALCOLM_STUB_EXPORT_SED applied (an installer that changed a value)
 imp=""; exp=""; prev=""
 for a in "$@"; do
     case "$prev" in --import-malcolm-config-file) imp=$a ;; --export-malcolm-config-file) exp=$a ;; esac
@@ -140,6 +141,7 @@ for a in "$@"; do
 done
 if [ -n "$imp" ] && [ -n "$exp" ] && [ -f "$imp" ]; then
     if [ -n "${MALCOLM_STUB_EXPORT_DROP:-}" ]; then grep -v -- "\"$MALCOLM_STUB_EXPORT_DROP\"" "$imp" > "$exp"; else cp "$imp" "$exp"; fi
+    if [ -n "${MALCOLM_STUB_EXPORT_SED:-}" ]; then sed -i -e "$MALCOLM_STUB_EXPORT_SED" "$exp"; fi
 fi
 exit 0
 STUB
