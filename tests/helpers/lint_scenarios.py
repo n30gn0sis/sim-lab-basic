@@ -10,7 +10,7 @@ import os
 import re
 import sys
 
-ROOT = "scenarios"
+ROOT = os.environ.get("SCENARIOS_ROOT", "scenarios")
 KEYS = ["name", "description", "range", "images", "traffic_secs", "ready", "traffic_nodes"]
 UPSTREAM_PENDING = {"strongswan"}  # added to the build repo's pin block, not yet in a bundle
 PROTOS = {"tcp", "udp", "icmp", "esp", "ospf"}
@@ -80,23 +80,46 @@ def check_topology(s, c, errs):
     p = project(s)
     nodes = p["topology"]["nodes"]
     clouds = [n for n in nodes if n["node_type"] == "cloud"]
-    ports = sorted(m.get("interface") for n in clouds for m in n["properties"].get("ports_mapping", []))
-    if ports != ["__TAP_A__", "__TAP_B__"]:
-        errs.append(f"{s}: Cloud ports must be exactly __TAP_A__ and __TAP_B__ (got {ports})")
+
+    # Require exactly two Cloud nodes
+    if len(clouds) != 2:
+        errs.append(f"{s}: expected two Cloud nodes, one TAP port each (got {len(clouds)} Clouds)")
+        return
+
+    # Each Cloud node must have exactly one ports_mapping entry
     for n in clouds:
-        for m in n["properties"].get("ports_mapping", []):
-            if m.get("type") != "tap":
-                errs.append(f"{s}: Cloud {n['name']} port {m.get('interface')} is not \"type\": \"tap\"")
+        ports = n["properties"].get("ports_mapping", [])
+        if len(ports) != 1:
+            errs.append(f"{s}: Cloud {n['name']} must have exactly one port (got {len(ports)})")
+        else:
+            if ports[0].get("type") != "tap":
+                errs.append(f"{s}: Cloud {n['name']} port {ports[0].get('interface')} is not \"type\": \"tap\"")
+
+    # Collect the TAP port names from both Clouds
+    tap_ports = sorted(m.get("interface") for n in clouds for m in n["properties"].get("ports_mapping", []))
+    if tap_ports != ["__TAP_A__", "__TAP_B__"]:
+        errs.append(f"{s}: Cloud ports must be exactly __TAP_A__ and __TAP_B__ (got {tap_ports})")
+
+    # Verify each Cloud node is an endpoint of exactly one link
     ids = {n["node_id"] for n in nodes}
     cloud_ids = {n["node_id"] for n in clouds}
-    on_clouds = 0
+    cloud_link_count = {cid: 0 for cid in cloud_ids}
+
     for link in p["topology"]["links"]:
         ends = [e["node_id"] for e in link["nodes"]]
         if any(e not in ids for e in ends):
             errs.append(f"{s}: link {link['link_id']} names an unknown node")
-        on_clouds += any(e in cloud_ids for e in ends)
-    if on_clouds != 2:
-        errs.append(f"{s}: exactly two links attach to the Clouds (got {on_clouds})")
+        for end in ends:
+            if end in cloud_ids:
+                cloud_link_count[end] += 1
+
+    # Check each Cloud is on exactly one link
+    for cid in cloud_ids:
+        cloud_name = next((n["name"] for n in clouds if n["node_id"] == cid), "?")
+        if cloud_link_count[cid] != 1:
+            errs.append(f"{s}: Cloud {cloud_name} must be on exactly one link (got {cloud_link_count[cid]})")
+
+    # Verify all named nodes exist as docker containers
     docker = {n["name"] for n in nodes if n["node_type"] == "docker"}
     named = {c["ready"].split("|", 1)[0]} | set(c["traffic_nodes"].split())
     for f in os.listdir(os.path.join(ROOT, s, "nodes")) if os.path.isdir(os.path.join(ROOT, s, "nodes")) else []:

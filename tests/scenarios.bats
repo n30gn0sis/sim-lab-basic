@@ -25,3 +25,24 @@ lint() { run python3 tests/helpers/lint_scenarios.py "$1"; echo "$output"; [ "$s
     echo "$output"
     [ "$status" -eq 0 ]
 }
+
+@test "the topology lint rejects one Cloud carrying both TAPs" {
+    d="$BATS_TEST_TMPDIR/pack"; mkdir -p "$d"; cp -r scenarios/client-server "$d/"
+    python3 - "$d/client-server/project/client-server.gns3" <<'PY'
+import json, sys
+f = sys.argv[1]; p = json.load(open(f))
+nodes = p["topology"]["nodes"]
+a = next(n for n in nodes if n["name"] == "tap-a"); b = next(n for n in nodes if n["name"] == "tap-b")
+a["properties"]["ports_mapping"].append(dict(b["properties"]["ports_mapping"][0], port_number=1))
+nodes.remove(b)
+for l in p["topology"]["links"]:
+    for e in l["nodes"]:
+        if e["node_id"] == b["node_id"]:
+            e["node_id"] = a["node_id"]; e["port_number"] = 1
+json.dump(p, open(f, "w"))
+PY
+    SCENARIOS_ROOT="$d" run python3 tests/helpers/lint_scenarios.py topology
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"expected two Cloud nodes"* ]]
+}
