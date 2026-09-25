@@ -20,6 +20,9 @@ setup() {
     export BATS_TEST_TMPDIR
     stub dpkg 'exit 0'
     stub python3 'exec bash "$@"'          # the stub installer is bash; the real one is python
+    # the stack's owner: PUID 1000 in the fixture's config/process.env, in the docker group
+    stub getent 'case "$1 $2" in "passwd 1000") echo "labop:x:1000:1000::/home/labop:/bin/bash";; "group docker") echo "docker:x:988:labop";; *) exit 2;; esac'
+    stub runuser 'echo "runuser $*" >> "$STUB_LOG"; [ "$1" = -u ] && shift 2; [ "$1" = -- ] && shift; exec "$@"'
     stub free 'echo "               total        used        free"; echo "Mem:             128           4         124"'
     stub_log unzip
     stub_log chown
@@ -699,4 +702,50 @@ ipsec_ids() {  # every id the shipped template declares
     [[ "$output" == *"accepted via --yes"* ]]
     [[ "$output" == *"DEPLOYED WITH WARNINGS"* ]]
     [[ "$output" == *"steps: apt"* ]]
+}
+
+# ── Malcolm's control scripts refuse root (measured on staging) ─────────────
+
+@test "configure gives the stack to the user in config/process.env, whom Malcolm's scripts run as" {
+    make_malcolm_tree "$ROOT"
+    run malcolm configure --bundle "$BUNDLE"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    grep -q "^chown -R 1000:1000 $ROOT/opt/malcolm/malcolm$" "$STUB_LOG"
+    [[ "$output" == *"PASS  $ROOT/opt/malcolm/malcolm owned by labop (1000:1000, from config/process.env)"* ]]
+}
+
+@test "configure refuses a stack whose recorded PUID is root" {
+    make_malcolm_tree "$ROOT"
+    printf 'PUID=0\nPGID=0\n' > "$ROOT/opt/malcolm/malcolm/config/process.env"
+    run malcolm configure --bundle "$BUNDLE"
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"PUID is 0"* ]]
+}
+
+@test "auth runs auth_setup as the stack's owner, never as root" {
+    make_malcolm_tree "$ROOT"
+    mkdir -p "$ROOT/etc/lab/secrets"; echo fixture-pw > "$ROOT/etc/lab/secrets/malcolm-admin.pw"
+    rm -f "$ROOT/opt/malcolm/malcolm/nginx/htpasswd"
+    run malcolm auth --bundle "$BUNDLE"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    grep -q '^runuser -u labop -- ./scripts/auth_setup --auth-noninteractive' "$STUB_LOG"
+}
+
+@test "start and stop run Malcolm's scripts as the stack's owner, and refuse an owner outside the docker group" {
+    make_malcolm_tree "$ROOT"
+    echo "analyst:hash" > "$ROOT/opt/malcolm/malcolm/nginx/htpasswd"
+    sed -i 's|0.0.0.0:443:443/tcp|127.0.0.1:8443:443/tcp|' "$ROOT/opt/malcolm/malcolm/docker-compose.yml"
+    run malcolm start
+    echo "$output"
+    grep -q '^runuser -u labop -- ./scripts/start' "$STUB_LOG"
+    run malcolm stop
+    grep -q '^runuser -u labop -- ./scripts/stop' "$STUB_LOG"
+    stub getent 'case "$1 $2" in "passwd 1000") echo "labop:x:1000:1000::/home/labop:/bin/bash";; "group docker") echo "docker:x:988:";; *) exit 2;; esac'
+    run malcolm start
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"labop is not in the docker group"* ]]
 }

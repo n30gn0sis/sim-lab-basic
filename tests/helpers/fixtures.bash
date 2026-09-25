@@ -121,6 +121,8 @@ make_root() {
 make_malcolm_tree() {
     local r=$1 home="$1/opt/malcolm"
     mkdir -p "$home/malcolm/scripts" "$home/malcolm/config" "$home/malcolm/nginx" "$home/malcolm/pcap/upload"
+    # the user the installer recorded: Malcolm's control scripts run as PUID/PGID
+    printf 'PUID=1000\nPGID=1000\n' > "$home/malcolm/config/process.env"
     cat > "$home/install.py" <<'STUB'
 #!/usr/bin/env bash
 [ -n "${MALCOLM_STUB_LOG:-}" ] && echo "install.py $*" >> "$MALCOLM_STUB_LOG"

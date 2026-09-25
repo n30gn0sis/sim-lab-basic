@@ -275,6 +275,7 @@ cmd_configure() {
         fi
     fi
     do_rebind
+    own_stack
     footer "configure"
 }
 
@@ -284,7 +285,7 @@ cmd_secrets() { banner "secrets"; need_root; secret_file "$(p "$SECRET")"; pass 
 cmd_auth() {
     banner "auth — Malcolm's auth_setup, unattended"
     need_root
-    local b setup pw h_ssl h_ht img
+    local b setup pw h_ssl h_ht img user
     b=$(bundle_dir "$BUNDLE") || exit 1
     setup="$(stack)/scripts/auth_setup"
     [ -x "$setup" ] || die "$setup not found — run configure first (the installer extracts the stack)"
@@ -308,8 +309,9 @@ cmd_auth() {
     h_ht=$(docker run --rm --network none -e PW="$pw" --entrypoint sh "$img" \
              -c 'htpasswd -bnBC 10 "" "$PW"' | tr -d ':\n') || die "htpasswd via $img failed — are the Malcolm images loaded?"
     [ -n "$h_ht" ] || die "empty bcrypt hash from $img"
-    echo "+ (cd $(stack) && ./scripts/auth_setup --auth-noninteractive --auth-method basic --auth-admin-username $ADMIN_USER --auth-admin-password-openssl <hash> --auth-admin-password-htpasswd <hash> --auth-generate-...)"
-    ( cd "$(stack)" && ./scripts/auth_setup --auth-noninteractive --auth-method basic \
+    user=$(malcolm_owner) || exit 1; user=${user%% *}
+    echo "+ (cd $(stack) && runuser -u $user -- ./scripts/auth_setup --auth-noninteractive --auth-method basic --auth-admin-username $ADMIN_USER --auth-admin-password-openssl <hash> --auth-admin-password-htpasswd <hash> --auth-generate-...)"
+    ( cd "$(stack)" && runuser -u "$user" -- ./scripts/auth_setup --auth-noninteractive --auth-method basic \
         --auth-admin-username "$ADMIN_USER" \
         --auth-admin-password-openssl "$h_ssl" --auth-admin-password-htpasswd "$h_ht" \
         --auth-generate-webcerts --auth-generate-fwcerts \
@@ -322,6 +324,42 @@ cmd_auth() {
         fail "auth_setup returned success but $(stack)/nginx/htpasswd is absent — compose will refuse to start"
     fi
     footer "auth"
+}
+
+# ── the stack's owner ────────────────────────────────────────────────────────
+# Malcolm's control scripts (auth_setup, start, stop) refuse root. They run as
+# the user the installer recorded in config/process.env (PUID/PGID, the sudo
+# user it ran under), who must own the stack -- which the installer, run as
+# root, leaves root-owned. Both measured on staging VM 9770, 2026-09-25.
+# Discovered from the stack, never guessed.
+malcolm_owner() {  # prints "<user> <uid> <gid>", or dies
+    local env uid gid user
+    env="$(stack)/config/process.env"
+    [ -f "$env" ] || die "$env not found — run configure first"
+    uid=$(sed -n 's/^PUID=//p' "$env" | head -1); gid=$(sed -n 's/^PGID=//p' "$env" | head -1)
+    if ! [[ "$uid" =~ ^[0-9]+$ ]] || ! [[ "$gid" =~ ^[0-9]+$ ]]; then die "no numeric PUID/PGID in $env"; fi
+    [ "$uid" -ne 0 ] || die "PUID is 0 in $env — Malcolm's control scripts refuse root; run configure with sudo from the operator's own account"
+    user=$(getent passwd "$uid" | cut -d: -f1)
+    [ -n "$user" ] || die "PUID $uid in $env is not a user on this host"
+    printf '%s %s %s' "$user" "$uid" "$gid"
+}
+own_stack() {  # give the stack to its recorded owner (after every installer run and rebind)
+    local o user uid gid
+    if [ "$DRY" = "1" ] && [ ! -f "$(stack)/config/process.env" ]; then
+        echo "DRY-RUN: chown -R <PUID>:<PGID from config/process.env> $(stack)"; return 0
+    fi
+    o=$(malcolm_owner) || exit 1
+    read -r user uid gid <<< "$o"
+    run chown -R "$uid:$gid" "$(stack)" || die "could not give $(stack) to $user"
+    [ "$DRY" = "1" ] || pass "$(stack) owned by $user ($uid:$gid, from config/process.env) — Malcolm's control scripts run as this user"
+}
+owner_for_docker() {  # the owner's name, once it is known to reach docker
+    local o user
+    o=$(malcolm_owner) || exit 1
+    user=${o%% *}
+    getent group docker | cut -d: -f4 | tr ',' '\n' | grep -qx "$user" \
+        || die "$user is not in the docker group — Malcolm's scripts run as $user and drive docker compose (usermod -aG docker $user, then log in again)"
+    printf '%s' "$user"
 }
 
 # ── rebind ───────────────────────────────────────────────────────────────────
@@ -341,7 +379,7 @@ do_rebind() {
     [ "$(grep -cF -- "$REBIND_TO" "$c")" -eq 1 ] || die "rebind edit did not take in $c"
     pass "nginx-proxy publish rewritten: 0.0.0.0:443 -> 127.0.0.1:8443 (the front door owns 443)"
 }
-cmd_rebind() { banner "rebind"; need_root; do_rebind; footer "rebind"; }
+cmd_rebind() { banner "rebind"; need_root; do_rebind; own_stack; footer "rebind"; }
 
 # ── start / stop / status ────────────────────────────────────────────────────
 cmd_start() {
@@ -351,7 +389,8 @@ cmd_start() {
     [ -x "$s" ] || die "$s not found — run configure first"
     [ -s "$(stack)/nginx/htpasswd" ] || die "no auth material — run auth first (compose would refuse: bind sources missing)"
     grep -qE -- "$REBIND_FROM" "$(compose)" && die "compose still publishes 0.0.0.0:443 — run rebind first (it must follow every installer run)"
-    run bash -c "cd '$(stack)' && ./scripts/start" || die "Malcolm's start script failed — see above"
+    local user; user=$(owner_for_docker) || exit 1
+    ( cd "$(stack)" && run runuser -u "$user" -- ./scripts/start ) || die "Malcolm's start script failed — see above"
     [ "$DRY" = "1" ] && footer "start"
 
     local waited=0 step=15 out notready total
@@ -384,7 +423,8 @@ cmd_stop() {
     banner "stop"; need_root
     local s; s="$(stack)/scripts/stop"
     [ -x "$s" ] || die "$s not found"
-    if run bash -c "cd '$(stack)' && ./scripts/stop"; then pass "stopped"; else fail "stop script failed"; fi
+    local user; user=$(owner_for_docker) || exit 1
+    if ( cd "$(stack)" && run runuser -u "$user" -- ./scripts/stop ); then pass "stopped"; else fail "stop script failed"; fi
     footer "stop"
 }
 cmd_status() {
