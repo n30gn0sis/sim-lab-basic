@@ -132,3 +132,60 @@ report() { cat "$OUT"/validation-*.md; }
     run validate --area frobnicate
     [ "$status" -eq 1 ]
 }
+
+# fake_lab_sys [ageing] [physical-port] — br-lab with lab-mon0 as a port whose
+# veth peer is lab-mirror0 (ifindex 21 <-> iflink 21), under $ROOT
+fake_lab_sys() {
+    local s="$ROOT/sys/class/net"
+    mkdir -p "$s/br-lab/bridge" "$s/br-lab/brif" "$s/lab-mon0" "$s/lab-mirror0" "$s/lab-tap0"
+    echo "${1:-0}" > "$s/br-lab/bridge/ageing_time"
+    touch "$s/br-lab/brif/lab-mon0" "$s/br-lab/brif/lab-tap0"
+    echo 21 > "$s/lab-mon0/ifindex"; echo 22 > "$s/lab-mon0/iflink"
+    echo 22 > "$s/lab-mirror0/ifindex"; echo 21 > "$s/lab-mirror0/iflink"
+    echo 30 > "$s/lab-tap0/ifindex"; echo 30 > "$s/lab-tap0/iflink"
+    if [ -n "${2:-}" ]; then mkdir -p "$s/$2/device"; touch "$s/br-lab/brif/$2"; echo 40 > "$s/$2/ifindex"; echo 40 > "$s/$2/iflink"; fi
+}
+
+@test "the lab bridge is never guessed: without --lab-bridge its rows SKIP" {
+    run validate --area network
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"SKIP  network/lab-bridge: no --lab-bridge given"* ]]
+}
+
+@test "a correct lab bridge PASSes hub mode, no physical port, and the mirror wiring" {
+    fake_lab_sys
+    stub ip 'case "$*" in *"link show lab-mirror0"*) echo "22: lab-mirror0@lab-mon0: <BROADCAST,NOARP,PROMISC,UP>";; esac; exit 0'
+    run validate --area network --lab-bridge br-lab --capture-ifs lab-mirror0
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"PASS  network/lab-bridge br-lab hub"* ]]
+    [[ "$output" == *"PASS  network/lab-bridge br-lab physical ports"* ]]
+    [[ "$output" == *"PASS  network/lab-bridge br-lab mirror"* ]]
+    [[ "$output" == *"PASS  network/lab-mirror lab-mirror0 address"* ]]
+}
+
+@test "a lab bridge that learns MACs, or holds a physical port, is a FAIL with a diagnosis" {
+    fake_lab_sys 30000 eno1
+    stub ip 'case "$*" in *"link show lab-mirror0"*) echo "22: lab-mirror0@lab-mon0: <PROMISC,UP>";; esac; exit 0'
+    run validate --area network --lab-bridge br-lab --capture-ifs lab-mirror0
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"FAIL  network/lab-bridge br-lab hub: ageing_time 30000"* ]]
+    [[ "$output" == *"FAIL  network/lab-bridge br-lab physical ports: eno1"* ]]
+    run report
+    [[ "$output" == *"never touches a physical port"* ]]
+}
+
+@test "a mirror capture end with a link-local address is a FAIL; no capture interface fed by the bridge is a FAIL" {
+    fake_lab_sys
+    stub ip 'case "$*" in *"addr show lab-mirror0"*) echo "22: lab-mirror0    inet6 fe80::1/64 scope link";; *"link show lab-mirror0"*) echo "22: lab-mirror0: <PROMISC,UP>";; esac; exit 0'
+    run validate --area network --lab-bridge br-lab --capture-ifs lab-mirror0
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"FAIL  network/lab-mirror lab-mirror0 address: 1 address(es)"* ]]
+    mkdir -p "$ROOT/sys/class/net/cap9"; echo 50 > "$ROOT/sys/class/net/cap9/iflink"
+    run validate --area network --lab-bridge br-lab --capture-ifs cap9
+    echo "$output"
+    [[ "$output" == *"FAIL  network/lab-bridge br-lab mirror: no --capture-ifs interface is fed by a port of br-lab"* ]]
+}

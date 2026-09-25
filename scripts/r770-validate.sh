@@ -123,6 +123,47 @@ area_storage() {
 }
 
 # ── network ──────────────────────────────────────────────────────────────────
+# The lab bridge (Phase 11 live mirror): hub mode, no physical port, and a
+# veth port whose peer is one of --capture-ifs. A veth's iflink is its peer's
+# ifindex; a physical NIC has a device link in sysfs, a virtual one does not.
+area_network_lab() {
+    if [ -z "$LAB_BRIDGE" ]; then row "lab-bridge" "hub mode, no physical port, mirrored" "no --lab-bridge given" SKIP "bridges are never guessed"; return; fi
+    local sys b at port n phys="" fed="" i pidx
+    sys="$(p /sys/class/net)"; b="$sys/$LAB_BRIDGE"
+    if [ ! -d "$b/bridge" ]; then
+        row "lab-bridge $LAB_BRIDGE" "a bridge" "absent or not a bridge" FAIL "/sys/class/net/$LAB_BRIDGE/bridge"
+        diag "lab-bridge $LAB_BRIDGE" "the lab bridge does not exist — r770-gns3-deploy.sh labnet creates it"
+        return
+    fi
+    at=$(cat "$b/bridge/ageing_time" 2>/dev/null || echo unreadable)
+    if [ "$at" = "0" ]; then row "lab-bridge $LAB_BRIDGE hub" "ageing_time 0" "ageing_time 0" PASS "cat /sys/class/net/$LAB_BRIDGE/bridge/ageing_time"
+    else row "lab-bridge $LAB_BRIDGE hub" "ageing_time 0" "ageing_time $at" FAIL "cat /sys/class/net/$LAB_BRIDGE/bridge/ageing_time"; diag "lab-bridge $LAB_BRIDGE hub" "a learning bridge forwards port-to-port frames past the mirror — rerun r770-gns3-deploy.sh labnet"; fi
+    for port in "$b"/brif/*; do
+        [ -e "$port" ] || continue
+        n=$(basename "$port")
+        [ -e "$sys/$n/device" ] && phys="$phys $n"
+    done
+    if [ -z "$phys" ]; then row "lab-bridge $LAB_BRIDGE physical ports" "none" "none" PASS "ls /sys/class/net/$LAB_BRIDGE/brif"
+    else row "lab-bridge $LAB_BRIDGE physical ports" "none" "${phys# }" FAIL "ls /sys/class/net/$LAB_BRIDGE/brif"; diag "lab-bridge $LAB_BRIDGE physical ports" "rule 8: the lab fabric never touches a physical port — remove it from the bridge"; fi
+    for i in $CAPTURE_IFS; do
+        pidx=$(cat "$sys/$i/iflink" 2>/dev/null || true)
+        [ -n "$pidx" ] || continue
+        for port in "$b"/brif/*; do
+            [ -e "$port" ] || continue
+            n=$(basename "$port")
+            [ "$(cat "$sys/$n/ifindex" 2>/dev/null)" = "$pidx" ] && [ "$n" != "$i" ] && fed="$fed $i"
+        done
+    done
+    if [ -n "$fed" ]; then row "lab-bridge $LAB_BRIDGE mirror" "a capture interface fed by a bridge port" "${fed# }" PASS "cat /sys/class/net/<if>/iflink vs brif/*/ifindex"
+    else row "lab-bridge $LAB_BRIDGE mirror" "a capture interface fed by a bridge port" "no --capture-ifs interface is fed by a port of $LAB_BRIDGE" FAIL "cat /sys/class/net/<if>/iflink vs brif/*/ifindex"; diag "lab-bridge $LAB_BRIDGE mirror" "Malcolm would see nothing from the lab — pass lab-mirror0 in --capture-ifs, and rerun labnet if the veth is missing"; fi
+    local cnt
+    for i in $fed; do
+        cnt=$(ip -o addr show "$i" 2>/dev/null | grep -E ' inet6? ' | grep -c . || true)
+        if [ "$cnt" -eq 0 ]; then row "lab-mirror $i address" "none, link-local included" "none" PASS "ip -o addr show $i"
+        else row "lab-mirror $i address" "none, link-local included" "$cnt address(es)" FAIL "ip -o addr show $i"; diag "lab-mirror $i address" "the mirror's capture end must be silent — its networkd file sets LinkLocalAddressing=no; networkctl status $i"; fi
+    done
+}
+
 area_network() {
     AREA=network
     if [ -n "$MGMT_IF" ]; then
@@ -131,6 +172,7 @@ area_network() {
         a=$(ip -o -4 addr show "$MGMT_IF" 2>/dev/null | awk '{print $4}' | head -1)
         if [ "$l" = "UP" ] && [ -n "$a" ]; then row "mgmt $MGMT_IF" "UP with an address" "$l $a" PASS "ip -o addr show $MGMT_IF"; else row "mgmt $MGMT_IF" "UP with an address" "${l:-absent} ${a:-no address}" FAIL "ip -o addr show $MGMT_IF"; diag "mgmt $MGMT_IF" "the management interface is not up with an address — if you are reading this over SSH, a different interface carries the session"; fi
     else row "mgmt" "UP with an address" "no --mgmt-if given" SKIP "interfaces are never guessed"; fi
+    area_network_lab
     if [ -z "$CAPTURE_IFS" ]; then row "capture" "no address, promisc, offloads off" "no --capture-ifs given" SKIP "interfaces are never guessed"; return; fi
     local i addrs link offl
     for i in $CAPTURE_IFS; do
