@@ -10,7 +10,8 @@ setup() { cd "$BATS_TEST_DIRNAME/.."; }
 lint() { run python3 tests/helpers/lint_scenarios.py "$1"; echo "$output"; [ "$status" -eq 0 ]; }
 
 @test "the pack holds the scenarios the kit documents" {
-    for s in client-server ipsec-esp; do [ -f "scenarios/$s/scenario.conf" ] || { echo "missing $s"; false; }; done
+    for s in client-server ipsec-esp ipsec-ike ospf bgp; do [ -f "scenarios/$s/scenario.conf" ] || { echo "missing $s"; false; }; done
+    [ "$(find scenarios -mindepth 2 -maxdepth 2 -name scenario.conf | wc -l)" -eq 5 ]
 }
 
 @test "every scenario has its files and a complete scenario.conf, and ranges are unique" { lint layout; }
