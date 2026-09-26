@@ -23,7 +23,7 @@ FAIL. SKIPPED checks never change the exit code, and are never omitted.
 | `virtualization` | a throwaway cirros guest: overlay, define, boot to `running`, destroy, undefine, overlay removed | libvirt (Phase 7), a cirros image under `/srv/vms/base` | `--allow-vm --lab-bridge BR` | self-cleaning (creates and destroys a guest) |
 | `gns3` | unit active · `/v3/version` answers · admin login issues a token | Phase 8, the admin secret | — | no |
 | `wan` | apply a 40 ms profile, measure, clear | Phase 12 tooling, which lives in the build repo's config repo, not this kit | `--allow-wan` | SKIPs with that reason today |
-| `capture` | Zeek `capture_loss` below 0.5 % · optional replay: packets sent by `tcpreplay` into a feed | Malcolm running; a reference PCAP | `--feed IF --pcap FILE` | injects traffic into a capture feed |
+| `capture` | Zeek `capture_loss` below 0.5 % · optional replay: packets sent by `tcpreplay` into a feed | Malcolm running with live capture on (`configure --capture-ifs`, which turns Zeek's stats on — the check SKIPs naming `ZEEK_DISABLE_STATS` otherwise); a reference PCAP for the replay | `--feed IF --pcap FILE` | injects traffic into a capture feed |
 | `backup` | restore one file from the latest restic snapshot and compare | Phase 15, `/etc/lab/secrets/restic.pw` | — | writes to a temp dir only |
 | `airgap` | the posture report from `scripts/r770-airgap-check.sh`, folded in row by row | — | `--mgmt-cidr` judges resolvers | no |
 | `portal` | each of the 3 `.lab` names answers over TLS with the lab CA · no redirect escapes to a loopback port · only nginx owns `0.0.0.0:443` | Phase 13 | — | no |

@@ -156,7 +156,7 @@ area_network_lab() {
         done
     done
     if [ "${#fed[@]}" -gt 0 ]; then row "lab-bridge $LAB_BRIDGE mirror" "a capture interface fed by a bridge port" "${fed[*]}" PASS "cat /sys/class/net/<if>/iflink vs brif/*/ifindex"
-    else row "lab-bridge $LAB_BRIDGE mirror" "a capture interface fed by a bridge port" "no --capture-ifs interface is fed by a port of $LAB_BRIDGE" FAIL "cat /sys/class/net/<if>/iflink vs brif/*/ifindex"; diag "lab-bridge $LAB_BRIDGE mirror" "Malcolm would see nothing from the lab — pass lab-mirror0 in --capture-ifs, and rerun labnet if the veth is missing"; fi
+    else row "lab-bridge $LAB_BRIDGE mirror" "a capture interface fed by a bridge port" "no --capture-ifs interface is fed by a port of $LAB_BRIDGE" FAIL "cat /sys/class/net/<if>/iflink vs brif/*/ifindex"; diag "lab-bridge $LAB_BRIDGE mirror" "Malcolm would see nothing from the lab — pass lab_mirror0 in --capture-ifs, and rerun labnet if the veth is missing"; fi
     local cnt
     for i in "${fed[@]}"; do
         cnt=$(ip -o addr show "$i" 2>/dev/null | grep -E ' inet6? ' | grep -c . || true)
@@ -181,13 +181,13 @@ area_network() {
         addrs=$(ip -o addr show "$i" 2>/dev/null | grep -E ' inet6? ' | grep -v 'scope link' | grep -c . || true)
         if [ "$addrs" -eq 0 ]; then row "capture $i address" "none" "none" PASS "ip -o addr show $i"; else row "capture $i address" "none" "$addrs address(es)" FAIL "ip -o addr show $i"; diag "capture $i address" "a capture port has an address — capture ports never get an IP and never join the lab fabric; remove it from Netplan"; fi
         master="$(p /sys/class/net)/$i/master"
-        if [ -e "$master" ] || [ -L "$master" ]; then row "capture $i master" "none" "$(basename "$(readlink "$master" 2>/dev/null || echo "$master")")" FAIL "readlink /sys/class/net/$i/master"; diag "capture $i master" "rule 8: a capture port is never bridged to the lab fabric (lab-mirror0 is fed BY br-lab through its veth peer, never a port of it) — remove $i from its bridge or bond"
+        if [ -e "$master" ] || [ -L "$master" ]; then row "capture $i master" "none" "$(basename "$(readlink "$master" 2>/dev/null || echo "$master")")" FAIL "readlink /sys/class/net/$i/master"; diag "capture $i master" "rule 8: a capture port is never bridged to the lab fabric (lab_mirror0 is fed BY br-lab through its veth peer, never a port of it) — remove $i from its bridge or bond"
         else row "capture $i master" "none" "none" PASS "readlink /sys/class/net/$i/master"; fi
         link=$(ip -o link show "$i" 2>/dev/null | head -1)
         if printf '%s' "$link" | grep -q PROMISC; then row "capture $i promisc" "PROMISC" "PROMISC" PASS "ip -o link show $i"; else row "capture $i promisc" "PROMISC" "not promiscuous" FAIL "ip -o link show $i"; diag "capture $i promisc" "capture-prep has not run on this port (Phase 9)"; fi
         if command -v ethtool >/dev/null 2>&1; then
             offl=$(ethtool -k "$i" 2>/dev/null | grep -E '^(generic-receive-offload|large-receive-offload|tcp-segmentation-offload):' | grep -c ': on' || true)
-            if [ "$offl" -eq 0 ]; then row "capture $i offloads" "gro/lro/tso off" "off" PASS "ethtool -k $i"; else row "capture $i offloads" "gro/lro/tso off" "$offl still on" FAIL "ethtool -k $i"; diag "capture $i offloads" "offloads merge packets before capture sees them — capture-prep (Phase 9) turns them off; on lab-mirror0, r770-gns3-deploy.sh labnet does (05-lab-mirror0.link + ethtool -K)"; fi
+            if [ "$offl" -eq 0 ]; then row "capture $i offloads" "gro/lro/tso off" "off" PASS "ethtool -k $i"; else row "capture $i offloads" "gro/lro/tso off" "$offl still on" FAIL "ethtool -k $i"; diag "capture $i offloads" "offloads merge packets before capture sees them — capture-prep (Phase 9) turns them off; on lab_mirror0, r770-gns3-deploy.sh labnet does (05-lab_mirror0.link + ethtool -K)"; fi
         else row "capture $i offloads" "gro/lro/tso off" "ethtool not installed" SKIP "package not installed yet"; fi
     done
 }
@@ -225,8 +225,8 @@ area_gns3() {
     if printf '%s' "$v" | grep -q '"version"'; then row "api" "/v3/version answers" "$(printf '%s' "$v" | tr -d '\n' | cut -c1-60)" PASS "curl 127.0.0.1:3080/v3/version"; else row "api" "/v3/version answers" "${v:-no answer}" FAIL "curl 127.0.0.1:3080/v3/version"; diag api "the unit is active but the API does not answer on 127.0.0.1:3080 — journalctl -u gns3 (a root-owned /etc/gns3 is the usual cause)"; return; fi
     local pw tok; pw=$(head -1 "$(p /etc/lab/secrets/gns3-admin.pw)" 2>/dev/null || true)
     [ -n "$pw" ] || { row "login" "token issued" "no admin secret on this box" SKIP "/etc/lab/secrets/gns3-admin.pw"; return; }
-    tok=$(curl -s --max-time 10 -X POST -H 'Content-Type: application/json' -d "{\"username\":\"admin\",\"password\":\"$pw\"}" http://127.0.0.1:3080/v3/access/users/login 2>/dev/null || true)
-    if printf '%s' "$tok" | grep -q 'access_token'; then row "login" "token issued" "access_token present" PASS "POST /v3/access/users/login"; else row "login" "token issued" "no token" FAIL "POST /v3/access/users/login"; diag login "admin login rejected — the rendered config and the secret file disagree; rerun 'r770-gns3-deploy.sh config' then restart the unit"; fi
+    tok=$(curl -s --max-time 10 -X POST -H 'Content-Type: application/json' -d "{\"username\":\"admin\",\"password\":\"$pw\"}" http://127.0.0.1:3080/v3/access/users/authenticate 2>/dev/null || true)
+    if printf '%s' "$tok" | grep -q 'access_token'; then row "login" "token issued" "access_token present" PASS "POST /v3/access/users/authenticate"; else row "login" "token issued" "no token" FAIL "POST /v3/access/users/login"; diag login "admin login rejected — the rendered config and the secret file disagree; rerun 'r770-gns3-deploy.sh config' then restart the unit"; fi
     row "node-boot" "one QEMU + one docker node pass traffic" "not automated" SKIP "needs a project; run by hand per docs/validation.md"
 }
 
@@ -240,10 +240,13 @@ area_wan() {
 # ── capture ──────────────────────────────────────────────────────────────────
 area_capture() {
     AREA=capture
-    local zl; zl=$(find "$(p "$MALCOLM_HOME")/malcolm/zeek-logs" -name 'capture_loss*.log' 2>/dev/null | head -1)
+    # the newest log, spooled or rotated (.log.gz); one row per worker, so the worst one is the verdict
+    local zl; zl=$(find "$(p "$MALCOLM_HOME")/malcolm/zeek-logs" \( -name 'capture_loss*.log' -o -name 'capture_loss*.log.gz' \) -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
     if [ -n "$zl" ]; then
-        local pct; pct=$(grep -v '^#' "$zl" | tail -1 | awk '{print $NF}')
+        local pct; pct=$(zcat -f "$zl" 2>/dev/null | awk -F'\t' '!/^#/ && NF { if (m == "" || $NF + 0 > m + 0) m = $NF } END { print m }')
         if [ -n "$pct" ] && awk -v p="$pct" 'BEGIN{exit !(p < 0.5)}'; then row "zeek capture_loss" "< 0.5 %" "$pct" PASS "$zl"; elif [ -n "$pct" ]; then row "zeek capture_loss" "< 0.5 %" "$pct" FAIL "$zl"; diag "zeek capture_loss" "Zeek reports loss — check ethtool -S drop deltas on the feed and Arkime's own stats before touching tuning"; else row "zeek capture_loss" "< 0.5 %" "no data rows yet" WARN "$zl"; fi
+    elif grep -qx 'ZEEK_DISABLE_STATS=true' "$(p "$MALCOLM_HOME")/malcolm/config/zeek-live.env" 2>/dev/null; then
+        row "zeek capture_loss" "< 0.5 %" "stats off (ZEEK_DISABLE_STATS=true in config/zeek-live.env)" SKIP "r770-malcolm-deploy.sh configure --capture-ifs ... turns them on"
     else row "zeek capture_loss" "< 0.5 %" "no capture_loss log yet" SKIP "Malcolm not running or no traffic seen"; fi
     if [ -z "$FEED" ] || [ -z "$PCAP" ]; then row "tcpreplay" "packets replayed == packets indexed" "not opted in (--feed IF --pcap FILE)" SKIP "injects traffic"; return; fi
     command -v tcpreplay >/dev/null 2>&1 || { row "tcpreplay" "replayed == indexed" "tcpreplay not installed" SKIP "package not installed yet"; return; }

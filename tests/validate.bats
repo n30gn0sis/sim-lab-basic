@@ -103,6 +103,35 @@ report() { cat "$OUT"/validation-*.md; }
     [[ "$output" == *"capture ports never get an IP"* ]]
 }
 
+@test "zeek capture_loss is SKIPPED naming the cause when Malcolm's live Zeek has its stats off" {
+    mkdir -p "$ROOT/opt/malcolm/malcolm/config" "$ROOT/opt/malcolm/malcolm/zeek-logs/live"
+    printf 'ZEEK_LIVE_CAPTURE=true\nZEEK_DISABLE_STATS=true\n' > "$ROOT/opt/malcolm/malcolm/config/zeek-live.env"
+    run validate --area capture
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"SKIP  capture/zeek capture_loss: stats off (ZEEK_DISABLE_STATS=true in config/zeek-live.env) (r770-malcolm-deploy.sh configure --capture-ifs ... turns them on)"* ]]
+    printf 'ZEEK_LIVE_CAPTURE=true\nZEEK_DISABLE_STATS=\n' > "$ROOT/opt/malcolm/malcolm/config/zeek-live.env"
+    run validate --area capture
+    [[ "$output" == *"SKIP  capture/zeek capture_loss: no capture_loss log yet (Malcolm not running or no traffic seen)"* ]]
+    printf '#fields\tts\tts_delta\tpeer\tgaps\tacks\tpercent_lost\n1\t900\tzeek\t0\t100\t0.0\n' > "$ROOT/opt/malcolm/malcolm/zeek-logs/live/capture_loss.log"
+    run validate --area capture
+    [[ "$output" == *"PASS  capture/zeek capture_loss: 0.0"* ]]
+}
+
+@test "zeek capture_loss reads the newest log, rotated .gz included, and judges the worst worker" {
+    z="$ROOT/opt/malcolm/malcolm/zeek-logs/live"
+    mkdir -p "$z/logs/2026-01-01" "$z/spool/logger-1"
+    printf '#fields\tts\tts_delta\tpeer\tgaps\tacks\tpercent_lost\n1\t60\tworker-1-1\t0\t100\t0.0\n' > "$z/spool/logger-1/capture_loss.log"
+    touch -d '2 hours ago' "$z/spool/logger-1/capture_loss.log"
+    printf '#fields\tts\tts_delta\tpeer\tgaps\tacks\tpercent_lost\n2\t60\tworker-1-2\t9\t100\t0.9\n2\t60\tworker-1-1\t0\t100\t0.0\n#close\t2026-01-01-01-00-00\n' \
+        | gzip > "$z/logs/2026-01-01/capture_loss.00:00:00-01:00:00.log.gz"
+    run validate --area capture
+    echo "$output"
+    [[ "$output" == *"FAIL  capture/zeek capture_loss: 0.9"* ]]
+    run report
+    [[ "$output" == *"capture_loss.00:00:00-01:00:00.log.gz"* ]]
+}
+
 @test "a replay is opt-in, and the Arkime comparison is a WARN (indexing lag), not a FAIL" {
     run validate --area capture
     [ "$status" -eq 0 ]
@@ -134,16 +163,16 @@ report() { cat "$OUT"/validation-*.md; }
 }
 
 # fake_lab_sys [ageing] [physical-port] [multicast_snooping] — br-lab with
-# lab-mon0 as a port whose veth peer is lab-mirror0 (ifindex 21 <-> iflink
+# lab-mon0 as a port whose veth peer is lab_mirror0 (ifindex 21 <-> iflink
 # 21), under $ROOT
 fake_lab_sys() {
     local s="$ROOT/sys/class/net"
-    mkdir -p "$s/br-lab/bridge" "$s/br-lab/brif" "$s/lab-mon0" "$s/lab-mirror0" "$s/lab-tap0"
+    mkdir -p "$s/br-lab/bridge" "$s/br-lab/brif" "$s/lab-mon0" "$s/lab_mirror0" "$s/lab-tap0"
     echo "${1:-0}" > "$s/br-lab/bridge/ageing_time"
     echo "${3:-0}" > "$s/br-lab/bridge/multicast_snooping"
     touch "$s/br-lab/brif/lab-mon0" "$s/br-lab/brif/lab-tap0"
     echo 21 > "$s/lab-mon0/ifindex"; echo 22 > "$s/lab-mon0/iflink"
-    echo 22 > "$s/lab-mirror0/ifindex"; echo 21 > "$s/lab-mirror0/iflink"
+    echo 22 > "$s/lab_mirror0/ifindex"; echo 21 > "$s/lab_mirror0/iflink"
     echo 30 > "$s/lab-tap0/ifindex"; echo 30 > "$s/lab-tap0/iflink"
     if [ -n "${2:-}" ]; then mkdir -p "$s/$2/device"; touch "$s/br-lab/brif/$2"; echo 40 > "$s/$2/ifindex"; echo 40 > "$s/$2/iflink"; fi
 }
@@ -157,21 +186,21 @@ fake_lab_sys() {
 
 @test "a correct lab bridge PASSes hub mode, no physical port, and the mirror wiring" {
     fake_lab_sys
-    stub ip 'case "$*" in *"link show lab-mirror0"*) echo "22: lab-mirror0@lab-mon0: <BROADCAST,NOARP,PROMISC,UP>";; esac; exit 0'
-    run validate --area network --lab-bridge br-lab --capture-ifs lab-mirror0
+    stub ip 'case "$*" in *"link show lab_mirror0"*) echo "22: lab_mirror0@lab-mon0: <BROADCAST,NOARP,PROMISC,UP>";; esac; exit 0'
+    run validate --area network --lab-bridge br-lab --capture-ifs lab_mirror0
     echo "$output"
     [ "$status" -eq 0 ]
     [[ "$output" == *"PASS  network/lab-bridge br-lab hub"* ]]
     [[ "$output" == *"PASS  network/lab-bridge br-lab multicast snooping"* ]]
     [[ "$output" == *"PASS  network/lab-bridge br-lab physical ports"* ]]
     [[ "$output" == *"PASS  network/lab-bridge br-lab mirror"* ]]
-    [[ "$output" == *"PASS  network/lab-mirror lab-mirror0 address"* ]]
+    [[ "$output" == *"PASS  network/lab-mirror lab_mirror0 address"* ]]
 }
 
 @test "a lab bridge that learns MACs, or holds a physical port, is a FAIL with a diagnosis" {
     fake_lab_sys 30000 eno1
-    stub ip 'case "$*" in *"link show lab-mirror0"*) echo "22: lab-mirror0@lab-mon0: <PROMISC,UP>";; esac; exit 0'
-    run validate --area network --lab-bridge br-lab --capture-ifs lab-mirror0
+    stub ip 'case "$*" in *"link show lab_mirror0"*) echo "22: lab_mirror0@lab-mon0: <PROMISC,UP>";; esac; exit 0'
+    run validate --area network --lab-bridge br-lab --capture-ifs lab_mirror0
     echo "$output"
     [ "$status" -eq 1 ]
     [[ "$output" == *"FAIL  network/lab-bridge br-lab hub: ageing_time 30000"* ]]
@@ -182,11 +211,11 @@ fake_lab_sys() {
 
 @test "a mirror capture end with a link-local address is a FAIL; no capture interface fed by the bridge is a FAIL" {
     fake_lab_sys
-    stub ip 'case "$*" in *"addr show lab-mirror0"*) echo "22: lab-mirror0    inet6 fe80::1/64 scope link";; *"link show lab-mirror0"*) echo "22: lab-mirror0: <PROMISC,UP>";; esac; exit 0'
-    run validate --area network --lab-bridge br-lab --capture-ifs lab-mirror0
+    stub ip 'case "$*" in *"addr show lab_mirror0"*) echo "22: lab_mirror0    inet6 fe80::1/64 scope link";; *"link show lab_mirror0"*) echo "22: lab_mirror0: <PROMISC,UP>";; esac; exit 0'
+    run validate --area network --lab-bridge br-lab --capture-ifs lab_mirror0
     echo "$output"
     [ "$status" -eq 1 ]
-    [[ "$output" == *"FAIL  network/lab-mirror lab-mirror0 address: 1 address(es)"* ]]
+    [[ "$output" == *"FAIL  network/lab-mirror lab_mirror0 address: 1 address(es)"* ]]
     mkdir -p "$ROOT/sys/class/net/cap9"; echo 50 > "$ROOT/sys/class/net/cap9/iflink"
     run validate --area network --lab-bridge br-lab --capture-ifs cap9
     echo "$output"
@@ -195,8 +224,8 @@ fake_lab_sys() {
 
 @test "a lab bridge that snoops multicast is a FAIL with a diagnosis (F7)" {
     fake_lab_sys 0 "" 1
-    stub ip 'case "$*" in *"link show lab-mirror0"*) echo "22: lab-mirror0@lab-mon0: <PROMISC,UP>";; esac; exit 0'
-    run validate --area network --lab-bridge br-lab --capture-ifs lab-mirror0
+    stub ip 'case "$*" in *"link show lab_mirror0"*) echo "22: lab_mirror0@lab-mon0: <PROMISC,UP>";; esac; exit 0'
+    run validate --area network --lab-bridge br-lab --capture-ifs lab_mirror0
     echo "$output"
     [ "$status" -eq 1 ]
     [[ "$output" == *"FAIL  network/lab-bridge br-lab multicast snooping: multicast_snooping 1"* ]]
@@ -215,29 +244,29 @@ fake_lab_sys() {
 
 @test "capture offloads on the mirror end PASS when off and FAIL when on (F3)" {
     fake_lab_sys
-    stub ip 'case "$*" in *"link show lab-mirror0"*) echo "22: lab-mirror0@lab-mon0: <PROMISC,UP>";; esac; exit 0'
+    stub ip 'case "$*" in *"link show lab_mirror0"*) echo "22: lab_mirror0@lab-mon0: <PROMISC,UP>";; esac; exit 0'
     stub ethtool 'printf "tcp-segmentation-offload: %s\ngeneric-receive-offload: %s\nlarge-receive-offload: off [fixed]\n" "${OFFL:-off}" "${OFFL:-off}"'
-    run validate --area network --lab-bridge br-lab --capture-ifs lab-mirror0
+    run validate --area network --lab-bridge br-lab --capture-ifs lab_mirror0
     echo "$output"
     [ "$status" -eq 0 ]
-    [[ "$output" == *"PASS  network/capture lab-mirror0 offloads: off"* ]]
-    OFFL=on run validate --area network --lab-bridge br-lab --capture-ifs lab-mirror0
+    [[ "$output" == *"PASS  network/capture lab_mirror0 offloads: off"* ]]
+    OFFL=on run validate --area network --lab-bridge br-lab --capture-ifs lab_mirror0
     echo "$output"
     [ "$status" -eq 1 ]
-    [[ "$output" == *"FAIL  network/capture lab-mirror0 offloads: 2 still on"* ]]
+    [[ "$output" == *"FAIL  network/capture lab_mirror0 offloads: 2 still on"* ]]
 }
 
 @test "a capture interface enslaved to a bridge is a FAIL (rule 8); one with no master PASSes (F9)" {
     fake_lab_sys
     stub ip 'case "$*" in *"link show"*) echo "3: x: <PROMISC,UP>";; esac; exit 0'
     mkdir -p "$ROOT/sys/class/net/cap0"
-    run validate --area network --capture-ifs "lab-mirror0 cap0"
+    run validate --area network --capture-ifs "lab_mirror0 cap0"
     echo "$output"
     [ "$status" -eq 0 ]
-    [[ "$output" == *"PASS  network/capture lab-mirror0 master: none"* ]]
+    [[ "$output" == *"PASS  network/capture lab_mirror0 master: none"* ]]
     [[ "$output" == *"PASS  network/capture cap0 master: none"* ]]
     ln -s ../br-lab "$ROOT/sys/class/net/cap0/master"
-    run validate --area network --capture-ifs "lab-mirror0 cap0"
+    run validate --area network --capture-ifs "lab_mirror0 cap0"
     echo "$output"
     [ "$status" -eq 1 ]
     [[ "$output" == *"FAIL  network/capture cap0 master: br-lab"* ]]

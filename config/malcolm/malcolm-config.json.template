@@ -21,7 +21,7 @@
         "auxFwSystemd": false,
         "auxFwThermal": false,
         "captureLiveNetworkTraffic": __CAPTURE_LIVE__,
-        "captureStats": false,
+        "captureStats": __CAPTURE_STATS__,
         "cleanUpOldArtifacts": false,
         "cleanUpOldIndices": false,
         "containerNetworkName": "<MALCOLM_CONFIG_NONE>",

@@ -20,6 +20,9 @@ setup() {
     export BATS_TEST_TMPDIR
     stub dpkg 'exit 0'
     stub python3 'exec bash "$@"'          # the stub installer is bash; the real one is python
+    # the stack's owner: PUID 1000 in the fixture's config/process.env, in the docker group
+    stub getent 'case "$1 $2" in "passwd 1000") echo "labop:x:1000:1000::/home/labop:/bin/bash";; "group docker") echo "docker:x:988:labop";; *) exit 2;; esac'
+    stub runuser 'echo "runuser $*" >> "$STUB_LOG"; [ "$1" = -u ] && shift 2; [ "$1" = -- ] && shift; exec "$@"'
     stub free 'echo "               total        used        free"; echo "Mem:             128           4         124"'
     stub_log unzip
     stub_log chown
@@ -123,7 +126,9 @@ STUB
 }
 
 @test "unpack unzips the one bundled installer into /opt/malcolm and is idempotent" {
-    stub unzip 'echo "unzip $*" >> "$STUB_LOG"; mkdir -p "$ROOT/opt/malcolm/scripts"; touch "$ROOT/opt/malcolm/scripts/install.py"'
+    # the real docker_install.zip (measured on staging VM 9770, 2026-09-25) puts
+    # install.py at its root, beside the stack tarball -- not under scripts/
+    stub unzip 'echo "unzip $*" >> "$STUB_LOG"; mkdir -p "$ROOT/opt/malcolm"; touch "$ROOT/opt/malcolm/install.py" "$ROOT/opt/malcolm/malcolm_fixture.tar.gz"'
     export ROOT
     run malcolm unpack --bundle "$BUNDLE"
     echo "$output"
@@ -140,6 +145,9 @@ STUB
     [ "$status" -eq 0 ]
     grep -q -- "--import-malcolm-config-file $ROOT/opt/malcolm/malcolm-config.rendered.json" "$MALCOLM_STUB_LOG"
     grep -q -- '--non-interactive' "$MALCOLM_STUB_LOG"
+    # the installer finds its stack tarball in its working directory, so the
+    # kit must run it from /opt/malcolm (measured on staging VM 9770, 2026-09-25)
+    grep -qx "install.py cwd $ROOT/opt/malcolm" "$MALCOLM_STUB_LOG"
     r="$ROOT/opt/malcolm/malcolm-config.rendered.json"
     ! grep -q '__[A-Z_]*__' "$r"
     grep -q '"osMemory": "24g"' "$r"                # 128 GB host -> 24g (buildout §8)
@@ -166,7 +174,7 @@ STUB
 
 @test "configure refuses when the bundled installer no longer advertises a flag the kit relies on" {
     make_malcolm_tree "$ROOT"
-    cat > "$ROOT/opt/malcolm/scripts/install.py" <<'STUB'
+    cat > "$ROOT/opt/malcolm/install.py" <<'STUB'
 #!/usr/bin/env bash
 echo "install.py $*" >> "$MALCOLM_STUB_LOG"
 case " $* " in *" --help "*) echo "usage: install.py [--non-interactive] [--configure] [--skip-splash]"; exit 0;; esac
@@ -189,52 +197,89 @@ STUB
     grep -q '"captureLiveNetworkTraffic": false,' "$r"
     grep -q '"liveArkime": false,' "$r"
     grep -q '"liveZeek": false,' "$r"
+    grep -q '"captureStats": false,' "$r"
     grep -q '"liveSuricata": false,' "$r"
     grep -q '"tweakIface": false,' "$r"
 }
 
 @test "configure --capture-ifs turns on live Arkime and Zeek on exactly those interfaces" {
     make_malcolm_tree "$ROOT"
-    mkdir -p "$ROOT/sys/class/net/lab-mirror0"
+    mkdir -p "$ROOT/sys/class/net/lab_mirror0"
     stub ip 'exit 0'
-    run malcolm configure --bundle "$BUNDLE" --capture-ifs lab-mirror0
+    run malcolm configure --bundle "$BUNDLE" --capture-ifs lab_mirror0
     echo "$output"
     [ "$status" -eq 0 ]
     r="$ROOT/opt/malcolm/malcolm-config.rendered.json"
-    grep -q '"pcapIface": \["lab-mirror0"\],' "$r"
+    grep -q '"pcapIface": \["lab_mirror0"\],' "$r"
     grep -q '"captureLiveNetworkTraffic": true,' "$r"
     grep -q '"liveArkime": true,' "$r"
     grep -q '"liveZeek": true,' "$r"
+    grep -q '"captureStats": true,' "$r"
     grep -q '"liveSuricata": false,' "$r"
     grep -q '"tweakIface": false,' "$r"
-    [[ "$output" == *"live capture on: lab-mirror0"* ]]
+    [[ "$output" == *"live capture on: lab_mirror0"* ]]
 }
 
 @test "configure --capture-ifs renders several interfaces as one JSON list" {
     make_malcolm_tree "$ROOT"
-    mkdir -p "$ROOT/sys/class/net/lab-mirror0" "$ROOT/sys/class/net/cap0"
+    mkdir -p "$ROOT/sys/class/net/lab_mirror0" "$ROOT/sys/class/net/cap0"
     stub ip 'exit 0'
-    run malcolm configure --bundle "$BUNDLE" --capture-ifs "lab-mirror0 cap0"
+    run malcolm configure --bundle "$BUNDLE" --capture-ifs "lab_mirror0 cap0"
     echo "$output"
     [ "$status" -eq 0 ]
-    grep -q '"pcapIface": \["lab-mirror0", "cap0"\],' "$ROOT/opt/malcolm/malcolm-config.rendered.json"
+    grep -q '"pcapIface": \["lab_mirror0", "cap0"\],' "$ROOT/opt/malcolm/malcolm-config.rendered.json"
 }
 
 @test "configure --capture-ifs proves the installer kept every live key in its exported config (F5)" {
     make_malcolm_tree "$ROOT"
-    mkdir -p "$ROOT/sys/class/net/lab-mirror0" "$ROOT/sys/class/net/cap0"
+    mkdir -p "$ROOT/sys/class/net/lab_mirror0" "$ROOT/sys/class/net/cap0"
     stub ip 'exit 0'
-    run malcolm configure --bundle "$BUNDLE" --capture-ifs "lab-mirror0 cap0"
+    run malcolm configure --bundle "$BUNDLE" --capture-ifs "lab_mirror0 cap0"
     echo "$output"
     [ "$status" -eq 0 ]
-    [[ "$output" == *"PASS  the installer kept live capture on lab-mirror0 cap0 (captureLiveNetworkTraffic, liveArkime, liveZeek, pcapIface)"* ]]
+    [[ "$output" == *"PASS  the installer kept live capture on lab_mirror0 cap0 (Zeek live; Arkime via liveArkime)"* ]]
+}
+
+@test "configure accepts Arkime capture through netsniff when the installer turns liveArkime off (measured on staging)" {
+    make_malcolm_tree "$ROOT"
+    mkdir -p "$ROOT/sys/class/net/lab_mirror0"
+    stub ip 'exit 0'
+    MALCOLM_STUB_EXPORT_SED='s/"liveArkime": true/"liveArkime": false/; s/"pcapNetSniff": false/"pcapNetSniff": true/' \
+        run malcolm configure --bundle "$BUNDLE" --capture-ifs lab_mirror0
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"PASS  the installer kept live capture on lab_mirror0 (Zeek live; Arkime via pcapNetSniff)"* ]]
+}
+
+@test "configure FAILs when the installer kept no capture path into Arkime" {
+    make_malcolm_tree "$ROOT"
+    mkdir -p "$ROOT/sys/class/net/lab_mirror0"
+    stub ip 'exit 0'
+    MALCOLM_STUB_EXPORT_SED='s/"liveArkime": true/"liveArkime": false/' \
+        run malcolm configure --bundle "$BUNDLE" --capture-ifs lab_mirror0
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"FAIL  the installer kept no capture path into Arkime (liveArkime, pcapNetSniff, pcapTcpDump all off)"* ]]
+}
+
+@test "configure reconfigures an extracted stack with the stack's own installer, from inside the stack" {
+    make_malcolm_tree "$ROOT"
+    # once the stack is extracted, the zip-root installer refuses ("already
+    # exists"); the stack carries scripts/install.py to reconfigure itself
+    cp "$ROOT/opt/malcolm/install.py" "$ROOT/opt/malcolm/malcolm/scripts/install.py"
+    run malcolm configure --bundle "$BUNDLE"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    grep -qx "install.py cwd $ROOT/opt/malcolm/malcolm" "$MALCOLM_STUB_LOG"
+    ! grep -qx "install.py cwd $ROOT/opt/malcolm" "$MALCOLM_STUB_LOG"
+    [[ "$output" == *"reconfiguring the extracted stack with its own installer"* ]]
 }
 
 @test "configure --capture-ifs FAILs, naming the key, when the installer's export dropped liveZeek (F5)" {
     make_malcolm_tree "$ROOT"
-    mkdir -p "$ROOT/sys/class/net/lab-mirror0"
+    mkdir -p "$ROOT/sys/class/net/lab_mirror0"
     stub ip 'exit 0'
-    MALCOLM_STUB_EXPORT_DROP=liveZeek run malcolm configure --bundle "$BUNDLE" --capture-ifs lab-mirror0
+    MALCOLM_STUB_EXPORT_DROP=liveZeek run malcolm configure --bundle "$BUNDLE" --capture-ifs lab_mirror0
     echo "$output"
     [ "$status" -eq 1 ]
     [[ "$output" == *"FAIL  the installer did not keep \"liveZeek\": true — live capture will not start; read $ROOT/opt/malcolm/malcolm-config.exported.json"* ]]
@@ -243,26 +288,26 @@ STUB
 
 @test "status reads live capture from the installer's export, and labels a rendered-only config unconfirmed (F5)" {
     make_malcolm_tree "$ROOT"
-    mkdir -p "$ROOT/sys/class/net/lab-mirror0"
+    mkdir -p "$ROOT/sys/class/net/lab_mirror0"
     stub ip 'exit 0'
-    run malcolm configure --bundle "$BUNDLE" --capture-ifs lab-mirror0
+    run malcolm configure --bundle "$BUNDLE" --capture-ifs lab_mirror0
     [ "$status" -eq 0 ]
     run malcolm status
     echo "$output"
-    [[ "$output" == *'live capture'*'on ["lab-mirror0"]'* ]]
+    [[ "$output" == *'live capture'*'on ["lab_mirror0"]'* ]]
     [[ "$output" != *"not yet confirmed"* ]]
     rm -f "$ROOT/opt/malcolm/malcolm-config.exported.json"
     run malcolm status
     echo "$output"
-    [[ "$output" == *'on ["lab-mirror0"] (rendered, not yet confirmed)'* ]]
+    [[ "$output" == *'on ["lab_mirror0"] (rendered, not yet confirmed)'* ]]
 }
 
 @test "configure refuses a capture interface that does not exist, pointing a lab-* name at labnet" {
     make_malcolm_tree "$ROOT"
-    run malcolm configure --bundle "$BUNDLE" --capture-ifs lab-mirror0
+    run malcolm configure --bundle "$BUNDLE" --capture-ifs lab_mirror0
     echo "$output"
     [ "$status" -eq 1 ]
-    [[ "$output" == *"capture interface lab-mirror0 does not exist"* ]]
+    [[ "$output" == *"capture interface lab_mirror0 does not exist"* ]]
     [[ "$output" == *"r770-gns3-deploy.sh labnet"* ]]
     ! grep -q -- '--configure' "$MALCOLM_STUB_LOG"
 }
@@ -280,11 +325,11 @@ STUB
 
 @test "configure refuses a repeated, empty or malformed --capture-ifs" {
     make_malcolm_tree "$ROOT"
-    mkdir -p "$ROOT/sys/class/net/lab-mirror0"
+    mkdir -p "$ROOT/sys/class/net/lab_mirror0"
     stub ip 'exit 0'
-    run malcolm configure --bundle "$BUNDLE" --capture-ifs "lab-mirror0 lab-mirror0"
+    run malcolm configure --bundle "$BUNDLE" --capture-ifs "lab_mirror0 lab_mirror0"
     [ "$status" -eq 1 ]
-    [[ "$output" == *"names lab-mirror0 twice"* ]]
+    [[ "$output" == *"names lab_mirror0 twice"* ]]
     run malcolm configure --bundle "$BUNDLE" --capture-ifs ""
     [ "$status" -eq 1 ]
     [[ "$output" == *"names no interface"* ]]
@@ -659,4 +704,67 @@ ipsec_ids() {  # every id the shipped template declares
     [[ "$output" == *"accepted via --yes"* ]]
     [[ "$output" == *"DEPLOYED WITH WARNINGS"* ]]
     [[ "$output" == *"steps: apt"* ]]
+}
+
+# ── Malcolm's control scripts refuse root (measured on staging) ─────────────
+
+@test "configure gives the stack to the user in config/process.env, whom Malcolm's scripts run as" {
+    make_malcolm_tree "$ROOT"
+    run malcolm configure --bundle "$BUNDLE"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    grep -q "^chown -R 1000:1000 $ROOT/opt/malcolm/malcolm$" "$STUB_LOG"
+    [[ "$output" == *"PASS  $ROOT/opt/malcolm/malcolm owned by labop (1000:1000, from config/process.env)"* ]]
+    # Malcolm writes its indexes and PCAP as that user too (start died on a
+    # root-owned /data/index on staging): the dirs the exported config names
+    grep -q "^chown -R 1000:1000 $ROOT/data/index$" "$STUB_LOG"
+    grep -q "^chown -R 1000:1000 $ROOT/data/pcap/raw$" "$STUB_LOG"
+    [ -d "$ROOT/data/pcap/raw" ]
+    [[ "$output" == *"PASS  data dirs owned by labop: /data/index /data/pcap/raw"* ]]
+}
+
+@test "configure refuses a stack whose recorded PUID is root" {
+    make_malcolm_tree "$ROOT"
+    printf 'PUID=0\nPGID=0\n' > "$ROOT/opt/malcolm/malcolm/config/process.env"
+    run malcolm configure --bundle "$BUNDLE"
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"PUID is 0"* ]]
+}
+
+@test "auth runs auth_setup as the stack's owner, never as root" {
+    make_malcolm_tree "$ROOT"
+    mkdir -p "$ROOT/etc/lab/secrets"; echo fixture-pw > "$ROOT/etc/lab/secrets/malcolm-admin.pw"
+    rm -f "$ROOT/opt/malcolm/malcolm/nginx/htpasswd"
+    run malcolm auth --bundle "$BUNDLE"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    grep -q '^runuser -u labop -- ./scripts/auth_setup --auth-noninteractive' "$STUB_LOG"
+}
+
+@test "start and stop run Malcolm's scripts as the stack's owner, and refuse an owner outside the docker group" {
+    make_malcolm_tree "$ROOT"
+    echo "analyst:hash" > "$ROOT/opt/malcolm/malcolm/nginx/htpasswd"
+    sed -i 's|0.0.0.0:443:443/tcp|127.0.0.1:8443:443/tcp|' "$ROOT/opt/malcolm/malcolm/docker-compose.yml"
+    run malcolm start
+    echo "$output"
+    grep -q '^runuser -u labop -- ./scripts/start' "$STUB_LOG"
+    run malcolm stop
+    grep -q '^runuser -u labop -- ./scripts/stop' "$STUB_LOG"
+    stub getent 'case "$1 $2" in "passwd 1000") echo "labop:x:1000:1000::/home/labop:/bin/bash";; "group docker") echo "docker:x:988:";; *) exit 2;; esac'
+    run malcolm start
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"labop is not in the docker group"* ]]
+}
+
+@test "configure refuses a capture interface whose name is not a shell identifier (Malcolm's pcap-capture exports it)" {
+    make_malcolm_tree "$ROOT"
+    mkdir -p "$ROOT/sys/class/net/lab-mirror0"
+    stub ip 'exit 0'
+    run malcolm configure --bundle "$BUNDLE" --capture-ifs lab-mirror0
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"lab-mirror0 cannot be a Malcolm capture interface"* ]]
+    ! grep -q -- '--configure' "$MALCOLM_STUB_LOG"
 }

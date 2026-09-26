@@ -160,7 +160,7 @@ PY
     ! grep -q fixture-pw "$STUB_LOG"
     [[ "$output" != *"fixture-pw"* ]]
     [[ "$output" != *"fixture-token"* ]]
-    grep -q 'POST /v3/access/users/login' "$FAKE_GNS3/requests.log"
+    grep -q 'POST /v3/access/users/authenticate' "$FAKE_GNS3/requests.log"
 }
 
 @test "an unknown or malformed scenario name is refused" {
@@ -310,9 +310,55 @@ PY
     run scenario up demo --bundle "$BUNDLE"
     echo "$output"
     [ "$status" -eq 0 ]
-    grep -q '^docker exec -i cid-a sh -c cat > /tmp/lab-frr.conf && { i=0; until vtysh -f /tmp/lab-frr.conf; do i=$((i+1)); \[ "$i" -ge 15 \] && exit 1; sleep 2; done; }$' "$STUB_LOG"
+    grep -q '^docker exec -i cid-a sh -c cat > /tmp/lab-frr.conf && { i=0; until wf=$(vtysh -c "show watchfrr" 2>/dev/null | grep "^  \[a-z\]") && ! printf "%s\\n" "$wf" | grep -qv " Up \*$" && vtysh -f /tmp/lab-frr.conf; do i=$((i+1)); \[ "$i" -ge 15 \] && exit 1; sleep 2; done; }$' "$STUB_LOG"
     grep -q '^docker exec -i cid-b sh -c mkdir -p /etc/swanctl && cat > /etc/swanctl/swanctl.conf && { i=0; until swanctl --load-all; do i=$((i+1)); \[ "$i" -ge 15 \] && exit 1; sleep 2; done; }$' "$STUB_LOG"
     grep -q 'hostname a' "$BATS_TEST_TMPDIR/stdin-cid-a"
+}
+
+frr_apply_cmd() {  # the frr.conf apply command up sent to cid-a, pointed at a scratch file
+    local cmd
+    cmd=$(sed -n "s/^docker exec -i cid-a sh -c //p" "$STUB_LOG" | grep vtysh)
+    printf '%s' "${cmd//\/tmp\/lab-frr.conf/$BATS_TEST_TMPDIR/lab-frr.conf}"
+}
+fake_vtysh() {  # fake_vtysh <polls-before-all-up> — watchfrr reports ospfd Down for that many polls
+    nb="$BATS_TEST_TMPDIR/node-bin"; mkdir -p "$nb"
+    cat > "$nb/vtysh" <<SH
+#!/bin/sh
+if [ "\$1" = -c ]; then
+    n=\$(cat "$BATS_TEST_TMPDIR/polls" 2>/dev/null || echo 0); n=\$((n + 1)); echo "\$n" > "$BATS_TEST_TMPDIR/polls"
+    [ "$1" -lt 0 ] && exit 1
+    printf 'watchfrr global phase: Idle\\n Restart Command: "x"\\n  zebra                Up\\n'
+    if [ "\$n" -le "$1" ]; then printf '  ospfd                Down\\n'; else printf '  ospfd                Up\\n'; fi
+    exit 0
+fi
+echo "applied after poll \$(cat "$BATS_TEST_TMPDIR/polls")" >> "$BATS_TEST_TMPDIR/applied.log"
+SH
+    printf '#!/bin/sh\nexit 0\n' > "$nb/sleep"
+    chmod +x "$nb"/*
+}
+
+@test "an FRR config is applied only once every daemon watchfrr manages is Up" {
+    printf 'hostname a\n' > "$SCENARIO_DIR/demo/nodes/a.frr.conf"
+    run scenario up demo --bundle "$BUNDLE"
+    [ "$status" -eq 0 ]
+    cmd=$(frr_apply_cmd); [ -n "$cmd" ]
+    fake_vtysh 2
+    run env PATH="$nb:$PATH" sh -c "$cmd" < "$SCENARIO_DIR/demo/nodes/a.frr.conf"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [ "$(cat "$BATS_TEST_TMPDIR/applied.log")" = "applied after poll 3" ]
+}
+
+@test "an FRR config is never applied while watchfrr cannot be reached, and the retry is bounded" {
+    printf 'hostname a\n' > "$SCENARIO_DIR/demo/nodes/a.frr.conf"
+    run scenario up demo --bundle "$BUNDLE"
+    [ "$status" -eq 0 ]
+    cmd=$(frr_apply_cmd); [ -n "$cmd" ]
+    fake_vtysh -1
+    run env PATH="$nb:$PATH" sh -c "$cmd" < "$SCENARIO_DIR/demo/nodes/a.frr.conf"
+    [ "$status" -ne 0 ]
+    [ "$(cat "$BATS_TEST_TMPDIR/polls")" = 15 ]
+    [ ! -e "$BATS_TEST_TMPDIR/applied.log" ]
 }
 
 @test "a node config apply stops at once when its file cannot be written, and never runs the loader" {

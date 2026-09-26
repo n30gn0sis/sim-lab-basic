@@ -79,7 +79,9 @@ gns3_login() {
     ( umask 077
       python3 -c 'import json, sys; print(json.dumps({"username": sys.argv[1], "password": open(sys.argv[2]).readline().strip()}))' \
           "$ADMIN_USER" "$(p "$SECRET")" > "$body" )
-    tok=$(curl -sS --max-time 10 --fail -X POST -H 'Content-Type: application/json' --data @"$body" http://127.0.0.1:3080/v3/access/users/login 2>/dev/null \
+    # /authenticate takes JSON; /login is OAuth2 and wants a form body (422 on
+    # JSON) -- measured on staging VM 9770 against the bundled gns3-server
+    tok=$(curl -sS --max-time 10 --fail -X POST -H 'Content-Type: application/json' --data @"$body" http://127.0.0.1:3080/v3/access/users/authenticate 2>/dev/null \
           | py 'print(d["access_token"])' 2>/dev/null) \
         || die "GNS3 refused the admin login — rerun r770-gns3-deploy.sh config, then restart the unit"
     rm -f "$body"
@@ -190,8 +192,10 @@ configure_nodes() {  # configure_nodes <scenario> — feed each node its files, 
             cid=$(container_of "$WORK/nodes.tsv" "$node") || exit 1
             case "$kind" in
                 sh)           run docker exec -i "$cid" sh -s < "$f" ;;
-                # write the file, and only then retry the apply (idempotent) for up to ~30s: the daemons may still be starting
-                frr.conf)     run docker exec -i "$cid" sh -c 'cat > /tmp/lab-frr.conf && { i=0; until vtysh -f /tmp/lab-frr.conf; do i=$((i+1)); [ "$i" -ge 15 ] && exit 1; sleep 2; done; }' < "$f" ;;
+                # write the file, and only then retry the apply (idempotent) for up to ~30s: the daemons may still be starting.
+                # vtysh -f exits 0 while skipping a daemon not yet connected (ospfd lost r3's config that way), so wait for
+                # watchfrr to report every daemon it manages Up before applying
+                frr.conf)     run docker exec -i "$cid" sh -c 'cat > /tmp/lab-frr.conf && { i=0; until wf=$(vtysh -c "show watchfrr" 2>/dev/null | grep "^  [a-z]") && ! printf "%s\n" "$wf" | grep -qv " Up *$" && vtysh -f /tmp/lab-frr.conf; do i=$((i+1)); [ "$i" -ge 15 ] && exit 1; sleep 2; done; }' < "$f" ;;
                 swanctl.conf) run docker exec -i "$cid" sh -c 'mkdir -p /etc/swanctl && cat > /etc/swanctl/swanctl.conf && { i=0; until swanctl --load-all; do i=$((i+1)); [ "$i" -ge 15 ] && exit 1; sleep 2; done; }' < "$f" ;;
             esac || die "configuring $node from $base failed — the nodes are left running for inspection; when done: r770-scenario.sh down $s"
             note "$node configured from $base"

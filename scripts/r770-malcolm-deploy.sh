@@ -46,7 +46,7 @@
 #                              for configure (and full). Each must exist and
 #                              carry no address: discovered names, never
 #                              guessed -- on staging, the lab mirror
-#                              lab-mirror0 (r770-gns3-deploy.sh labnet first).
+#                              lab_mirror0 (r770-gns3-deploy.sh labnet first).
 #                              Without it, live capture stays off.
 #   --yes / --non-interactive / --dry-run / --force   as everywhere in the kit
 #
@@ -90,7 +90,9 @@ IMPORT_BUNDLE_CMD="${IMPORT_BUNDLE_CMD:-$KIT_DIR/scripts/r770-import-bundle.sh}"
 
 usage() { usage_from_header 3; exit 0; }
 home()      { p "$MALCOLM_HOME"; }
-installer() { printf '%s/scripts/install.py' "$(home)"; }
+# The docker_install.zip puts install.py at its root, beside the stack tarball
+# (measured on staging VM 9770, 2026-09-25) -- not under scripts/.
+installer() { printf '%s/install.py' "$(home)"; }
 stack()     { printf '%s/malcolm' "$(home)"; }
 compose()   { printf '%s/docker-compose.yml' "$(stack)"; }
 local_bundle() {  # after copy, the bundle lives under /srv/bundles
@@ -146,11 +148,15 @@ capture_json() {
     read -ra ifs <<< "$CAPTURE_IFS"
     for i in "${ifs[@]}"; do
         [[ "$i" =~ ^[A-Za-z0-9._-]{1,15}$ ]] || die "--capture-ifs: '$i' is not an interface name"
+        # Malcolm's pcap-capture runs `export $IFACE` for each capture interface,
+        # so the name must be a shell identifier; netsniff dies at start on
+        # anything else (measured on staging VM 9770, 2026-09-25).
+        [[ "$i" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || die "$i cannot be a Malcolm capture interface — its pcap-capture container uses each name as a shell variable, so only letters, digits and _ work (no - or .)"
         case "$seen" in *" $i "*) die "--capture-ifs names $i twice" ;; esac
         seen="$seen$i "
         if [ ! -e "$(p /sys/class/net)/$i" ]; then
             case "$i" in
-                lab-*) die "capture interface $i does not exist — create the lab network first: r770-gns3-deploy.sh labnet" ;;
+                lab_*) die "capture interface $i does not exist — create the lab network first: r770-gns3-deploy.sh labnet" ;;
                 *)     die "capture interface $i does not exist — capture interfaces come from discovery (ip -br link), never guessed" ;;
             esac
         fi
@@ -178,18 +184,30 @@ live_kept() {
         fail "the installer wrote no exported config at $x — live capture is unconfirmed; read its output above"
         return 0
     fi
-    for k in captureLiveNetworkTraffic liveArkime liveZeek; do
+    for k in captureLiveNetworkTraffic liveZeek; do
         grep -qE "\"$k\"[[:space:]]*:[[:space:]]*true" "$x" && continue
         fail "the installer did not keep \"$k\": true — live capture will not start; read $x"
         missing=1
     done
+    # Arkime gets live packets either by capturing itself (liveArkime) or from
+    # the PCAP a capture container writes (netsniff or tcpdump). The installer
+    # picks: asked for liveArkime it kept netsniff instead (measured on staging
+    # VM 9770, 2026-09-25). Any one path is enough; none means Arkime is blind.
+    local via=""
+    for k in liveArkime pcapNetSniff pcapTcpDump; do
+        grep -qE "\"$k\"[[:space:]]*:[[:space:]]*true" "$x" && via="${via:+$via, }$k"
+    done
+    if [ -z "$via" ]; then
+        fail "the installer kept no capture path into Arkime (liveArkime, pcapNetSniff, pcapTcpDump all off) — live packets will not reach Arkime; read $x"
+        missing=1
+    fi
     lst=$(pcap_ifaces_of "$x")
     for i in "$@"; do
         [[ "$lst" == *"\"$i\""* ]] && continue
         fail "the installer did not keep \"pcapIface\" with $i — live capture will not start on it; read $x"
         missing=1
     done
-    [ "$missing" -eq 1 ] || pass "the installer kept live capture on $* (captureLiveNetworkTraffic, liveArkime, liveZeek, pcapIface)"
+    [ "$missing" -eq 1 ] || pass "the installer kept live capture on $* (Zeek live; Arkime via $via)"
 }
 malcolm_version_from_zip() {  # numeric components lose their leading zeros, as the installer's own export writes them
     local name=$1 v part out=""
@@ -215,11 +233,20 @@ heap_sizes() {  # prints "<os-g> <ls-m>" from the host's memory, unless overridd
 cmd_configure() {
     banner "configure — replay the kit's config through the installer"
     need_root
-    local b zip ver os ls rendered exported manage free ifaces live
+    local b zip ver os ls rendered exported manage free ifaces live cdir cinst
     b=$(bundle_dir "$BUNDLE") || exit 1
     [ -f "$(installer)" ] || die "$(installer) not found — run unpack first"
     require_pkg python3-ruamel.yaml python3-dotenv
-    help_has_flags python3 "$(installer)" -- "${INSTALL_FLAGS[@]}"
+    # The zip-root installer extracts the stack and refuses once it exists
+    # ("already exists, please specify a different installation path"); the
+    # extracted stack carries its own scripts/install.py to reconfigure itself.
+    # Each runs from its own directory (both measured on staging VM 9770).
+    cdir=$(home); cinst=$(installer)
+    if [ -f "$(stack)/scripts/install.py" ]; then
+        cdir=$(stack); cinst="$(stack)/scripts/install.py"
+        note "reconfiguring the extracted stack with its own installer ($cinst)"
+    fi
+    help_has_flags python3 "$cinst" -- "${INSTALL_FLAGS[@]}"
     zip=$(glob_one "$b/malcolm" 'malcolm-*-docker_install.zip') || exit 1
     ver=$(malcolm_version_from_zip "$(basename "$zip")")
     read -r os ls <<< "$(heap_sizes)"
@@ -236,9 +263,12 @@ cmd_configure() {
     render "$KIT_CONFIG_DIR/malcolm/malcolm-config.json.template" "$rendered" \
         "PCAP_NODE_NAME=$(hostname -s)" "OS_MEMORY=${os}g" "LS_MEMORY=${ls}m" \
         "ARKIME_MANAGE_PCAP=$manage" "ARKIME_FREE_SPACE_G=$free" "MALCOLM_VER=$ver" \
-        "PCAP_IFACE=$ifaces" "CAPTURE_LIVE=$live" "LIVE_ARKIME=$live" "LIVE_ZEEK=$live"
-    run python3 "$(installer)" --non-interactive --skip-splash --configure \
-        --import-malcolm-config-file "$rendered" --export-malcolm-config-file "$exported" \
+        "PCAP_IFACE=$ifaces" "CAPTURE_LIVE=$live" "LIVE_ARKIME=$live" "LIVE_ZEEK=$live" "CAPTURE_STATS=$live"
+    # From its own directory: the zip-root installer looks for the stack
+    # tarball in its working directory, and anywhere else fails on missing
+    # .env.example templates (measured on staging VM 9770, 2026-09-25).
+    ( cd "$cdir" && run python3 "$cinst" --non-interactive --skip-splash --configure \
+        --import-malcolm-config-file "$rendered" --export-malcolm-config-file "$exported" ) \
         || die "the installer failed — its output above is the evidence; nothing else was changed"
     if [ "$DRY" != "1" ]; then
         [ -f "$(compose)" ] || die "the installer did not produce $(compose) — read its output"
@@ -249,6 +279,7 @@ cmd_configure() {
         fi
     fi
     do_rebind
+    own_stack
     footer "configure"
 }
 
@@ -258,7 +289,7 @@ cmd_secrets() { banner "secrets"; need_root; secret_file "$(p "$SECRET")"; pass 
 cmd_auth() {
     banner "auth — Malcolm's auth_setup, unattended"
     need_root
-    local b setup pw h_ssl h_ht img
+    local b setup pw h_ssl h_ht img user
     b=$(bundle_dir "$BUNDLE") || exit 1
     setup="$(stack)/scripts/auth_setup"
     [ -x "$setup" ] || die "$setup not found — run configure first (the installer extracts the stack)"
@@ -282,8 +313,9 @@ cmd_auth() {
     h_ht=$(docker run --rm --network none -e PW="$pw" --entrypoint sh "$img" \
              -c 'htpasswd -bnBC 10 "" "$PW"' | tr -d ':\n') || die "htpasswd via $img failed — are the Malcolm images loaded?"
     [ -n "$h_ht" ] || die "empty bcrypt hash from $img"
-    echo "+ (cd $(stack) && ./scripts/auth_setup --auth-noninteractive --auth-method basic --auth-admin-username $ADMIN_USER --auth-admin-password-openssl <hash> --auth-admin-password-htpasswd <hash> --auth-generate-...)"
-    ( cd "$(stack)" && ./scripts/auth_setup --auth-noninteractive --auth-method basic \
+    user=$(malcolm_owner) || exit 1; user=${user%% *}
+    echo "+ (cd $(stack) && runuser -u $user -- ./scripts/auth_setup --auth-noninteractive --auth-method basic --auth-admin-username $ADMIN_USER --auth-admin-password-openssl <hash> --auth-admin-password-htpasswd <hash> --auth-generate-...)"
+    ( cd "$(stack)" && runuser -u "$user" -- ./scripts/auth_setup --auth-noninteractive --auth-method basic \
         --auth-admin-username "$ADMIN_USER" \
         --auth-admin-password-openssl "$h_ssl" --auth-admin-password-htpasswd "$h_ht" \
         --auth-generate-webcerts --auth-generate-fwcerts \
@@ -296,6 +328,56 @@ cmd_auth() {
         fail "auth_setup returned success but $(stack)/nginx/htpasswd is absent — compose will refuse to start"
     fi
     footer "auth"
+}
+
+# ── the stack's owner ────────────────────────────────────────────────────────
+# Malcolm's control scripts (auth_setup, start, stop) refuse root. They run as
+# the user the installer recorded in config/process.env (PUID/PGID, the sudo
+# user it ran under), who must own the stack -- which the installer, run as
+# root, leaves root-owned. Both measured on staging VM 9770, 2026-09-25.
+# Discovered from the stack, never guessed.
+malcolm_owner() {  # prints "<user> <uid> <gid>", or dies
+    local env uid gid user
+    env="$(stack)/config/process.env"
+    [ -f "$env" ] || die "$env not found — run configure first"
+    uid=$(sed -n 's/^PUID=//p' "$env" | head -1); gid=$(sed -n 's/^PGID=//p' "$env" | head -1)
+    if ! [[ "$uid" =~ ^[0-9]+$ ]] || ! [[ "$gid" =~ ^[0-9]+$ ]]; then die "no numeric PUID/PGID in $env"; fi
+    [ "$uid" -ne 0 ] || die "PUID is 0 in $env — Malcolm's control scripts refuse root; run configure with sudo from the operator's own account"
+    user=$(getent passwd "$uid" | cut -d: -f1)
+    [ -n "$user" ] || die "PUID $uid in $env is not a user on this host"
+    printf '%s %s %s' "$user" "$uid" "$gid"
+}
+own_stack() {  # give the stack to its recorded owner (after every installer run and rebind)
+    local o user uid gid
+    if [ "$DRY" = "1" ] && [ ! -f "$(stack)/config/process.env" ]; then
+        echo "DRY-RUN: chown -R <PUID>:<PGID from config/process.env> $(stack)"; return 0
+    fi
+    o=$(malcolm_owner) || exit 1
+    read -r user uid gid <<< "$o"
+    run chown -R "$uid:$gid" "$(stack)" || die "could not give $(stack) to $user"
+    [ "$DRY" = "1" ] || pass "$(stack) owned by $user ($uid:$gid, from config/process.env) — Malcolm's control scripts run as this user"
+    # Malcolm writes its indexes and PCAP as that user too, and those live on
+    # root-owned mount points (Phase 3). The directories are the ones the
+    # installer's exported config names -- read back, never restated.
+    local x k d dirs=""
+    x="$(home)/malcolm-config.exported.json"
+    [ -f "$x" ] || return 0
+    for k in indexDir pcapDir; do
+        d=$(sed -n "s/.*\"$k\"[[:space:]]*:[[:space:]]*\"\(\/[^\"]*\)\".*/\1/p" "$x" | head -1)
+        [ -n "$d" ] || continue
+        run mkdir -p "$(p "$d")" || die "could not create $d"
+        run chown -R "$uid:$gid" "$(p "$d")" || die "could not give $d to $user"
+        dirs="$dirs $d"
+    done
+    [ "$DRY" = "1" ] || [ -z "$dirs" ] || pass "data dirs owned by $user:$dirs"
+}
+owner_for_docker() {  # the owner's name, once it is known to reach docker
+    local o user
+    o=$(malcolm_owner) || exit 1
+    user=${o%% *}
+    getent group docker | cut -d: -f4 | tr ',' '\n' | grep -qx "$user" \
+        || die "$user is not in the docker group — Malcolm's scripts run as $user and drive docker compose (usermod -aG docker $user, then log in again)"
+    printf '%s' "$user"
 }
 
 # ── rebind ───────────────────────────────────────────────────────────────────
@@ -315,7 +397,7 @@ do_rebind() {
     [ "$(grep -cF -- "$REBIND_TO" "$c")" -eq 1 ] || die "rebind edit did not take in $c"
     pass "nginx-proxy publish rewritten: 0.0.0.0:443 -> 127.0.0.1:8443 (the front door owns 443)"
 }
-cmd_rebind() { banner "rebind"; need_root; do_rebind; footer "rebind"; }
+cmd_rebind() { banner "rebind"; need_root; do_rebind; own_stack; footer "rebind"; }
 
 # ── start / stop / status ────────────────────────────────────────────────────
 cmd_start() {
@@ -325,7 +407,8 @@ cmd_start() {
     [ -x "$s" ] || die "$s not found — run configure first"
     [ -s "$(stack)/nginx/htpasswd" ] || die "no auth material — run auth first (compose would refuse: bind sources missing)"
     grep -qE -- "$REBIND_FROM" "$(compose)" && die "compose still publishes 0.0.0.0:443 — run rebind first (it must follow every installer run)"
-    run bash -c "cd '$(stack)' && ./scripts/start" || die "Malcolm's start script failed — see above"
+    local user; user=$(owner_for_docker) || exit 1
+    ( cd "$(stack)" && run runuser -u "$user" -- ./scripts/start ) || die "Malcolm's start script failed — see above"
     [ "$DRY" = "1" ] && footer "start"
 
     local waited=0 step=15 out notready total
@@ -358,7 +441,8 @@ cmd_stop() {
     banner "stop"; need_root
     local s; s="$(stack)/scripts/stop"
     [ -x "$s" ] || die "$s not found"
-    if run bash -c "cd '$(stack)' && ./scripts/stop"; then pass "stopped"; else fail "stop script failed"; fi
+    local user; user=$(owner_for_docker) || exit 1
+    if ( cd "$(stack)" && run runuser -u "$user" -- ./scripts/stop ); then pass "stopped"; else fail "stop script failed"; fi
     footer "stop"
 }
 cmd_status() {

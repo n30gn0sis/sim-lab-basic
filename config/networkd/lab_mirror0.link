@@ -1,9 +1,9 @@
 # Offloads off on the capture end, so Malcolm sees frames as the lab sent
 # them rather than merged into super-frames. A .link file is applied by udev
 # when the link is created; r770-gns3-deploy.sh labnet also runs ethtool -K
-# on an existing link. Installed as /etc/systemd/network/05-lab-mirror0.link.
+# on an existing link. Installed as /etc/systemd/network/05-lab_mirror0.link.
 [Match]
-OriginalName=lab-mirror0
+OriginalName=lab_mirror0
 
 [Link]
 TCPSegmentationOffload=no
