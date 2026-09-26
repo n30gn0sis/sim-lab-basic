@@ -21,6 +21,35 @@ lint() { run python3 tests/helpers/lint_scenarios.py "$1"; echo "$output"; [ "$s
 @test "every address a scenario names lies in its own range" { lint addresses; }
 @test "every expect.txt line is proto|port|src|dst inside the scenario's range" { lint expect; }
 
+@test "every BGP neighbor keeps alive at 10s or less, so any traffic window carries the session" {
+    # the session comes up during `up`, before any capture starts; at FRR's 60s default a
+    # traffic window can hold no BGP packet at all, and expect.txt's tcp/179 row would miss
+    for f in scenarios/*/nodes/*.frr.conf; do
+        awk -v f="$f" '
+            $1 == "neighbor" && $3 == "remote-as" { peer[$2] = 1 }
+            $1 == "neighbor" && $3 == "timers" && $4 ~ /^[0-9]+$/ && $4 <= 10 { fast[$2] = 1 }
+            END { for (p in peer) if (!(p in fast)) { print f ": neighbor " p " has no timers <=10s"; bad = 1 }; exit bad }
+        ' "$f"
+    done
+}
+
+@test "every iperf3 client is rate-capped, so the mirror's capture keeps every packet" {
+    # uncapped, iperf3 floods br-lab at line rate and the capture side drops packets —
+    # including the control-plane ones (BGP, OSPF) each expect.txt promises
+    run grep -nE 'iperf3 -c' scenarios/*/traffic.sh
+    [ "${#lines[@]}" -ge 1 ]
+    for l in "${lines[@]}"; do [[ "$l" == *" -b "[0-9]*M* ]] || { echo "uncapped: $l"; false; }; done
+}
+
+@test "ipsec-ike's traffic starts by tearing the IKE SA down, so the window carries a fresh IKE_SA_INIT" {
+    # up's ready ping negotiates IKE before any capture starts, and a rekey or reauth stays on
+    # 4500 — only a fresh IKE_SA_INIT (the trap re-initiating on cl-a's ping) crosses udp/500
+    grep -qx 'traffic_nodes=gw-a cl-b cl-a' scenarios/ipsec-ike/scenario.conf
+    grep -qE '^ *gw-a\) swanctl --terminate --ike lab' scenarios/ipsec-ike/traffic.sh
+    grep -qx 'udp|500|10.202.0.1/32|10.202.0.2/32' scenarios/ipsec-ike/expect.txt
+    grep -qx 'udp|4500|10.202.0.1/32|10.202.0.2/32' scenarios/ipsec-ike/expect.txt
+}
+
 @test "every traffic.sh and node script is shellcheck-clean as POSIX sh" {
     run shellcheck -s sh scenarios/*/traffic.sh scenarios/*/nodes/*.sh
     echo "$output"
