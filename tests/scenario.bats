@@ -554,17 +554,21 @@ arkime_stub() {
     printf 'tcp|80|10.209.0.1/32|10.209.0.2/32\n' >> "$SCENARIO_DIR/demo/expect.txt"
     stub curl "$(cat <<'EOF'
 echo "curl $*" >> "$STUB_LOG"
-T="$BATS_TEST_TMPDIR"; ex=""; url=""
+T="$BATS_TEST_TMPDIR"; ex=""; url=""; fail=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --data-urlencode) case "$2" in expression=*) ex=${2#expression=} ;; esac; shift ;;
+    --fail) fail=1 ;;
     https://*) url=$1 ;;
   esac
   shift
 done
 [ -e "$T/arkime-down" ] && exit 7
 case "$url" in
-  */arkime/api/user/views) echo '[]' ;;
+  # measured on Malcolm's Arkime (staging VM): the pre-5 views path is a
+  # catch-all 404 "Old API"; /api/user answers the logged-in user
+  */arkime/api/user/views) printf 'Old API'; [ "$fail" = 1 ] && exit 22 ;;
+  */arkime/api/user) echo '{"enabled":true}' ;;
   */arkime/api/sessions)
     [ -e "$T/arkime-html" ] && { printf '<!DOCTYPE html>\n401'; exit 0; }
     k=$(printf '%s' "$ex" | sha256sum | cut -c1-16)
@@ -671,6 +675,19 @@ run_record() {  # run_record <scenario> [<suffix>] [no-end] — a run record in 
     echo "$output"
     [ "$status" -eq 0 ]
     [[ "$output" == *"run record: $done_rec"* ]]
+}
+
+@test "check probes Arkime at /api/user, so an Arkime that answers the pre-5 /api/user/views with 404 is still checked" {
+    arkime_stub; run_record demo >/dev/null
+    count "$ROW1" 3; count "$ROW2" 7
+    run scenario check demo
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"SKIP"* ]]
+    [[ "$output" == *"PASS  demo row 2"* ]]
+    grep -qE -- 'https://127\.0\.0\.1:8443/arkime/api/user( |$)' "$STUB_LOG"
+    run grep -c 'api/user/views' "$STUB_LOG"
+    [ "$output" = 0 ]
 }
 
 @test "check sends the Malcolm credential through a netrc, never argv or the transcript" {

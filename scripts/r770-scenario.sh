@@ -400,7 +400,7 @@ cmd_check() {
         footer "check"
     fi
     osd_auth_file
-    if ! arkime_api GET "/api/user/views" --fail >/dev/null 2>&1; then
+    if ! arkime_api GET "/api/user" --fail >/dev/null 2>&1; then
         skip "Arkime did not answer on 127.0.0.1:8443 — start Malcolm (r770-malcolm-deploy.sh start)"
         footer "check"
     fi
