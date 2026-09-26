@@ -122,11 +122,13 @@ is asserted against those tools' `--help` before use.
   not starting with `tap` as an ethernet interface with a raw socket, whose
   frames an unheld TAP drops); everything on `br-lab` reaches Malcolm. `docs/wiki/` is build-repo content
   and is edited there.
-- **strongSwan image (to add in the build repo).** `scenarios/ipsec-ike` needs
-  a strongSwan image in `GNS3_NODE_IMAGES` (the pin block in
-  `staging/r770-offline-fetch.sh`, edited in the build repo and resynced).
-  Until a bundle carries it, `r770-scenario.sh up ipsec-ike` refuses by name.
-  The image must start charon by itself and carry `swanctl` and `iproute2`.
+- **strongSwan image and ubridge (added in the build repo, to resync).**
+  `simlab-build` PR #11 adds a strongSwan image to `GNS3_NODE_IMAGES` and
+  fetches `ubridge` from GNS3's PPA into the APT set; once it merges, resync
+  `staging/` from it. Until a bundle carries the image,
+  `r770-scenario.sh up ipsec-ike` refuses by name. The image does not start
+  charon by itself, so the scenario's gateway scripts start
+  `/usr/libexec/ipsec/charon`; it carries `swanctl` and `iproute2`.
 - **Wiki scenarios section (to carry to the build repo).** `docs/wiki/gns3.md`
   can gain a "Scenario pack" section pointing analysts at
   `r770-scenario.sh list|up|traffic|down`.

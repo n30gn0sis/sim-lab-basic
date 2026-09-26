@@ -155,6 +155,14 @@ proxy. There is no registry to reach.
 
 - [ ] Disposition: every package the lab needs is in the curated set (an unplanned `apt install` will fail by design until the next bundle)
 
+`apt` points APT at the local repo; it installs nothing. The packages later
+steps need — `python3-venv` and `python3-pip-whl` (GNS3 `venv`),
+`python3-ruamel.yaml` and `python3-dotenv` (Malcolm `unpack`/`configure`),
+`ubridge` (GNS3 `service`), `easy-rsa` and `nginx` (front door) — are
+installed from that repo by the build repo's base-OS phase, and each step
+refuses by name when its package is absent. The 2026-09-26 staging rehearsal
+installed them by hand from `/srv/repo/apt` to stand in for that phase.
+
 ### Step M7 — files
 
 ```bash
@@ -211,8 +219,18 @@ surprise. The template pins PCAP to `/data/pcap/raw` and indexes to
 Zeek feed pulls off. `--arkime-free-space-g N` turns on oldest-first deletion
 of raw PCAP below N GB free; Phase 10 sets that from measured feed rates, so
 the default is off. `--capture-ifs "<if ...>"` turns on live Arkime and Zeek
-capture on those interfaces (each must exist and carry no address); without
-it live capture stays off. `rebind` is re-applied after every installer run
+capture on those interfaces (each must exist, carry no address, and be a
+shell identifier — Malcolm's `pcap-capture` exports each name as a variable,
+so `lab-mirror0` would crash it), together with Zeek's `capture_loss.log`
+that `--area capture` reads; without it live capture stays off. The
+installer keeps live Arkime as netsniff (`pcapNetSniff`), which `configure`
+accepts. The first `configure` runs the zip's `install.py` from
+`/opt/malcolm`; once the stack exists it runs the installer inside the
+stack (`/opt/malcolm/malcolm/scripts/install.py`). Malcolm's control scripts refuse root, so `auth`,
+`start` and `stop` run as the stack's owner — the `PUID`/`PGID` in
+`/opt/malcolm/malcolm/config/process.env`, which must not be root and must be in the `docker`
+group — and `configure`/`rebind` give that user the stack and the configured
+index and PCAP directories. `rebind` is re-applied after every installer run
 because a compose override file is ignored. `start` refuses before `auth` and
 before `rebind`. Arkime and logstash are the last to go healthy; `start` waits up to
 `MALCOLM_WAIT_SECS` and can be rerun to keep waiting.
@@ -300,8 +318,14 @@ sudo ./scripts/r770-gns3-deploy.sh service                # unit; asserts 127.0.
 `venv` refuses without `python3-venv` (the rehearsal's venv came up with no
 pip) and refuses while a pip index is configured. `config` chowns `/etc/gns3`
 to the service user because GNS3 v3 writes its database and JWT key beside its
-config — root-owned, it fails with "unable to open database file". `service`
-FAILs if the server listens on anything but loopback.
+config — root-owned, it fails with "unable to open database file" — and puts
+it in the `kvm`, `docker` and `ubridge` groups. `service` refuses without
+`ubridge` (GNS3 wires every node link through it; without it a project opens
+with 409 "uBridge is not available"), whose binary is `root:ubridge 0754`
+with `cap_net_admin,cap_net_raw` — hence the group. `service` FAILs if the
+server listens on anything but loopback. The kit logs in through
+`/v3/access/users/authenticate` (JSON); `/v3/access/users/login` is the
+OAuth2 form endpoint and answers JSON with 422.
 
 ### Step G10 — labnet  *(GATED)*
 
@@ -318,9 +342,9 @@ Ethernet tab** — in a project file, the Cloud's `ports_mapping` entry has
 `"type": "tap"` and `"interface": "lab-tapN"`. gns3-server types an interface
 as a TAP only when its name starts with `tap`; bound from the Ethernet tab,
 `lab-tapN` is opened with a raw packet socket, and a TAP that no process holds
-open drops those frames, so nothing reaches `br-lab`. (That behaviour was read
-from gns3-server's master branch; the staging rehearsal confirms it against
-the bundled GNS3 before this procedure is relied on.)
+open drops those frames, so nothing reaches `br-lab`. (Read from
+gns3-server's source; the 2026-09-26 staging rehearsal confirmed TAP-tab
+Clouds carrying every scenario's traffic onto `lab_mirror0`.)
 
 The step installs `/etc/systemd/network/05-*lab*` files (the bridge with
 MAC learning and multicast snooping off, the veth, the TAPs, and
@@ -387,18 +411,27 @@ transcript. `ipsec-ike` refuses until a bundle carries a strongSwan image.
 Each scenario owns one /16 (`client-server` 10.205, `ipsec-esp` 10.201,
 `ipsec-ike` 10.202, `ospf` 10.203, `bgp` 10.204), so two can share the hub.
 
-What only the staging rehearsal proves — check each once on VM 9770.
-First, the images themselves:
-`docker run --rm --network none <alpine ref> sh -c 'command -v nc'` prints a
-path (`client-server`'s server is a busybox `nc` loop — stock alpine has no
-`httpd`), and `docker image ls --format '{{.Repository}}:{{.Tag}}'` shows how
-names display (short, like `alpine:latest`, or as the list writes them; the
-kit normalises either form). Then:
-the admin login and the project import answer as the kit expects; a Cloud
-bound through the TAP tab brings `lab-tapN` to carrier; GNS3's docker nodes
-allow `ip addr`, `sysctl` and `ip xfrm`; the FRR nodes' `ospfd`/`bgpd` start
-(`vtysh -c 'show ip ospf neighbor'`, `show bgp summary`); with Malcolm's live
-capture on, a run's window shows up in Arkime from the scenario's range.
+A scenario's `expect.txt` lists the flows a run's window must show on the
+mirror, and the pack is built so that every window does:
+- FRR config is applied only once `vtysh -c 'show watchfrr'` reports every
+  daemon Up — `vtysh -f` exits 0 while silently skipping a daemon still
+  starting, which on staging left one router with no `router ospf`;
+- BGP neighbours keep alive every 5 s (`timers 5 15`): the session comes up
+  during `up`, and at FRR's 60 s default a window can hold no `tcp/179`;
+- `ipsec-ike`'s traffic first tears the IKE SA down on `gw-a`, so `cl-a`'s
+  ping makes the trap renegotiate inside the window — IKE_SA_INIT on
+  `udp/500`, then IKE_AUTH on `udp/4500` (strongSwan floats to 4500, and a
+  rekey never touches 500);
+- every `iperf3` client is capped at 50 Mbit/s: uncapped, it floods `br-lab`
+  and the capture side drops packets, control plane included.
+
+The 2026-09-26 staging rehearsal (VM 9770, air gap blocked, bundle
+`bundle-20260925`) ran all five: `up`, `traffic` and `down` PASS; every
+`expect.txt` row seen on `lab_mirror0` with 0 kernel drops; `ipsec-esp` and
+`ipsec-ike` showed no cleartext from the client ranges; Zeek's `conn.log`
+carried each scenario (`http`, `ospf`, BGP on 179, `spicy_ipsec_ike_udp` and
+`spicy_ipsec_udp` for IKE), and Arkime indexed `client-server`'s run as
+sessions from 10.205.0.10.
 
 ---
 
