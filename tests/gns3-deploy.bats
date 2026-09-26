@@ -585,6 +585,45 @@ labnet_user() { stub getent 'case "$1 $2" in "passwd gns3") exit 0;; *) exit 1;;
     grep -q '^networkctl reload' "$STUB_LOG"
 }
 
+@test "labnet migrates a box set up before the rename: old mirror files removed, the old veth deleted before the reload" {
+    stub_labnet_host; labnet_user
+    run gns3 labnet
+    [ "$status" -eq 0 ]
+    d=$(NETD_DIR)
+    # what the pre-rename labnet left behind: its mirror files, and the veth pair lab-mon0 <-> lab-mirror0
+    printf '[Match]\nName=lab-mirror0\n' > "$d/05-lab-mirror0.network"
+    printf '[Match]\nOriginalName=lab-mirror0\n' > "$d/05-lab-mirror0.link"
+    mkdir -p "$ROOT/sys/class/net/lab-mirror0"
+    : > "$STUB_LOG"
+    run gns3 labnet
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"== GATE"* ]]
+    [[ "$output" == *"remove /etc/systemd/network/05-lab-mirror0.network"* ]]
+    [[ "$output" == *"remove /etc/systemd/network/05-lab-mirror0.link"* ]]
+    [[ "$output" == *"ip link del lab-mon0"* ]]
+    [ ! -e "$d/05-lab-mirror0.network" ]; [ ! -e "$d/05-lab-mirror0.link" ]
+    [ -e "$d/05-lab_mirror0.network" ]
+    del=$(grep -n '^ip link del lab-mon0' "$STUB_LOG" | cut -d: -f1)
+    rel=$(grep -n '^networkctl reload' "$STUB_LOG" | cut -d: -f1)
+    [ -n "$del" ] && [ -n "$rel" ] && [ "$del" -lt "$rel" ]
+}
+
+@test "labnet migrates a lingering old veth even when its files are already current" {
+    stub_labnet_host; labnet_user
+    run gns3 labnet
+    [ "$status" -eq 0 ]
+    mkdir -p "$ROOT/sys/class/net/lab-mirror0"
+    : > "$STUB_LOG"
+    run gns3 labnet
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"== GATE"* ]]
+    del=$(grep -n '^ip link del lab-mon0' "$STUB_LOG" | cut -d: -f1)
+    rel=$(grep -n '^networkctl reload' "$STUB_LOG" | cut -d: -f1)
+    [ -n "$del" ] && [ -n "$rel" ] && [ "$del" -lt "$rel" ]
+}
+
 @test "labnet removes the files and TAPs a smaller GNS3_LAB_TAPS no longer declares, through the gate (F12)" {
     stub_labnet_host; labnet_user
     run gns3 labnet

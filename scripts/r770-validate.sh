@@ -240,10 +240,14 @@ area_wan() {
 # ── capture ──────────────────────────────────────────────────────────────────
 area_capture() {
     AREA=capture
-    # the newest log, spooled or rotated (.log.gz); one row per worker, so the worst one is the verdict
+    # the newest log, spooled or rotated (.log.gz); one row per worker per interval
     local zl; zl=$(find "$(p "$MALCOLM_HOME")/malcolm/zeek-logs" \( -name 'capture_loss*.log' -o -name 'capture_loss*.log.gz' \) -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
     if [ -n "$zl" ]; then
-        local pct; pct=$(zcat -f "$zl" 2>/dev/null | awk -F'\t' '!/^#/ && NF { if (m == "" || $NF + 0 > m + 0) m = $NF } END { print m }')
+        # the latest reporting interval only: its worker rows share a ts to within microseconds,
+        # so keep the rows within half an interval (ts_delta) of the newest ts; the worst of them is the verdict
+        local pct; pct=$(zcat -f "$zl" 2>/dev/null | awk -F'\t' '
+            !/^#/ && NF { n++; ts[n] = $1 + 0; d[n] = $2 + 0; p[n] = $NF; if (ts[n] > top) { top = ts[n]; half = d[n] / 2 } }
+            END { for (i = 1; i <= n; i++) if (ts[i] >= top - half && (m == "" || p[i] + 0 > m + 0)) m = p[i]; print m }')
         if [ -n "$pct" ] && awk -v p="$pct" 'BEGIN{exit !(p < 0.5)}'; then row "zeek capture_loss" "< 0.5 %" "$pct" PASS "$zl"; elif [ -n "$pct" ]; then row "zeek capture_loss" "< 0.5 %" "$pct" FAIL "$zl"; diag "zeek capture_loss" "Zeek reports loss — check ethtool -S drop deltas on the feed and Arkime's own stats before touching tuning"; else row "zeek capture_loss" "< 0.5 %" "no data rows yet" WARN "$zl"; fi
     elif grep -qx 'ZEEK_DISABLE_STATS=true' "$(p "$MALCOLM_HOME")/malcolm/config/zeek-live.env" 2>/dev/null; then
         row "zeek capture_loss" "< 0.5 %" "stats off (ZEEK_DISABLE_STATS=true in config/zeek-live.env)" SKIP "r770-malcolm-deploy.sh configure --capture-ifs ... turns them on"
