@@ -218,6 +218,8 @@ cmd_status() {
 # leaves netplan and every existing interface alone. The names are the kit's
 # own: it creates them, it never picks one.
 LABNET_STALE=()   # installed 05-lab-tap<i>.* files with i >= LAB_TAPS
+LABNET_LEGACY=()  # mirror files a pre-rename labnet installed (the capture end was lab-mirror0)
+LEGACY_MIRROR=lab-mirror0   # the capture end's old name: Malcolm's pcap-capture cannot take a '-'
 lab_names() {  # every interface name this step owns, one per line
     local i
     printf '%s\n' br-lab lab-mon0 lab_mirror0
@@ -253,6 +255,18 @@ labnet_find_stale() {  # labnet_find_stale <netd> — fill LABNET_STALE: TAP fil
         [ "$i" -ge "$LAB_TAPS" ] && LABNET_STALE+=("${f##*/}")
     done
 }
+# labnet_find_legacy <netd> — fill LABNET_LEGACY. networkd never recreates an
+# existing netdev on reload, so a box set up before the rename keeps the pair
+# lab-mon0 <-> lab-mirror0 until that pair is deleted (measured on VM 9770).
+labnet_find_legacy() {
+    local f
+    LABNET_LEGACY=()
+    for f in "$1/05-$LEGACY_MIRROR.network" "$1/05-$LEGACY_MIRROR.link"; do
+        [ -e "$f" ] && LABNET_LEGACY+=("${f##*/}")
+    done
+    return 0
+}
+legacy_veth() { [ -e "$(p /sys/class/net)/$LEGACY_MIRROR" ]; }   # the old pair is still up
 labnet_stale_taps() {  # the TAP names behind LABNET_STALE, one per line, once each
     local f i
     for f in "${LABNET_STALE[@]}"; do
@@ -276,6 +290,8 @@ labnet_proposed() {
     done
     for f in "${LABNET_STALE[@]}"; do echo "    remove $NETD/$f   (GNS3_LAB_TAPS is now $LAB_TAPS)"; done
     for n in $(labnet_stale_taps); do echo "    ip link del $n"; done
+    for f in "${LABNET_LEGACY[@]}"; do echo "    remove $NETD/$f   (the capture end is lab_mirror0 now)"; done
+    if legacy_veth; then echo "    ip link del lab-mon0   (its peer is still $LEGACY_MIRROR; the reload recreates the pair as lab-mon0 <-> lab_mirror0)"; fi
 }
 labnet_ready() {  # the whole end state the reload should produce
     local sys n; sys="$(p /sys/class/net)"
@@ -366,8 +382,11 @@ cmd_labnet() {
     trap 'rm -rf "$LABNET_STAGE"' EXIT
     labnet_stage "$LABNET_STAGE"
     labnet_find_stale "$netd"
+    labnet_find_legacy "$netd"
     for f in "$LABNET_STAGE"/*; do cmp -s "$f" "$netd/$(basename "$f")" || changed=1; done
     [ "${#LABNET_STALE[@]}" -eq 0 ] || changed=1
+    [ "${#LABNET_LEGACY[@]}" -eq 0 ] || changed=1
+    if legacy_veth; then changed=1; fi
     if [ "$changed" -eq 0 ]; then
         pass "lab network files already in place in $NETD"
         for n in $(lab_names); do [ -e "$sys/$n" ] || missing="$missing $n"; done
@@ -384,9 +403,11 @@ cmd_labnet() {
         for f in "$LABNET_STAGE"/*; do
             run install -m 0644 "$f" "$netd/$(basename "$f")" || die "could not install $(basename "$f")"
         done
-        for f in "${LABNET_STALE[@]}"; do
+        for f in "${LABNET_STALE[@]}" "${LABNET_LEGACY[@]}"; do
             run rm -f "$netd/$f" || die "could not remove $NETD/$f"
         done
+        # before the reload: it recreates the pair from the new .netdev only once the old one is gone
+        if legacy_veth; then run ip link del lab-mon0 || die "could not delete the old pair lab-mon0 <-> $LEGACY_MIRROR — ip link del lab-mon0"; fi
         run networkctl reload || die "networkctl reload failed — journalctl -u systemd-networkd"
         for n in $(labnet_stale_taps); do   # networkd never deletes a netdev whose file went away
             [ -e "$sys/$n" ] || continue

@@ -132,6 +132,17 @@ report() { cat "$OUT"/validation-*.md; }
     [[ "$output" == *"capture_loss.00:00:00-01:00:00.log.gz"* ]]
 }
 
+@test "zeek capture_loss judges only the latest interval: an old spike in the same file no longer fails it" {
+    z="$ROOT/opt/malcolm/malcolm/zeek-logs/live/spool/logger-1"
+    mkdir -p "$z"
+    printf '#fields\tts\tts_delta\tpeer\tgaps\tacks\tpercent_lost\n' > "$z/capture_loss.log"
+    printf '1000.000002\t60.0\tworker-1-1\t9\t100\t0.9\n1000.000001\t60.0\tworker-1-2\t0\t100\t0.0\n' >> "$z/capture_loss.log"
+    printf '1060.000002\t60.0\tworker-1-1\t0\t100\t0.0\n1060.000001\t60.0\tworker-1-2\t0\t100\t0.1\n' >> "$z/capture_loss.log"
+    run validate --area capture
+    echo "$output"
+    [[ "$output" == *"PASS  capture/zeek capture_loss: 0.1"* ]]
+}
+
 @test "a replay is opt-in, and the Arkime comparison is a WARN (indexing lag), not a FAIL" {
     run validate --area capture
     [ "$status" -eq 0 ]
