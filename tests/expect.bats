@@ -16,25 +16,25 @@ x() { kit_run bash -c "set -uo pipefail; . '$LIB/common.sh'; . '$LIB/expect.sh';
 
 @test "a tcp row with a port: the port matches either side, in both languages" {
     run x 'expect_arkime tcp 179 10.204.0.0/24 10.204.0.0/24'
-    [ "$output" = 'ip.protocol == tcp && port == 179 && ip.src == 10.204.0.0/24 && ip.dst == 10.204.0.0/24' ]
+    [ "$output" = 'ip.protocol == tcp && port == 179 && ((ip.src == 10.204.0.0/24 && ip.dst == 10.204.0.0/24) || (ip.src == 10.204.0.0/24 && ip.dst == 10.204.0.0/24 && packets.dst > 0))' ]
     run x 'expect_kql tcp 179 10.204.0.0/24 10.204.0.0/24'
-    [ "$output" = 'network.transport:tcp and (source.port:179 or destination.port:179) and source.ip:"10.204.0.0/24" and destination.ip:"10.204.0.0/24"' ]
+    [ "$output" = 'network.transport:tcp and (source.port:179 or destination.port:179) and ((source.ip:"10.204.0.0/24" and destination.ip:"10.204.0.0/24") or (source.ip:"10.204.0.0/24" and destination.ip:"10.204.0.0/24" and destination.packets > 0))' ]
 }
 
-@test "icmp and udp are matched by name; a row with no port has no port clause" {
+@test "icmp and udp are matched by name; a row with no port has no port clause; either orientation counts" {
     run x 'expect_arkime icmp "" 10.205.0.10/32 10.205.0.20/32'
-    [ "$output" = 'ip.protocol == icmp && ip.src == 10.205.0.10/32 && ip.dst == 10.205.0.20/32' ]
+    [ "$output" = 'ip.protocol == icmp && ((ip.src == 10.205.0.10/32 && ip.dst == 10.205.0.20/32) || (ip.src == 10.205.0.20/32 && ip.dst == 10.205.0.10/32 && packets.dst > 0))' ]
     run x 'expect_kql udp 500 10.202.0.1/32 10.202.0.2/32'
-    [ "$output" = 'network.transport:udp and (source.port:500 or destination.port:500) and source.ip:"10.202.0.1/32" and destination.ip:"10.202.0.2/32"' ]
+    [ "$output" = 'network.transport:udp and (source.port:500 or destination.port:500) and ((source.ip:"10.202.0.1/32" and destination.ip:"10.202.0.2/32") or (source.ip:"10.202.0.2/32" and destination.ip:"10.202.0.1/32" and destination.packets > 0))' ]
 }
 
 @test "esp, ah and ospf are matched by IANA protocol number, in both languages" {
     for pair in esp:50 ah:51 ospf:89; do
         p=${pair%%:*}; num=${pair#*:}
         run x "expect_arkime $p '' 10.0.0.1/32 10.0.0.2/32"
-        [ "$output" = "ip.protocol == $num && ip.src == 10.0.0.1/32 && ip.dst == 10.0.0.2/32" ]
+        [ "$output" = "ip.protocol == $num && ((ip.src == 10.0.0.1/32 && ip.dst == 10.0.0.2/32) || (ip.src == 10.0.0.2/32 && ip.dst == 10.0.0.1/32 && packets.dst > 0))" ]
         run x "expect_kql $p '' 10.0.0.1/32 10.0.0.2/32"
-        [ "$output" = "network.iana_number:$num and source.ip:\"10.0.0.1/32\" and destination.ip:\"10.0.0.2/32\"" ]
+        [ "$output" = "network.iana_number:$num and ((source.ip:\"10.0.0.1/32\" and destination.ip:\"10.0.0.2/32\") or (source.ip:\"10.0.0.2/32\" and destination.ip:\"10.0.0.1/32\" and destination.packets > 0))" ]
     done
 }
 

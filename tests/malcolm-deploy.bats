@@ -863,7 +863,7 @@ print(d["attributes"]["title"]); print(" ".join(r["id"] for r in d["references"]
     f="$ROOT/opt/malcolm/scenarios.ndjson"
     run search_of "$f" lab-scenario-bgp-row-1
     [ "${lines[0]}" = 'Scenario bgp - tcp/179 10.204.0.0/24 -> 10.204.0.0/24 (lab)' ]
-    [ "${lines[1]}" = 'network.transport:tcp and (source.port:179 or destination.port:179) and source.ip:"10.204.0.0/24" and destination.ip:"10.204.0.0/24"' ]
+    [ "${lines[1]}" = 'network.transport:tcp and (source.port:179 or destination.port:179) and ((source.ip:"10.204.0.0/24" and destination.ip:"10.204.0.0/24") or (source.ip:"10.204.0.0/24" and destination.ip:"10.204.0.0/24" and destination.packets > 0))' ]
     run search_of "$f" lab-scenario-bgp
     [ "${lines[0]}" = 'Scenario bgp - all traffic (lab)' ]
     [ "${lines[1]}" = 'source.ip:"10.204.0.0/16" or destination.ip:"10.204.0.0/16"' ]
@@ -924,9 +924,19 @@ pack_view_names() {  # every view name arkime-views should generate from $SCENAR
     [[ "$output" == *"ok      Scenario bgp - row 1 tcp 179"* ]]
     [[ "$output" == *"ok      Scenario ospf - row 1 ospf"* ]]
     [[ "$output" == *"view(s) present"* ]]
-    grep -qF 'ip.protocol == tcp && port == 179 && ip.src == 10.204.0.0/24 && ip.dst == 10.204.0.0/24' "$STUB_LOG"
+    grep -qF 'ip.protocol == tcp && port == 179 && ((ip.src == 10.204.0.0/24 && ip.dst == 10.204.0.0/24) || (ip.src == 10.204.0.0/24 && ip.dst == 10.204.0.0/24 && packets.dst > 0))' "$STUB_LOG"
     grep -qF '"name":"Scenario bgp - all traffic","expression":"ip == 10.204.0.0/16"' "$STUB_LOG"
-    grep -qF 'ip.protocol == 89 && ip.src == 10.203.23.0/24 && ip.dst == 224.0.0.5/32' "$STUB_LOG"
+    grep -qF 'ip.protocol == 89 && ((ip.src == 10.203.23.0/24 && ip.dst == 224.0.0.5/32) || (ip.src == 224.0.0.5/32 && ip.dst == 10.203.23.0/24 && packets.dst > 0))' "$STUB_LOG"
+}
+
+@test "a generated row view's posted expression carries the either-orientation alternative (||) intact" {
+    make_malcolm_tree "$ROOT"; malcolm_secret; use_pack
+    stub_curl_osd
+    run malcolm arkime-views
+    echo "$output"
+    [ "$status" -eq 0 ]
+    grep -qF '"name":"Scenario bgp - row 1 tcp 179","expression":"ip.protocol == tcp && port == 179 && ((ip.src == 10.204.0.0/24 && ip.dst == 10.204.0.0/24) || (ip.src == 10.204.0.0/24 && ip.dst == 10.204.0.0/24 && packets.dst > 0))"' \
+        "$BATS_TEST_TMPDIR/views.json"
 }
 
 @test "a row the translator refuses stops arkime-views before any view is posted" {

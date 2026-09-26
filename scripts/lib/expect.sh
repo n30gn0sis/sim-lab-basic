@@ -62,6 +62,15 @@ expect_problem() {
     return 0
 }
 
+# Arkime and Zeek record one bidirectional session per flow, oriented by
+# whichever endpoint sent its first packet — which need not be the row's
+# "src". A row's direction is proven either by a session Arkime opened in
+# that orientation, or by the reply half (packets.dst / destination.packets
+# above 0) of a session it opened the other way. Measured live on staging VM
+# 9770, 2026-09-26: the ESP session was 10.201.0.1 -> 10.201.0.2; the row for
+# 10.201.0.2 -> 10.201.0.1 has no session of its own — its packets are the
+# destination half of that same session.
+
 # expect_arkime <proto> <port> <src> <dst> — the Arkime expression. A port
 # matches either side: IKE is 500<->500, and a reply's source port is the
 # request's destination.
@@ -72,7 +81,8 @@ expect_arkime() {
         *)            q="ip.protocol == $(expect_iana "$proto")" ;;
     esac
     [ -z "$port" ] || q="$q && port == $port"
-    printf '%s && ip.src == %s && ip.dst == %s' "$q" "$src" "$dst"
+    printf '%s && ((ip.src == %s && ip.dst == %s) || (ip.src == %s && ip.dst == %s && packets.dst > 0))' \
+        "$q" "$src" "$dst" "$dst" "$src"
 }
 
 # expect_kql <proto> <port> <src> <dst> — the Dashboards query (KQL, the
@@ -84,7 +94,8 @@ expect_kql() {
         *)            q="network.iana_number:$(expect_iana "$proto")" ;;
     esac
     [ -z "$port" ] || q="$q and (source.port:$port or destination.port:$port)"
-    printf '%s and source.ip:"%s" and destination.ip:"%s"' "$q" "$src" "$dst"
+    printf '%s and ((source.ip:"%s" and destination.ip:"%s") or (source.ip:"%s" and destination.ip:"%s" and destination.packets > 0))' \
+        "$q" "$src" "$dst" "$dst" "$src"
 }
 
 # expect_label <proto> <port> <src> <dst> — "<proto>[/<port>] <src> -> <dst>"

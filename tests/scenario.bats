@@ -583,8 +583,8 @@ EOF
 )"
 }
 
-ROW1='ip.protocol == icmp && ip.src == 10.209.0.0/24 && ip.dst == 10.209.0.0/24'
-ROW2='ip.protocol == tcp && port == 80 && ip.src == 10.209.0.1/32 && ip.dst == 10.209.0.2/32'
+ROW1='ip.protocol == icmp && ((ip.src == 10.209.0.0/24 && ip.dst == 10.209.0.0/24) || (ip.src == 10.209.0.0/24 && ip.dst == 10.209.0.0/24 && packets.dst > 0))'
+ROW2='ip.protocol == tcp && port == 80 && ((ip.src == 10.209.0.1/32 && ip.dst == 10.209.0.2/32) || (ip.src == 10.209.0.2/32 && ip.dst == 10.209.0.1/32 && packets.dst > 0))'
 count() { printf '%s\t%s\n' "$1" "$2" >> "$BATS_TEST_TMPDIR/${3:-counts}.tsv"; }
 
 run_record() {  # run_record <scenario> [<suffix>] [no-end] — a run record in the evidence dir; prints its path
