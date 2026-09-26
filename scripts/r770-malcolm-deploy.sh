@@ -53,6 +53,7 @@
 #   MALCOLM_HOME        /opt/malcolm        MALCOLM_ADMIN_USER   analyst
 #   MALCOLM_WAIT_SECS   600                 MALCOLM_OS_MEM_G / MALCOLM_LS_MEM_M
 #                                           override the heaps computed from free -g
+#   SCENARIO_DIR        <kit>/scenarios
 #
 #   0  done · 2  done with warnings · 1  refused or failed
 #
@@ -70,6 +71,9 @@ set -uo pipefail
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=lib/malcolm-api.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib/malcolm-api.sh"
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=lib/expect.sh
+. "$(dirname "${BASH_SOURCE[0]}")/lib/expect.sh"
 
 BUNDLE=""; FREE_G=""; IDX=""
 CAPTURE_IFS=""; CAPTURE_SET=0
@@ -86,6 +90,7 @@ INSTALL_FLAGS=(--non-interactive --skip-splash --configure --import-malcolm-conf
 REBIND_FROM='^    - 0.0.0.0:443:443/tcp$'
 REBIND_TO='    - 127.0.0.1:8443:443/tcp'
 SECRET="$MALCOLM_SECRET_FILE"
+SCEN_DIR="${SCENARIO_DIR:-$KIT_DIR/scenarios}"   # the pack dashboards and arkime-views generate from
 STEPS=(preflight gate copy apt phone-home docker files load unpack configure secrets auth rebind start)
 # test seam: lets a suite stub out every call this script makes to
 # r770-import-bundle.sh under `full`, and record what was called.
@@ -546,6 +551,88 @@ assert_saved_objects() {
     pass "all ${total} saved object(s) present"
 }
 
+# ── the scenario pack's objects, generated ──────────────────────────────────
+# Each scenario's range lives once, in its scenario.conf; its flows once, in
+# its expect.txt. The searches and views below are generated from them through
+# scripts/lib/expect.sh — the same translator r770-scenario.sh check queries
+# with — so nothing under config/ restates a range.
+
+# pack_rows — the pack as lines the generators read, every row already through
+# the translator's checks: "S|<name>|<range>" per scenario, then
+# "R|<name>|<n>|<proto>|<port>|<src>|<dst>" per expect.txt row. Call it with a
+# redirect, never in $() or a pipe: a refusal must stop the step, and it must
+# stop it before anything is imported.
+pack_rows() {
+    local c d s range n proto port src dst why
+    for c in "$SCEN_DIR"/*/scenario.conf; do
+        [ -e "$c" ] || continue
+        d=$(dirname "$c"); s=$(basename "$d")
+        range=$(sed -n 's/^range=//p' "$c" | head -1)
+        expect_cidr "$range" || die "refusing scenarios/$s/scenario.conf: range '$range' is not an IPv4 CIDR — nothing was imported"
+        [ -f "$d/expect.txt" ] || die "refusing scenarios/$s: no expect.txt — nothing was imported"
+        printf 'S|%s|%s\n' "$s" "$range"
+        while IFS='|' read -r n proto port src dst; do
+            why=$(expect_problem "$proto" "$port" "$src" "$dst")
+            [ -z "$why" ] || die "refusing scenarios/$s/expect.txt row $n: $why — nothing was imported"
+            printf 'R|%s|%s|%s|%s|%s|%s\n' "$s" "$n" "$proto" "$port" "$src" "$dst"
+        done < <(expect_rows "$d")
+    done
+}
+
+# scenario_spec <pack-file> — "<range|row><TAB><id><TAB><title><TAB><description><TAB><kql>" per search
+scenario_spec() {
+    local kind a b c d e f
+    while IFS='|' read -r kind a b c d e f; do
+        case "$kind" in
+            S) printf 'range\tlab-scenario-%s\tScenario %s - all traffic (lab)\tEverything scenario %s puts on br-lab: its whole range, %s.\tsource.ip:"%s" or destination.ip:"%s"\n' \
+                   "$a" "$a" "$a" "$b" "$b" "$b" ;;
+            R) printf 'row\tlab-scenario-%s-row-%s\tScenario %s - %s (lab)\tRow %s of scenarios/%s/expect.txt: a flow every traffic run must show.\t%s\n' \
+                   "$a" "$b" "$a" "$(expect_label "$c" "$d" "$e" "$f")" "$b" "$a" "$(expect_kql "$c" "$d" "$e" "$f")" ;;
+        esac
+    done < "$1"
+}
+
+# scenario_ndjson <spec> <out> — the searches and the overview dashboard, in the
+# shape of config/malcolm/dashboards/ipsec.ndjson.template: one object per
+# line, {"id":…,"type":…} first, no version fields, the index pattern as the
+# token render() fills. python3 writes the JSON (Malcolm's installer already
+# needs it); bash would have to hand-escape a query inside a JSON string inside
+# a JSON string.
+scenario_ndjson() {
+    python3 - "$1" "$2" <<'PY'
+import json, sys
+spec, out = sys.argv[1], sys.argv[2]
+tight = dict(separators=(",", ":"))
+cols = ["source.ip", "destination.ip", "destination.port", "network.transport", "network.protocol", "event.provider"]
+ref = "kibanaSavedObjectMeta.searchSourceJSON.index"
+objs, panels = [], []
+for raw in open(spec):
+    kind, oid, title, desc, query = raw.rstrip("\n").split("\t")
+    ssj = json.dumps({"query": {"query": query, "language": "kuery"}, "filter": [], "indexRefName": ref}, **tight)
+    objs.append({"id": oid, "type": "search",
+                 "attributes": {"title": title, "description": desc, "hits": 0, "columns": cols,
+                                "sort": [["@timestamp", "desc"]],
+                                "kibanaSavedObjectMeta": {"searchSourceJSON": ssj}},
+                 "references": [{"name": ref, "type": "index-pattern", "id": "__NETWORK_INDEX_PATTERN_ID__"}]})
+    if kind == "range":
+        panels.append(oid)
+grid = [{"version": "", "gridData": {"x": 0, "y": 12 * i, "w": 48, "h": 12, "i": str(i + 1)},
+         "panelIndex": str(i + 1), "embeddableConfig": {}, "panelRefName": "panel_%d" % (i + 1)}
+        for i in range(len(panels))]
+objs.append({"id": "lab-scenarios-overview", "type": "dashboard",
+             "attributes": {"title": "Lab scenarios - Overview (lab)",
+                            "description": "One panel per scenario in the kit's pack: every session in its range. The per-row searches (Scenario <name> - ...) drill down.",
+                            "hits": 0, "timeRestore": False, "version": 1,
+                            "optionsJSON": json.dumps({"hidePanelTitles": False, "useMargins": True}, **tight),
+                            "panelsJSON": json.dumps(grid, **tight),
+                            "kibanaSavedObjectMeta": {"searchSourceJSON": json.dumps({"query": {"query": "", "language": "kuery"}, "filter": []}, **tight)}},
+             "references": [{"name": "panel_%d" % (i + 1), "type": "search", "id": p} for i, p in enumerate(panels)]})
+with open(out, "w") as f:
+    for o in objs:
+        f.write(json.dumps(o, ensure_ascii=False, **tight) + "\n")
+PY
+}
+
 cmd_inventory() {
     banner "inventory — what this Dashboards holds now"
     need_root
@@ -572,16 +659,32 @@ cmd_inventory() {
 cmd_dashboards() {
     banner "dashboards — install the kit's saved objects"
     need_root
-    local dir tpl rendered idx base
+    local dir tpl rendered idx base gen tpls=()
     dir="$KIT_CONFIG_DIR/malcolm/dashboards"
     [ -d "$dir" ] || die "no dashboards directory at $dir"
+    for tpl in "$dir"/*.ndjson.template; do
+        [ -e "$tpl" ] || die "no *.ndjson.template under $dir"
+        tpls+=("$tpl")
+    done
     if [ "$DRY" = "1" ]; then
-        for tpl in "$dir"/*.ndjson.template; do
-            [ -e "$tpl" ] || die "no *.ndjson.template under $dir"
+        pack_rows > /dev/null
+        for tpl in "${tpls[@]}"; do
             echo "DRY-RUN: render $(basename "$tpl"), import it, then assert every id it declares"
         done
+        echo "DRY-RUN: generate the scenario pack's searches and overview from $SCEN_DIR, import them, then assert every id"
         footer "dashboards"
     fi
+    # generated before any call: a refused row stops the step with nothing imported
+    gen="$(home)/scenarios.ndjson.template"
+    pack_rows > "$gen.pack"
+    if [ -s "$gen.pack" ]; then
+        scenario_spec "$gen.pack" > "$gen.tsv"
+        scenario_ndjson "$gen.tsv" "$gen" || die "could not generate $gen"
+        tpls+=("$gen")
+    else
+        note "no scenarios under $SCEN_DIR — only the kit's fixed objects"
+    fi
+    rm -f "$gen.pack" "$gen.tsv"
     osd_auth_file
     if ! osd_reachable; then
         skip "Dashboards did not answer on 127.0.0.1:8443 — start the stack first; nothing was changed"
@@ -589,8 +692,7 @@ cmd_dashboards() {
     fi
     idx=$(resolve_index_pattern) || exit 1
     note "index pattern: $idx"
-    for tpl in "$dir"/*.ndjson.template; do
-        [ -e "$tpl" ] || die "no *.ndjson.template under $dir"
+    for tpl in "${tpls[@]}"; do
         base=$(basename "${tpl%.template}")
         rendered="$(home)/$base"
         render "$tpl" "$rendered" "NETWORK_INDEX_PATTERN_ID=$idx"

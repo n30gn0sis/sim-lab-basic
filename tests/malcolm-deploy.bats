@@ -19,7 +19,10 @@ setup() {
     export MALCOLM_WAIT_SECS=1
     export BATS_TEST_TMPDIR
     stub dpkg 'exit 0'
-    stub python3 'exec bash "$@"'          # the stub installer is bash; the real one is python
+    # the stub installer is bash; the real one is python -- but scenario_ndjson
+    # feeds real python source to `python3 -` (a heredoc), so only redirect the
+    # install.py-style call (a script path, not "-") to the bash stub
+    stub python3 'case "$1" in -) command -p python3 "$@" ;; *) exec bash "$@" ;; esac'
     # the stack's owner: PUID 1000 in the fixture's config/process.env, in the docker group
     stub getent 'case "$1 $2" in "passwd 1000") echo "labop:x:1000:1000::/home/labop:/bin/bash";; "group docker") echo "docker:x:988:labop";; *) exit 2;; esac'
     stub runuser 'echo "runuser $*" >> "$STUB_LOG"; [ "$1" = -u ] && shift 2; [ "$1" = -- ] && shift; exec "$@"'
@@ -34,6 +37,7 @@ case "$1" in
   compose) [ "$2" = ps ] && printf "arkime running healthy\nzeek running healthy\nnginx-proxy running healthy\n" ;;
 esac
 exit 0'
+    export SCENARIO_DIR="$BATS_TEST_TMPDIR/no-scenarios"   # tests that want the pack call use_pack
 }
 
 malcolm() { kit_run "$SCRIPT" "$@"; }
@@ -621,6 +625,98 @@ ipsec_ids() {  # every id the shipped template declares
     [ "$status" -eq 1 ]
     [[ "$output" == *"/api/user/views"* ]]
     [[ "$output" == *"BUNDLE_NOTES.md"* ]]
+}
+
+# ── the scenario pack's generated objects ────────────────────────────────────
+use_pack() { export SCENARIO_DIR="$BATS_TEST_DIRNAME/../scenarios"; }
+
+pack_ids() {  # every id dashboards should generate from $SCENARIO_DIR, in file order
+    local d s n i
+    for d in "$SCENARIO_DIR"/*/; do
+        s=$(basename "$d"); echo "lab-scenario-$s"
+        n=$(grep -cvE '^(#|$)' "$d/expect.txt")
+        for i in $(seq 1 "$n"); do echo "lab-scenario-$s-row-$i"; done
+    done
+    echo lab-scenarios-overview
+}
+
+search_of() {  # search_of <ndjson> <id> — its title, then its query
+    python3 -c 'import json, sys
+for l in open(sys.argv[1]):
+    o = json.loads(l)
+    if o["id"] == sys.argv[2]:
+        print(o["attributes"]["title"])
+        print(json.loads(o["attributes"]["kibanaSavedObjectMeta"]["searchSourceJSON"])["query"]["query"])' "$1" "$2"
+}
+
+bad_pack() {  # a one-scenario pack whose second row the translator refuses
+    export SCENARIO_DIR="$BATS_TEST_TMPDIR/bad-pack"
+    mkdir -p "$SCENARIO_DIR/bad"
+    printf 'name=bad\nrange=10.250.0.0/16\n' > "$SCENARIO_DIR/bad/scenario.conf"
+    printf 'icmp||10.250.0.1/32|10.250.0.2/32\nsctp||10.250.0.1/32|10.250.0.2/32\n' > "$SCENARIO_DIR/bad/expect.txt"
+}
+
+@test "dashboards generates a range search per scenario, a search per expect row, and an overview of exactly the range searches" {
+    make_malcolm_tree "$ROOT"; malcolm_secret; use_pack
+    stub_curl_osd $(ipsec_ids) $(pack_ids)
+    run malcolm dashboards
+    echo "$output"
+    [ "$status" -eq 0 ]
+    f="$ROOT/opt/malcolm/scenarios.ndjson"
+    [ "$(sed -n 's/^{"id":"\([^"]*\)".*/\1/p' "$f")" = "$(pack_ids)" ]
+    run python3 -c 'import json, sys
+d = [json.loads(l) for l in open(sys.argv[1]) if json.loads(l)["type"] == "dashboard"][0]
+print(d["attributes"]["title"]); print(" ".join(r["id"] for r in d["references"]))' "$f"
+    [ "${lines[0]}" = "Lab scenarios - Overview (lab)" ]
+    [ "${lines[1]}" = "$(for d in "$SCENARIO_DIR"/*/; do printf 'lab-scenario-%s ' "$(basename "$d")"; done | sed 's/ $//')" ]
+    grep -q '"id":"idx-net"' "$f"
+    run grep -c '__NETWORK_INDEX_PATTERN_ID__' "$f"
+    [ "$output" = 0 ]
+}
+
+@test "a generated row search carries the translator's KQL; the range search, the scenario's range" {
+    make_malcolm_tree "$ROOT"; malcolm_secret; use_pack
+    stub_curl_osd $(ipsec_ids) $(pack_ids)
+    run malcolm dashboards
+    [ "$status" -eq 0 ]
+    f="$ROOT/opt/malcolm/scenarios.ndjson"
+    run search_of "$f" lab-scenario-bgp-row-1
+    [ "${lines[0]}" = 'Scenario bgp - tcp/179 10.204.0.0/24 -> 10.204.0.0/24 (lab)' ]
+    [ "${lines[1]}" = 'network.transport:tcp and (source.port:179 or destination.port:179) and source.ip:"10.204.0.0/24" and destination.ip:"10.204.0.0/24"' ]
+    run search_of "$f" lab-scenario-bgp
+    [ "${lines[0]}" = 'Scenario bgp - all traffic (lab)' ]
+    [ "${lines[1]}" = 'source.ip:"10.204.0.0/16" or destination.ip:"10.204.0.0/16"' ]
+}
+
+@test "the generated objects are identical across runs, so a re-import overwrites rather than piles up" {
+    make_malcolm_tree "$ROOT"; malcolm_secret; use_pack
+    stub_curl_osd $(ipsec_ids) $(pack_ids)
+    run malcolm dashboards
+    [ "$status" -eq 0 ]
+    cp "$ROOT/opt/malcolm/scenarios.ndjson" "$BATS_TEST_TMPDIR/first.ndjson"
+    run malcolm dashboards
+    [ "$status" -eq 0 ]
+    cmp "$BATS_TEST_TMPDIR/first.ndjson" "$ROOT/opt/malcolm/scenarios.ndjson"
+}
+
+@test "a generated object that did not land is a FAIL that names it" {
+    make_malcolm_tree "$ROOT"; malcolm_secret; use_pack
+    stub_curl_osd $(ipsec_ids) $(pack_ids | grep -v '^lab-scenarios-overview$')
+    run malcolm dashboards
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"MISSING dashboard/lab-scenarios-overview"* ]]
+}
+
+@test "a row the translator refuses stops dashboards before any import, naming the file and the row" {
+    make_malcolm_tree "$ROOT"; malcolm_secret; bad_pack
+    stub_curl_osd $(ipsec_ids)
+    run malcolm dashboards
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"refusing scenarios/bad/expect.txt row 2: unknown protocol 'sctp'"* ]]
+    run grep -c '_import' "$STUB_LOG"
+    [ "$output" = 0 ]
 }
 
 # ── full ─────────────────────────────────────────────────────────────────────

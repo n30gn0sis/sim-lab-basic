@@ -260,6 +260,15 @@ for a partial import exactly as it reports a whole one — the same lie
 land. `arkime-views` does the same for
 `config/malcolm/arkime-views/ipsec.views`, reading each view back by name.
 
+Both steps also generate the scenario pack's objects from `scenarios/`, so
+each scenario's range and flows live once, in its `scenario.conf` and
+`expect.txt`: a saved search and an Arkime view for its whole range
+(`Scenario <name> - all traffic`), one of each per `expect.txt` row, and the
+**Lab scenarios - Overview** dashboard with one panel per scenario. The
+queries come from `scripts/lib/expect.sh`, the same translator
+`r770-scenario.sh check` counts with. A row the translator refuses stops the
+step before anything is imported, naming the file and row.
+
 Both are idempotent: the import overwrites, and the views are posted by name.
 
 #### Authoring a new dashboard
