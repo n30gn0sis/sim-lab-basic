@@ -449,6 +449,7 @@ cmd_check() {
         [ -z "$why" ] || die "refusing scenarios/$NAME/expect.txt row $n: $why"
         rows+=("$r")
     done < <(expect_rows "$SCEN_DIR/$NAME")
+    [ "${#rows[@]}" -gt 0 ] || die "scenarios/$NAME/expect.txt has no rows — nothing to check"
     rec=${RUN_FILE:-$(find "$ev" -maxdepth 1 -name "scenario-$NAME-*.run" 2>/dev/null | sort | tail -1)}
     if [ -z "$rec" ]; then skip "no run record — run r770-scenario.sh traffic $NAME first"; footer "check"; fi
     [ -f "$rec" ] || die "no run record at $rec"
@@ -468,7 +469,14 @@ cmd_check() {
         skip "Arkime did not answer on 127.0.0.1:8443 — start Malcolm (r770-malcolm-deploy.sh start)"
         footer "check"
     fi
-    if [ -z "$wait" ]; then check_wait_secs; wait=$CHECK_WAIT_SECS; fi
+    # the rotation is read even when the wait is set by hand (the nudge below
+    # needs it); its default-wait note is shown only when that default is used
+    if [ -z "$wait" ]; then
+        check_wait_secs; wait=$CHECK_WAIT_SECS
+    else
+        check_wait_secs > /dev/null
+        note "SCENARIO_CHECK_WAIT_SECS sets the wait: up to ${wait}s"
+    fi
     # Arkime writes a session when it closes or at its periodic save, so an
     # immediate check can be early: ask again every 10s for rows still at 0
     while :; do
@@ -539,7 +547,8 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --bundle)  BUNDLE="${2:-}"; shift ;;
         --taps)    TAPS="${2:-}"; shift ;;
-        --run)     RUN_FILE="${2:-}"; shift ;;
+        --run)     [ -n "${2:-}" ] || die "--run needs a run record path (see: r770-scenario.sh status)"
+                   RUN_FILE=$2; shift ;;
         -h|--help) usage ;;
         *)         common_flag "$1" || die "unknown option: $1 (try --help)" ;;
     esac

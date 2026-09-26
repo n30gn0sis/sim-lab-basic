@@ -858,3 +858,35 @@ lab_mon0() { mkdir -p "$ROOT/sys/class/net/lab-mon0"; printf '02:00:00:00:00:01\
     [[ "$output" == *"FAIL  demo row 2 tcp/80 10.209.0.1/32 -> 10.209.0.2/32: 0 sessions after 240s"* ]]
     [ "$(grep -c '^python3 ' "$PYTHON3_LOG")" -eq 1 ]
 }
+
+@test "an explicit SCENARIO_CHECK_WAIT_SECS still nudges netsniff once the rotation interval has passed" {
+    arkime_stub; run_record demo >/dev/null
+    python3_stub
+    pcap_capture_env 1
+    lab_mon0
+    count "$ROW1" 3
+    SCENARIO_CHECK_WAIT_SECS=120 run scenario check demo
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [ "$(grep -c '^python3 ' "$PYTHON3_LOG")" -eq 1 ]
+    [[ "$output" == *"0 sessions after 120s"* ]]
+}
+
+@test "check --run with no value is refused, never a silent fall back to the newest record" {
+    arkime_stub; run_record demo >/dev/null
+    count "$ROW1" 3; count "$ROW2" 7
+    run scenario check demo --run
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"--run needs a run record path"* ]]
+    [[ "$output" != *"PASS  demo row"* ]]
+}
+
+@test "check refuses a scenario whose expect.txt has no data rows, rather than a READY with nothing tested" {
+    arkime_stub; run_record demo >/dev/null
+    printf '# only a comment\n\n' > "$SCENARIO_DIR/demo/expect.txt"
+    run scenario check demo
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"scenarios/demo/expect.txt has no rows — nothing to check"* ]]
+}
