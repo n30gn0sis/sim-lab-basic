@@ -467,34 +467,70 @@ malcolm_secret() {  # the admin credential the API calls authenticate with
 }
 
 stub_curl_osd() {  # a stack that answers; $1.. are the object ids that exist
+    # The Arkime side models the answers measured on Malcolm's Arkime (staging
+    # VM, through 127.0.0.1:8443): the pre-5 /api/user/views is a 404 "Old
+    # API"; GET /api/views is {"data":[...]}; GET /sessions sets the
+    # ARKIME-COOKIE cookie (URL-encoded); POST /api/view without the
+    # x-arkime-cookie header is "Missing token", with it the view is stored
+    # (twice if posted twice: Arkime refuses no duplicate). views.json is the
+    # list Arkime holds; touch views.nostore for an Arkime that accepts a post
+    # and stores nothing.
     printf '%s\n' "$@" > "$BATS_TEST_TMPDIR/present-objects.txt"
     : > "$BATS_TEST_TMPDIR/views.json"
     [ -s "$BATS_TEST_TMPDIR/index-patterns.json" ] || \
         printf '{"saved_objects":[{"type":"index-pattern","id":"idx-net","attributes":{"title":"lab-sessions-*"}}]}' \
             > "$BATS_TEST_TMPDIR/index-patterns.json"
-    stub curl '
+    stub curl "$(cat <<'EOF'
 echo "curl $*" >> "$STUB_LOG"
-url=""; method=GET
+T="$BATS_TEST_TMPDIR"
+url=""; method=GET; fail=0; jar=""; data=""; hdrs=""
 while [ $# -gt 0 ]; do
-  case "$1" in -X) method="$2"; shift ;; https://*) url="$1" ;; esac
+  case "$1" in
+    -X) method="$2"; shift ;;
+    -c) jar="$2"; stat -c %a "$2" >> "$T/secret-modes.log"; shift ;;
+    -d) data="$2"; shift ;;
+    -H) case "$2" in
+          @*) hdrs="$hdrs$(cat "${2#@}")"$'\n'; stat -c %a "${2#@}" >> "$T/secret-modes.log" ;;
+        esac; shift ;;
+    --fail) fail=1 ;;
+    https://*) url="$1" ;;
+  esac
   shift
 done
 case "$url" in
-  */api/status*)               echo "{\"status\":{\"overall\":{\"state\":\"green\"}}}" ;;
-  */_find*type=search*)        cat "$BATS_TEST_TMPDIR/objects.json" 2>/dev/null || echo "{\"saved_objects\":[]}" ;;
-  */_find*type=index-pattern*) cat "$BATS_TEST_TMPDIR/index-patterns.json" ;;
-  */_find*)                    cat "$BATS_TEST_TMPDIR/objects.json" 2>/dev/null || echo "{\"saved_objects\":[]}" ;;
-  */_import*)                  echo "{\"success\":true}" ;;
-  */api/user/views*)           cat "$BATS_TEST_TMPDIR/views.json" 2>/dev/null || echo "[]" ;;
+  */api/status*)               echo '{"status":{"overall":{"state":"green"}}}' ;;
+  */_find*type=search*)        cat "$T/objects.json" 2>/dev/null || echo '{"saved_objects":[]}' ;;
+  */_find*type=index-pattern*) cat "$T/index-patterns.json" ;;
+  */_find*)                    cat "$T/objects.json" 2>/dev/null || echo '{"saved_objects":[]}' ;;
+  */_import*)                  echo '{"success":true}' ;;
+  */arkime/api/user/views*)    printf 'Old API'; [ "$fail" = 1 ] && exit 22 ;;
+  */arkime/api/views)          v=$(cat "$T/views.json" 2>/dev/null); printf '{"data":%s}' "${v:-[]}" ;;
+  */arkime/sessions)
+      [ -n "$jar" ] && printf '# Netscape HTTP Cookie File\n#HttpOnly_127.0.0.1\tFALSE\t/\tTRUE\t0\tARKIME-COOKIE\ttok%%3Dabc\n' > "$jar"
+      echo '<html>' ;;
+  */arkime/api/view)
+      printf '%s' "$hdrs" >> "$T/view-headers.log"
+      if [ "$method" = POST ] && printf '%s' "$hdrs" | grep -q '^x-arkime-cookie: '; then
+        if [ ! -e "$T/views.nostore" ]; then
+          v=$(cat "$T/views.json" 2>/dev/null)
+          case "$v" in ''|'[]') v="[$data]" ;; *) v="${v%]},$data]" ;; esac
+          printf '%s' "$v" > "$T/views.json"
+        fi
+        echo '{"success":true,"text":"Created view!"}'
+      else
+        echo '{"success":false,"text":"Missing token","i18n":"api.viewer.missingToken"}'
+      fi ;;
   */saved_objects/*)
       id="${url##*/}"
-      if grep -qxF "$id" "$BATS_TEST_TMPDIR/present-objects.txt" 2>/dev/null; then
+      if grep -qxF "$id" "$T/present-objects.txt" 2>/dev/null; then
         echo "{\"id\":\"$id\"}"
       else
-        echo "{\"statusCode\":404}"
+        echo '{"statusCode":404}'
       fi ;;
 esac
-exit 0'
+exit 0
+EOF
+)"
 }
 
 stub_curl_down() { stub curl 'echo "curl $*" >> "$STUB_LOG"; exit 7'; }
@@ -596,8 +632,6 @@ ipsec_ids() {  # every id the shipped template declares
 @test "arkime-views posts every view in the kit's file and reads them all back" {
     make_malcolm_tree "$ROOT"; malcolm_secret
     stub_curl_osd
-    sed -n 's/^\([^#|][^|]*\)|.*/{"name":"\1"}/p' config/malcolm/arkime-views/ipsec.views \
-        | paste -sd, - | sed 's/^/[/;s/$/]/' > "$BATS_TEST_TMPDIR/views.json"
     run malcolm arkime-views
     echo "$output"
     [ "$status" -eq 0 ]
@@ -609,7 +643,7 @@ ipsec_ids() {  # every id the shipped template declares
 @test "arkime-views FAILs, naming the view, when Arkime accepted the post but stored nothing" {
     make_malcolm_tree "$ROOT"; malcolm_secret
     stub_curl_osd
-    printf '[]' > "$BATS_TEST_TMPDIR/views.json"
+    touch "$BATS_TEST_TMPDIR/views.nostore"
     run malcolm arkime-views
     echo "$output"
     [ "$status" -eq 1 ]
@@ -623,8 +657,96 @@ ipsec_ids() {  # every id the shipped template declares
     run malcolm arkime-views
     echo "$output"
     [ "$status" -eq 1 ]
-    [[ "$output" == *"/api/user/views"* ]]
+    [[ "$output" == *"GET /api/views"* ]]
     [[ "$output" == *"BUNDLE_NOTES.md"* ]]
+}
+
+@test "arkime-views sends Arkime's cookie token only through a 0600 header file, URL-decoded, and removes it" {
+    make_malcolm_tree "$ROOT"; malcolm_secret
+    stub_curl_osd
+    run malcolm arkime-views
+    echo "$output"
+    [ "$status" -eq 0 ]
+    # the token came from the sessions page's cookie jar ...
+    grep -q 'arkime/sessions' "$STUB_LOG"
+    # ... reached every POST as a header read from a file, decoded (%3D -> =)
+    grep -qx 'x-arkime-cookie: tok=abc' "$BATS_TEST_TMPDIR/view-headers.log"
+    run grep -c 'Missing token' <<< "$output"
+    [ "$output" = 0 ]
+    # ... and never through argv or the transcript
+    run grep -cE 'tok=abc|tok%3Dabc|x-arkime-cookie' "$STUB_LOG"
+    [ "$output" = 0 ]
+    run malcolm arkime-views
+    [[ "$output" != *"tok=abc"* ]] && [[ "$output" != *"tok%3Dabc"* ]]
+    # the jar and the header file are 0600, and live only for the run
+    [ -s "$BATS_TEST_TMPDIR/secret-modes.log" ]
+    run grep -cvx 600 "$BATS_TEST_TMPDIR/secret-modes.log"
+    [ "$output" = 0 ]
+    for f in $(grep -oE -- '(-c|-H @)[^ ]+' "$STUB_LOG" | sed -E 's/^(-c|-H @)//' | sort -u); do
+        [ ! -e "$f" ] || { echo "left behind: $f"; return 1; }
+    done
+}
+
+@test "arkime-views dies naming the cookie when Arkime hands out no token, and posts nothing" {
+    make_malcolm_tree "$ROOT"; malcolm_secret
+    stub_curl_osd
+    # an Arkime whose sessions page sets no cookie
+    sed -i 's|\[ -n "\$jar" \] \&\&|false \&\&|' "$BIN/curl"
+    run malcolm arkime-views
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"/arkime/sessions"* ]]
+    [[ "$output" == *"ARKIME-COOKIE"* ]]
+    run grep -c -- '-X POST' "$STUB_LOG"
+    [ "$output" = 0 ]
+}
+
+@test "arkime-views leaves a view already present by name as it is, so a rerun adds nothing" {
+    make_malcolm_tree "$ROOT"; malcolm_secret
+    stub_curl_osd
+    printf '[{"name":"IPsec - ESP payload","expression":"ip.protocol == 50","users":"","user":"analyst","id":"x1"}]' \
+        > "$BATS_TEST_TMPDIR/views.json"
+    run malcolm arkime-views
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"present IPsec - ESP payload"* ]]
+    [[ "$output" == *"+ POST /api/view   (IPsec - AH authenticated)"* ]]
+    run grep -c '"name":"IPsec - ESP payload"' "$STUB_LOG"
+    [ "$output" = 0 ]
+    # a second run finds every view by name: no POST, and no token needed
+    : > "$STUB_LOG"
+    run malcolm arkime-views
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"view(s) present"* ]]
+    run grep -c -- '-X POST' "$STUB_LOG"
+    [ "$output" = 0 ]
+    run grep -c 'arkime/sessions' "$STUB_LOG"
+    [ "$output" = 0 ]
+    run grep -o '"name":"IPsec - AH authenticated"' "$BATS_TEST_TMPDIR/views.json"
+    [ "${#lines[@]}" -eq 1 ]
+}
+
+@test "every fixed view name keeps to the characters Arkime stores ([-a-zA-Z0-9_: ])" {
+    run bash -c "sed -n 's/^\\([^#|][^|]*\\)|.*/\\1/p' config/malcolm/arkime-views/*.views | LC_ALL=C grep -v '^[-a-zA-Z0-9_: ]*\$'"
+    echo "$output"
+    [ -z "$output" ]
+}
+
+@test "arkime-views refuses a view name outside Arkime's character set before posting anything, naming it" {
+    make_malcolm_tree "$ROOT"; malcolm_secret
+    export SCENARIO_DIR="$BATS_TEST_TMPDIR/dotted-pack"
+    mkdir -p "$SCENARIO_DIR/lab.v2"
+    printf 'name=lab.v2\nrange=10.250.0.0/16\n' > "$SCENARIO_DIR/lab.v2/scenario.conf"
+    printf 'icmp||10.250.0.1/32|10.250.0.2/32\n' > "$SCENARIO_DIR/lab.v2/expect.txt"
+    stub_curl_osd
+    run malcolm arkime-views
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"'Scenario lab.v2 - all traffic'"* ]]
+    [[ "$output" == *"[-a-zA-Z0-9_: ]"* ]]
+    run grep -c -- '-X POST' "$STUB_LOG"
+    [ "$output" = 0 ]
 }
 
 # ── the scenario pack's generated objects ────────────────────────────────────
@@ -724,9 +846,9 @@ print(d["attributes"]["title"]); print(" ".join(r["id"] for r in d["references"]
 pack_view_names() {  # every view name arkime-views should generate from $SCENARIO_DIR
     local d s n p port src dst
     for d in "$SCENARIO_DIR"/*/; do
-        s=$(basename "$d"); echo "Scenario $s - all traffic"
+        s=$(basename "$d"); echo "Scenario $s - all traffic"; n=0
         grep -vE '^(#|$)' "$d/expect.txt" | while IFS='|' read -r p port src dst; do
-            echo "Scenario $s - $p${port:+/$port} $src -> $dst"
+            n=$((n + 1)); echo "Scenario $s - row $n $p${port:+ $port}"
         done
     done
 }
@@ -734,12 +856,14 @@ pack_view_names() {  # every view name arkime-views should generate from $SCENAR
 @test "arkime-views posts a range view and a view per expect row for every scenario, and reads them all back" {
     make_malcolm_tree "$ROOT"; malcolm_secret; use_pack
     stub_curl_osd
-    { sed -n 's/^\([^#|][^|]*\)|.*/\1/p' config/malcolm/arkime-views/ipsec.views; pack_view_names; } \
-        | sed 's/.*/{"name":"&"}/' | paste -sd, - | sed 's/^/[/;s/$/]/' > "$BATS_TEST_TMPDIR/views.json"
     run malcolm arkime-views
     echo "$output"
     [ "$status" -eq 0 ]
-    [[ "$output" == *"ok      Scenario bgp - tcp/179 10.204.0.0/24 -> 10.204.0.0/24"* ]]
+    while IFS= read -r v; do
+        [[ "$output" == *"ok      $v"* ]] || { echo "not read back: $v"; return 1; }
+    done < <(pack_view_names)
+    [[ "$output" == *"ok      Scenario bgp - row 1 tcp 179"* ]]
+    [[ "$output" == *"ok      Scenario ospf - row 1 ospf"* ]]
     [[ "$output" == *"view(s) present"* ]]
     grep -qF 'ip.protocol == tcp && port == 179 && ip.src == 10.204.0.0/24 && ip.dst == 10.204.0.0/24' "$STUB_LOG"
     grep -qF '"name":"Scenario bgp - all traffic","expression":"ip == 10.204.0.0/16"' "$STUB_LOG"
