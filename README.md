@@ -110,6 +110,7 @@ and the build repo's Phase 5 don't gate anything in this kit.
 | `scripts/r770-validate.sh` | The success-criteria suite as a check · expected · observed · verdict · evidence table; SKIP with a reason, never silence |
 | `staging/` | The build repo's bundle pipeline, byte-identical (`staging/PROVENANCE.txt`): preflight, fetch (the pin owner), the one-command builder, and the verifier the fetch places inside every bundle. Runs on the staging host only |
 | `scripts/lib/common.sh` | The one set of seams (`KIT_ROOT`, `KIT_DRY_RUN`, `KIT_YES`, `KIT_NON_INTERACTIVE`, `KIT_EVIDENCE_DIR`), gates, rendering, image-list handling, `run_step`/`step_index` (what `full` uses to slice its step sequence), the call into the bundle's verifier |
+| `scripts/lib/expect.sh` | One scenario `expect.txt` row as the Arkime expression and the Dashboards (KQL) query that find it — the one translator behind the generated scenario searches and views and `r770-scenario.sh check`; refuses a protocol it does not know |
 | `config/` | nginx vhosts, GNS3 template + unit, Malcolm config template + saved objects, mkdocs — carried from the build repo with the deltas in `config/README.md` |
 | `docs/deployment-runbook.md` | The R770-side procedure: the Malcolm, GNS3 and docs pipelines, and the optional front door, with the gate you will see and the failure each step prevents |
 | `docs/rollback.md` | Per step: what changed, where the backup is, the exact undo, what is not reversible |

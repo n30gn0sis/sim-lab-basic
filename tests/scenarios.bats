@@ -50,6 +50,19 @@ lint() { run python3 tests/helpers/lint_scenarios.py "$1"; echo "$output"; [ "$s
     grep -qx 'udp|4500|10.202.0.1/32|10.202.0.2/32' scenarios/ipsec-ike/expect.txt
 }
 
+@test "every expect.txt row translates (scripts/lib/expect.sh), so dashboards and check can use it" {
+    run bash -c '. scripts/lib/common.sh; . scripts/lib/expect.sh
+        for d in scenarios/*/; do
+            while IFS="|" read -r n p port s t; do
+                w=$(expect_problem "$p" "$port" "$s" "$t")
+                [ -z "$w" ] || { echo "$d expect.txt row $n: $w"; exit 1; }
+            done < <(expect_rows "$d")
+        done'
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+}
+
 @test "every traffic.sh and node script is shellcheck-clean as POSIX sh" {
     run shellcheck -s sh scenarios/*/traffic.sh scenarios/*/nodes/*.sh
     echo "$output"
