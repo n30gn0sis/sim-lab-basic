@@ -42,14 +42,14 @@ It has no I/O of its own, and exposes:
 
 | Function | Output |
 |---|---|
-| `expect_rows <scenario-dir>` | `<n>\t<proto>\t<port>\t<src>\t<dst>` per data line of `expect.txt`; `n` is the row's ordinal among data lines (comments and blank lines skipped) |
+| `expect_rows <scenario-dir>` | `<n>|<proto>|<port>|<src>|<dst>` (`|`, not a tab: bash `read` collapses an empty field between tabs, and the port is often empty) per data line of `expect.txt`; `n` is the row's ordinal among data lines (comments and blank lines skipped) |
 | `expect_arkime <proto> <port> <src> <dst>` | the Arkime expression |
-| `expect_lucene <proto> <port> <src> <dst>` | the Dashboards (Lucene) query |
-| `expect_label <proto> <port> <src> <dst>` | a human label, e.g. `tcp/179 10.204.0.0/24 → 10.204.0.0/24` |
+| `expect_kql <proto> <port> <src> <dst>` | the Dashboards query in KQL (`"language":"kuery"`, as the IPsec searches use) |
+| `expect_label <proto> <port> <src> <dst>` | a human label, e.g. `tcp/179 10.204.0.0/24 -> 10.204.0.0/24` (ASCII `->`, so names survive grep and sed) |
 
 Translation rules:
 
-| Field | Arkime | Lucene |
+| Field | Arkime | KQL |
 |---|---|---|
 | proto `tcp` `udp` `icmp` | `ip.protocol == tcp` (by name) | `network.transport:tcp` |
 | proto `esp` / `ah` / `ospf` | `ip.protocol == 50` / `51` / `89` | `network.iana_number:50` / `51` / `89` |
@@ -57,7 +57,7 @@ Translation rules:
 | src CIDR | `ip.src == <cidr>` | `source.ip:"<cidr>"` |
 | dst CIDR | `ip.dst == <cidr>` | `destination.ip:"<cidr>"` |
 
-Clauses are joined with `&&` in Arkime and with `and` in Lucene.
+Clauses are joined with `&&` in Arkime and with `and` in KQL.
 
 **Refusals, each naming the row:** an unknown protocol; a port on `esp`/`ah`/`ospf`/`icmp`; a port outside 1–65535; a src/dst that is not an IPv4 CIDR. The protocol set is closed on purpose: a new protocol is a one-line table change with a test, never a guess.
 
@@ -72,7 +72,7 @@ For every `scenarios/<s>/` (discovered by glob, the same way `r770-scenario.sh` 
 | Object | Id | Title | Query |
 |---|---|---|---|
 | saved search (range) | `lab-scenario-<s>` | `Scenario <s> - all traffic (lab)` | `source.ip:"<range>" or destination.ip:"<range>"` |
-| saved search (per row) | `lab-scenario-<s>-row-<n>` | `Scenario <s> - <label> (lab)` | `expect_lucene` |
+| saved search (per row) | `lab-scenario-<s>-row-<n>` | `Scenario <s> - <label> (lab)` | `expect_kql` |
 | Arkime view (range) | — | `Scenario <s> - all traffic` | `ip == <range>` |
 | Arkime view (per row) | — | `Scenario <s> - <label>` | `expect_arkime` |
 | dashboard | `lab-scenarios-overview` | `Lab scenarios - Overview (lab)` | one panel per range search, in `scenarios/` order |
