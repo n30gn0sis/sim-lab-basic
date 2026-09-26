@@ -343,6 +343,65 @@ STUB
     ! grep -q -- '--configure' "$MALCOLM_STUB_LOG"
 }
 
+# ── configure turns Arkime ESP tracking on (measured on staging VM 9770,
+# 2026-09-26: Malcolm's Arkime tracks no ESP by default, so no ESP scenario
+# ever became a session, until ARKIME_default__trackESP=true was added to
+# config/arkime.env) ─────────────────────────────────────────────────────────
+
+@test "configure turns Arkime's ESP tracking on in config/arkime.env" {
+    make_malcolm_tree "$ROOT"
+    run malcolm configure --bundle "$BUNDLE"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    f="$ROOT/opt/malcolm/malcolm/config/arkime.env"
+    [ "$(grep -c '^ARKIME_default__trackESP=' "$f")" -eq 1 ]
+    grep -qx 'ARKIME_default__trackESP=true' "$f"
+    [[ "$output" == *"PASS  trackESP turned on in $f — ESP (IP protocol 50) becomes an Arkime session"* ]]
+}
+
+@test "a second configure leaves exactly one trackESP line, already on" {
+    make_malcolm_tree "$ROOT"
+    run malcolm configure --bundle "$BUNDLE"
+    [ "$status" -eq 0 ]
+    f="$ROOT/opt/malcolm/malcolm/config/arkime.env"
+    run malcolm configure --bundle "$BUNDLE"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [ "$(grep -c '^ARKIME_default__trackESP=' "$f")" -eq 1 ]
+    [[ "$output" == *"PASS  trackESP already on in $f"* ]]
+}
+
+@test "configure replaces a pre-existing trackESP=false rather than duplicating it" {
+    make_malcolm_tree "$ROOT"
+    printf 'ARKIME_default__trackESP=false\n' >> "$ROOT/opt/malcolm/malcolm/config/arkime.env"
+    run malcolm configure --bundle "$BUNDLE"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    f="$ROOT/opt/malcolm/malcolm/config/arkime.env"
+    [ "$(grep -c '^ARKIME_default__trackESP=' "$f")" -eq 1 ]
+    grep -qx 'ARKIME_default__trackESP=true' "$f"
+    [[ "$output" == *"PASS  trackESP turned on in $f (was: false)"* ]]
+}
+
+@test "configure FAILs, naming the file, when the installer did not write arkime.env" {
+    make_malcolm_tree "$ROOT"
+    rm -f "$ROOT/opt/malcolm/malcolm/config/arkime.env"
+    run malcolm configure --bundle "$BUNDLE"
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"FAIL  $ROOT/opt/malcolm/malcolm/config/arkime.env is missing — the installer did not write it"* ]]
+}
+
+@test "configure --dry-run prints the ESP-tracking change and makes none of it" {
+    make_malcolm_tree "$ROOT"
+    run malcolm configure --bundle "$BUNDLE" --dry-run
+    echo "$output"
+    [ "$status" -eq 0 ]
+    f="$ROOT/opt/malcolm/malcolm/config/arkime.env"
+    [[ "$output" == *"DRY-RUN: set ARKIME_default__trackESP=true in $f"* ]]
+    ! grep -q trackESP "$f"
+}
+
 # ── rebind ──────────────────────────────────────────────────────────────────
 
 @test "rebind rewrites exactly one publish line and is idempotent" {

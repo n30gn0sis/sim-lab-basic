@@ -123,6 +123,10 @@ make_malcolm_tree() {
     mkdir -p "$home/malcolm/scripts" "$home/malcolm/config" "$home/malcolm/nginx" "$home/malcolm/pcap/upload"
     # the user the installer recorded: Malcolm's control scripts run as PUID/PGID
     printf 'PUID=1000\nPGID=1000\n' > "$home/malcolm/config/process.env"
+    # what the installer writes to config/arkime.env, as measured on staging
+    # VM 9770, 2026-09-26 -- rewritten on every configure run, which is why
+    # track_esp re-applies ARKIME_default__trackESP=true after it
+    printf 'ARKIME_FREESPACEG=\nARKIME_ROTATE_INDEX=daily\n' > "$home/malcolm/config/arkime.env"
     cat > "$home/install.py" <<'STUB'
 #!/usr/bin/env bash
 [ -n "${MALCOLM_STUB_LOG:-}" ] && echo "install.py $*" >> "$MALCOLM_STUB_LOG"

@@ -231,7 +231,12 @@ stack (`/opt/malcolm/malcolm/scripts/install.py`). Malcolm's control scripts ref
 `/opt/malcolm/malcolm/config/process.env`, which must not be root and must be in the `docker`
 group — and `configure`/`rebind` give that user the stack and the configured
 index and PCAP directories. `rebind` is re-applied after every installer run
-because a compose override file is ignored. `start` refuses before `auth` and
+because a compose override file is ignored. `configure` also sets
+`ARKIME_default__trackESP=true` in
+`/opt/malcolm/malcolm/config/arkime.env` after every installer run, the same
+way — Malcolm ships no knob for it, and without it ESP (IP protocol 50) is
+never an Arkime session, so the IPsec "ESP payload" search and view stay
+empty. `start` refuses before `auth` and
 before `rebind`. Arkime and logstash are the last to go healthy; `start` waits up to
 `MALCOLM_WAIT_SECS` and can be rerun to keep waiting.
 

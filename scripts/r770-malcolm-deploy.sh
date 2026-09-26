@@ -238,6 +238,40 @@ heap_sizes() {  # prints "<os-g> <ls-m>" from the host's memory, unless overridd
     [ "$ls" -lt 2500 ] && ls=2500
     printf '%s %s' "${MALCOLM_OS_MEM_G:-$os}" "${MALCOLM_LS_MEM_M:-$ls}"
 }
+# track_esp — turn on Arkime's ESP (IP protocol 50) session tracking in
+# config/arkime.env. Malcolm ships no knob for this; Arkime 5 reads
+# ARKIME_<section>__<key> overrides from its env file, and both Arkime
+# containers load config/arkime.env. The installer rewrites every
+# config/*.env file on every configure run, so this is re-applied after each
+# one, the same as do_rebind's compose edit. Measured on staging VM 9770,
+# 2026-09-26: without it, Zeek's conn log has no ESP either, so no session
+# from an ESP scenario existed at all; appending the line and cycling
+# stop/start (which recreates the containers) fixed it.
+track_esp() {
+    local f old want='ARKIME_default__trackESP=true'
+    f="$(stack)/config/arkime.env"
+    if [ "$DRY" = "1" ]; then
+        echo "DRY-RUN: set $want in $f"
+        return 0
+    fi
+    if [ ! -f "$f" ]; then
+        fail "$f is missing — the installer did not write it"
+        return 0
+    fi
+    if grep -qxF "$want" "$f"; then
+        pass "trackESP already on in $f"
+        return 0
+    fi
+    old=$(sed -n 's/^ARKIME_default__trackESP=//p' "$f" | head -1)
+    if [ -n "$old" ]; then
+        sed -i "s|^ARKIME_default__trackESP=.*|$want|" "$f"
+        pass "trackESP turned on in $f (was: $old)"
+    else
+        printf '%s\n' "$want" >> "$f"
+        pass "trackESP turned on in $f — ESP (IP protocol 50) becomes an Arkime session"
+    fi
+}
+
 cmd_configure() {
     banner "configure — replay the kit's config through the installer"
     need_root
@@ -286,6 +320,7 @@ cmd_configure() {
             if run chown 1000:1000 "$(stack)/pcap/upload"; then pass "pcap/upload owned by 1000:1000 (the drop-off the rehearsal measured)"; fi
         fi
     fi
+    track_esp
     do_rebind
     own_stack
     footer "configure"
