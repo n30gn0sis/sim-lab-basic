@@ -1305,3 +1305,60 @@ Context: the staging proof (Task 6) on VM 9770, against the live Malcolm (Arkime
   - the check section's wait;
   - an evidence line recording facts 1–3 above.
 - **Commits.** One commit per requirement (A, B, C). Each commit keeps `./tests/run.sh` green: shellcheck no exclusions, no version numbers, only 127.0.0.1 URLs, no secrets on argv.
+
+### Task 8: check nudges netsniff's rotation
+
+The brief used for execution is reproduced here as the record.
+
+
+## Measured on VM 9770 (build to these facts)
+
+- **netsniff rotates on the next packet, not on a timer.** Malcolm's netsniff writes the lab mirror (`lab_mirror0`) to PCAP files, and rotates a file only when a packet arrives *after* `PCAP_ROTATE_MINUTES` (10 on this box). On a quiet lab bridge a file stays open until the next traffic: file start times went 17:45:38, then 18:15:38.
+- **Arkime indexes only closed files.** It indexes a PCAP file when it closes. Zeek-live indexes tcp/udp/icmp/ospf in real time, but logs no ESP. So an ESP row's session lands only after the next packet following the rotation interval. The 17:48 ESP run was indexed at 18:18, seconds after the next run's first packet.
+- **One frame on `lab-mon0` reaches netsniff.** `lab-mon0` is the kit's veth end enslaved to `br-lab`; its peer `lab_mirror0` is the capture end. A frame transmitted out of `lab-mon0` arrives on `lab_mirror0`, where netsniff captures it. That is enough to make netsniff rotate once the interval has passed.
+
+## Requirement (scripts/r770-scenario.sh, tests/scenario.bats, docs)
+
+### Behaviour
+
+In `cmd_check`'s wait loop, nudge **once** when all three hold:
+1. rows are still pending (0 or error);
+2. `PCAP_ROTATE_MINUTES` was read from Malcolm's `pcap-capture.env` (the value `check_wait_secs` already discovers; keep it available, e.g. in a global);
+3. `waited` has reached `PCAP_ROTATE_MINUTES*60` seconds.
+
+A nudge is one Ethernet frame transmitted out of `lab-mon0`:
+- destination broadcast `ff:ff:ff:ff:ff:ff`;
+- source `lab-mon0`'s own MAC, read from `/sys/class/net/lab-mon0/address`;
+- ethertype `0x88b5` (IEEE 802 local experimental);
+- payload the ASCII marker `r770-kit netsniff rotation nudge <scenario> <UTC timestamp>`, padded with zero bytes to at least 46.
+
+Then the loop continues polling as before (the default wait's extra 180 s covers the file's processing).
+
+### Details
+
+- **Interface.** `lab-mon0` is the kit's own interface, created by `r770-gns3-deploy.sh labnet`. Name it in one constant (`LAB_MON=lab-mon0`) with a comment saying so. Check that `$(p /sys/class/net/lab-mon0)` exists before sending. If it doesn't, write `note "no lab-mon0 (run r770-gns3-deploy.sh labnet) — cannot nudge netsniff; rows that only Arkime sees wait for the next traffic"` once and keep waiting.
+- **Sender.** Send with `python3` and an `AF_PACKET`/`SOCK_RAW` socket bound to the interface: `python3 - <iface> <scenario> <timestamp>` with the program on a heredoc. No new packages, no `ip`/`scapy`. Do **not** give any interface an address, bring anything up, or change bridge membership (CLAUDE.md rule 8).
+- **Output.** On success: `note "nudged netsniff: one marker frame (ethertype 0x88b5) out of lab-mon0 so it rotates the PCAP holding this run"`. If the sender fails: `warn "could not send the netsniff nudge (<reason>) — rows that only Arkime sees wait for the next traffic"`, a WARN rather than a die, and keep waiting.
+- **Once per check.** Never nudge when no rows are pending, and never when `PCAP_ROTATE_MINUTES` is unknown.
+- **Comment.** Put one above the nudge explaining why: the measured facts, in two or three lines.
+
+### Tests (tests/scenario.bats; `sleep` stubbed as today)
+
+Stub `python3` in these check tests to append `python3 $*` plus its stdin to a log file, and exit 0. (`check` uses python3 for nothing else; confirm this.) Create `$ROOT/sys/class/net/lab-mon0/address` as needed.
+
+1. `pcap-capture.env` has `PCAP_ROTATE_MINUTES=1`, `lab-mon0` exists, and one row never arrives. python3 is called exactly once, with `lab-mon0 demo` in its args. Its stdin program contains `AF_PACKET` and `0x88b5` (or `b"\x88\xb5"`). The output has the nudge note. The row still FAILs after 240 s.
+2. Same, but a row appears only after the nudge (`late.tsv`). It PASSes, and python3 was called once.
+3. All rows pass on the first poll: python3 is never called.
+4. No `lab-mon0`: python3 is never called, and the output has the "no lab-mon0" note.
+5. No `pcap-capture.env`: python3 is never called.
+6. The python3 stub exits 1: the output has the WARN, and the check still completes (FAIL on the missing row, not a crash).
+
+### Docs
+
+- **`docs/deployment-runbook.md`, the `check` paragraph:** add one or two sentences. Rows only Arkime sees (ESP) land when netsniff next rotates, which needs a packet after `PCAP_ROTATE_MINUTES`. On a quiet lab `check` sends that packet itself: one marker frame, ethertype 0x88b5, out of `lab-mon0`, so it appears in the capture.
+- **Spec** (`docs/superpowers/specs/2026-09-26-scenario-dashboards-and-check-design.md`): add the nudge to the check section, and the rotation facts to the evidence section.
+
+### Rules
+
+- `./tests/run.sh` green: shellcheck with no exclusions, no version numbers, only 127.0.0.1 URLs, no secrets on argv.
+- One commit.
