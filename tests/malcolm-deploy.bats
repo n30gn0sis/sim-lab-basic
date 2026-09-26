@@ -719,6 +719,44 @@ print(d["attributes"]["title"]); print(" ".join(r["id"] for r in d["references"]
     [ "$output" = 0 ]
 }
 
+# ── arkime-views generates the scenario pack's views ─────────────────────────
+
+pack_view_names() {  # every view name arkime-views should generate from $SCENARIO_DIR
+    local d s n p port src dst
+    for d in "$SCENARIO_DIR"/*/; do
+        s=$(basename "$d"); echo "Scenario $s - all traffic"
+        grep -vE '^(#|$)' "$d/expect.txt" | while IFS='|' read -r p port src dst; do
+            echo "Scenario $s - $p${port:+/$port} $src -> $dst"
+        done
+    done
+}
+
+@test "arkime-views posts a range view and a view per expect row for every scenario, and reads them all back" {
+    make_malcolm_tree "$ROOT"; malcolm_secret; use_pack
+    stub_curl_osd
+    { sed -n 's/^\([^#|][^|]*\)|.*/\1/p' config/malcolm/arkime-views/ipsec.views; pack_view_names; } \
+        | sed 's/.*/{"name":"&"}/' | paste -sd, - | sed 's/^/[/;s/$/]/' > "$BATS_TEST_TMPDIR/views.json"
+    run malcolm arkime-views
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"ok      Scenario bgp - tcp/179 10.204.0.0/24 -> 10.204.0.0/24"* ]]
+    [[ "$output" == *"view(s) present"* ]]
+    grep -qF 'ip.protocol == tcp && port == 179 && ip.src == 10.204.0.0/24 && ip.dst == 10.204.0.0/24' "$STUB_LOG"
+    grep -qF '"name":"Scenario bgp - all traffic","expression":"ip == 10.204.0.0/16"' "$STUB_LOG"
+    grep -qF 'ip.protocol == 89 && ip.src == 10.203.23.0/24 && ip.dst == 224.0.0.5/32' "$STUB_LOG"
+}
+
+@test "a row the translator refuses stops arkime-views before any view is posted" {
+    make_malcolm_tree "$ROOT"; malcolm_secret; bad_pack
+    stub_curl_osd
+    run malcolm arkime-views
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"refusing scenarios/bad/expect.txt row 2: unknown protocol 'sctp'"* ]]
+    run grep -c -- '-X POST' "$STUB_LOG"
+    [ "$output" = 0 ]
+}
+
 # ── full ─────────────────────────────────────────────────────────────────────
 
 @test "full runs preflight through start in order: r770-import-bundle.sh for the shared steps, this script's own subcommands after" {
