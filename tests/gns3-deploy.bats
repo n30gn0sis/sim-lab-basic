@@ -287,6 +287,16 @@ STUB
     ! grep -q '^systemctl enable' "$STUB_LOG"
 }
 
+@test "service refuses without ubridge, which GNS3 needs to open any project (measured on staging)" {
+    gns3 secrets >/dev/null; gns3 venv --bundle "$BUNDLE" >/dev/null; gns3 config >/dev/null || true
+    stub dpkg 'case "$*" in *ubridge*) exit 1;; *) exit 0;; esac'
+    run gns3 service
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"ubridge"* ]]
+    [ ! -e "$ROOT/etc/systemd/system/gns3.service" ]
+}
+
 @test "service installs the unit, enables it, and asserts 127.0.0.1:3080" {
     gns3 secrets >/dev/null; gns3 venv --bundle "$BUNDLE" >/dev/null; gns3 config >/dev/null || true
     run gns3 service

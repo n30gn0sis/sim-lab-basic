@@ -159,6 +159,10 @@ cmd_service() {
     need_root
     [ -x "$(venv)/bin/gns3server" ] || die "no gns3server at $(venv) — run venv first"
     [ -s "$(p "$GNS3_ETC")/gns3_server.conf" ] || die "no $GNS3_ETC/gns3_server.conf — run config first"
+    # GNS3 opens every link (Cloud TAP ports included) through uBridge, which the
+    # wheelhouse does not carry; without it no project opens ("uBridge is not
+    # available") -- measured on staging VM 9770, 2026-09-26
+    require_pkg ubridge
     gate "install and start the GNS3 systemd unit" svc_current svc_proposed \
         "systemctl disable --now gns3; rm /etc/systemd/system/gns3.service; systemctl daemon-reload"
     run install -m 0644 "$KIT_CONFIG_DIR/systemd/gns3.service" "$(p /etc/systemd/system)/gns3.service" || die "could not install the unit"
