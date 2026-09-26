@@ -582,6 +582,13 @@ ipsec_ids() {  # every id the shipped template declares
     grep -q -- '--netrc-file' "$STUB_LOG"
 }
 
+@test "the Malcolm netrc is written in one place, scripts/lib/malcolm-api.sh, which both API users source" {
+    cd "$BATS_TEST_DIRNAME/.."
+    run grep -l -- '--netrc-file' scripts/*.sh scripts/lib/*.sh
+    [ "$output" = "scripts/lib/malcolm-api.sh" ]
+    grep -q '^\. "$(dirname "${BASH_SOURCE\[0\]}")/lib/malcolm-api.sh"' scripts/r770-malcolm-deploy.sh
+}
+
 @test "arkime-views posts every view in the kit's file and reads them all back" {
     make_malcolm_tree "$ROOT"; malcolm_secret
     stub_curl_osd

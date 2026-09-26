@@ -67,12 +67,14 @@ set -uo pipefail
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=lib/common.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
+# shellcheck source=lib/malcolm-api.sh
+. "$(dirname "${BASH_SOURCE[0]}")/lib/malcolm-api.sh"
 
-BUNDLE=""; FREE_G=""; IDX=""; OSD_NETRC=""
+BUNDLE=""; FREE_G=""; IDX=""
 CAPTURE_IFS=""; CAPTURE_SET=0
 MEDIA=""; DEVICE=""; FROM=""; TO=""; ONLY=""
 MALCOLM_HOME="${MALCOLM_HOME:-/opt/malcolm}"
-ADMIN_USER="${MALCOLM_ADMIN_USER:-analyst}"
+ADMIN_USER="$MALCOLM_API_USER"
 WAIT_SECS="${MALCOLM_WAIT_SECS:-600}"
 AUTH_FLAGS=(--auth-noninteractive --auth-method --auth-admin-username --auth-admin-password-openssl
             --auth-admin-password-htpasswd --auth-generate-webcerts --auth-generate-fwcerts
@@ -82,7 +84,7 @@ AUTH_FLAGS=(--auth-noninteractive --auth-method --auth-admin-username --auth-adm
 INSTALL_FLAGS=(--non-interactive --skip-splash --configure --import-malcolm-config-file --export-malcolm-config-file)
 REBIND_FROM='^    - 0.0.0.0:443:443/tcp$'
 REBIND_TO='    - 127.0.0.1:8443:443/tcp'
-SECRET="/etc/lab/secrets/malcolm-admin.pw"
+SECRET="$MALCOLM_SECRET_FILE"
 STEPS=(preflight gate copy apt phone-home docker files load unpack configure secrets auth rebind start)
 # test seam: lets a suite stub out every call this script makes to
 # r770-import-bundle.sh under `full`, and record what was called.
@@ -473,35 +475,7 @@ cmd_status() {
 }
 
 # ── dashboards and arkime views ──────────────────────────────────────────────
-# Everything below reaches the stack through the rebound proxy on
-# 127.0.0.1:8443 — the entry point `rebind` guarantees, and the only one the
-# air gap admits. The admin credential never reaches argv or the transcript:
-# curl reads it from a 0600 netrc that lives only for the length of the run.
-# There is no jq on this box, so every response is read with sed and grep, and
-# any shape this kit was not written for is a refusal, never a guess.
-osd_cleanup() {
-    if [ -n "$OSD_NETRC" ]; then rm -f "$OSD_NETRC"; fi
-    OSD_NETRC=""
-}
-osd_auth_file() {
-    local pw
-    pw=$(secret_read "$(p "$SECRET")") || exit 1
-    OSD_NETRC=$(mktemp) || die "mktemp failed"
-    chmod 600 "$OSD_NETRC"
-    printf 'machine 127.0.0.1 login %s password %s\n' "$ADMIN_USER" "$pw" > "$OSD_NETRC"
-    trap osd_cleanup EXIT
-}
-osd_api() {  # osd_api <method> <path> [extra args...]
-    local m=$1 path=$2; shift 2
-    curl -sS -k --max-time 60 --netrc-file "$OSD_NETRC" -X "$m" -H 'osd-xsrf: true' "https://127.0.0.1:8443/dashboards${path}" "$@"
-}
-arkime_api() {  # arkime_api <method> <path> [extra args...]
-    local m=$1 path=$2; shift 2
-    curl -sS -k --max-time 60 --netrc-file "$OSD_NETRC" -X "$m" -H 'Content-Type: application/json' "https://127.0.0.1:8443/arkime${path}" "$@"
-}
-# osd_reachable — a named SKIP beats a wall of curl errors when the stack is
-# simply not up yet.
-osd_reachable() { osd_api GET "/api/status" --fail >/dev/null 2>&1; }
+# The API helpers (osd_api, arkime_api, the netrc) are scripts/lib/malcolm-api.sh's.
 
 # osd_objects <find-query> — "<type> <id> <title>" per line. Each object is put
 # on a line of its own first; that is as much JSON as bash should ever parse.

@@ -11,7 +11,7 @@ LEGACY_EXCLUDE="SC2015,SC2012,SC2010,SC1091"   # build repo's tests/README.md ex
 setup() { cd "$BATS_TEST_DIRNAME/.."; }
 
 @test "every kit script is shellcheck-clean with no exclusions" {
-    run shellcheck -x scripts/*.sh scripts/lib/*.sh tests/run.sh
+    run shellcheck -P SCRIPTDIR -x scripts/*.sh scripts/lib/*.sh tests/run.sh
     echo "$output"
     [ "$status" -eq 0 ]
 }
