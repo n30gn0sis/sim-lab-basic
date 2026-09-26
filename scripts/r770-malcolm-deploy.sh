@@ -67,6 +67,7 @@ set -uo pipefail
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=lib/common.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
+# shellcheck source-path=SCRIPTDIR
 # shellcheck source=lib/malcolm-api.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib/malcolm-api.sh"
 
