@@ -545,8 +545,11 @@ up_demo() { run scenario up demo --bundle "$BUNDLE"; [ "$status" -eq 0 ]; : > "$
 # ── check ────────────────────────────────────────────────────────────────────
 # Arkime is a curl stub: counts.tsv maps an expression to its session count;
 # late.tsv gives an expression's count only from its second query on (the
-# session was indexed while the check waited). arkime-down makes every call
-# fail; arkime-html makes the sessions answer a login page.
+# session was indexed while the check waited). late-nudge.tsv (Task 8) gives
+# an expression's count only once $PYTHON3_LOG is non-empty (the row was
+# indexed only once the netsniff nudge — see python3_stub — has fired), which
+# never happens unless a test opts in with count_after_nudge. arkime-down
+# makes every call fail; arkime-html makes the sessions answer a login page.
 
 arkime_stub() {
     printf 'fixture-malcolm-pw\n' > "$ROOT/etc/lab/secrets/malcolm-admin.pw"
@@ -576,6 +579,8 @@ case "$url" in
     c=$(awk -F'\t' -v e="$ex" '$1 == e {print $2}' "$T/counts.tsv")
     l=$(awk -F'\t' -v e="$ex" '$1 == e {print $2}' "$T/late.tsv" 2>/dev/null)
     if [ -n "$l" ] && [ "$m" -ge 2 ]; then c=$l; fi
+    n=$(awk -F'\t' -v e="$ex" '$1 == e {print $2}' "$T/late-nudge.tsv" 2>/dev/null)
+    if [ -n "$n" ] && [ -n "${PYTHON3_LOG:-}" ] && [ -s "$PYTHON3_LOG" ]; then c=$n; fi
     printf '{"recordsTotal":9,"recordsFiltered":%s,"data":[]}\n200' "${c:-0}" ;;
   *) exit 7 ;;
 esac
@@ -754,4 +759,102 @@ pcap_capture_env() {  # pcap_capture_env <minutes> — this Malcolm's rotation p
     [ "$status" -eq 1 ]
     [[ "$output" != *"PCAP_ROTATE_MINUTES"* ]]
     [[ "$output" == *"FAIL  demo row 2 tcp/80 10.209.0.1/32 -> 10.209.0.2/32: 0 sessions after 20s"* ]]
+}
+
+# ── check nudges netsniff (Task 8) ────────────────────────────────────────────
+# netsniff rotates lab_mirror0's PCAP only on the next packet after
+# PCAP_ROTATE_MINUTES, not on a timer, so a quiet lab bridge can leave a file
+# open indefinitely and Arkime never indexes it. check sends one marker frame
+# out of lab-mon0 once the wait has reached that interval, so netsniff rotates.
+
+python3_stub() {  # python3_stub [<rc>] — records `python3 $*` and its stdin to $PYTHON3_LOG; exits <rc> (default 0)
+    PYTHON3_LOG="$BATS_TEST_TMPDIR/python3.log"
+    : > "$PYTHON3_LOG"
+    export PYTHON3_LOG
+    local rc=${1:-0}
+    stub python3 "echo \"python3 \$*\" >> \"\$PYTHON3_LOG\"; cat >> \"\$PYTHON3_LOG\"; exit $rc"
+}
+
+lab_mon0() { mkdir -p "$ROOT/sys/class/net/lab-mon0"; printf '02:00:00:00:00:01\n' > "$ROOT/sys/class/net/lab-mon0/address"; }
+
+@test "check nudges netsniff once with a marker frame out of lab-mon0 once PCAP_ROTATE_MINUTES has passed" {
+    arkime_stub; run_record demo >/dev/null
+    python3_stub
+    pcap_capture_env 1
+    lab_mon0
+    count "$ROW1" 3
+    run scenario check demo
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [ "$(grep -c '^python3 ' "$PYTHON3_LOG")" -eq 1 ]
+    grep -q -- '- lab-mon0 demo ' "$PYTHON3_LOG"
+    grep -q 'AF_PACKET' "$PYTHON3_LOG"
+    grep -qF 'b"\x88\xb5"' "$PYTHON3_LOG"
+    [[ "$output" == *"nudged netsniff: one marker frame (ethertype 0x88b5) out of lab-mon0 so it rotates the PCAP holding this run"* ]]
+    [[ "$output" == *"FAIL  demo row 2 tcp/80 10.209.0.1/32 -> 10.209.0.2/32: 0 sessions after 240s"* ]]
+}
+
+@test "a row that appears only once netsniff is nudged still PASSes, and python3 was called once" {
+    arkime_stub; run_record demo >/dev/null
+    python3_stub
+    pcap_capture_env 1
+    lab_mon0
+    count "$ROW1" 3
+    count "$ROW2" 5 late-nudge
+    run scenario check demo
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"PASS  demo row 2 tcp/80 10.209.0.1/32 -> 10.209.0.2/32: 5 session(s)"* ]]
+    [ "$(grep -c '^python3 ' "$PYTHON3_LOG")" -eq 1 ]
+}
+
+@test "check never nudges when every row already has sessions on the first poll" {
+    arkime_stub; run_record demo >/dev/null
+    python3_stub
+    pcap_capture_env 1
+    lab_mon0
+    count "$ROW1" 3; count "$ROW2" 7
+    run scenario check demo
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [ ! -s "$PYTHON3_LOG" ]
+}
+
+@test "check never calls python3 without lab-mon0, and notes why once rather than every poll" {
+    arkime_stub; run_record demo >/dev/null
+    python3_stub
+    pcap_capture_env 1
+    count "$ROW1" 3
+    run scenario check demo
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [ ! -s "$PYTHON3_LOG" ]
+    [ "$(grep -c 'no lab-mon0 (run r770-gns3-deploy.sh labnet)' <<< "$output")" -eq 1 ]
+    [[ "$output" == *"no lab-mon0 (run r770-gns3-deploy.sh labnet) — cannot nudge netsniff; rows that only Arkime sees wait for the next traffic"* ]]
+    [[ "$output" == *"FAIL  demo row 2 tcp/80 10.209.0.1/32 -> 10.209.0.2/32: 0 sessions after 240s"* ]]
+}
+
+@test "check never calls python3 when this Malcolm names no PCAP_ROTATE_MINUTES" {
+    arkime_stub; run_record demo >/dev/null
+    python3_stub
+    lab_mon0
+    count "$ROW1" 3
+    run scenario check demo
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [ ! -s "$PYTHON3_LOG" ]
+}
+
+@test "check WARNs, not dies, when the nudge sender fails, and keeps waiting to a FAIL" {
+    arkime_stub; run_record demo >/dev/null
+    python3_stub 1
+    pcap_capture_env 1
+    lab_mon0
+    count "$ROW1" 3
+    run scenario check demo
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"WARN  could not send the netsniff nudge (python3 exited 1) — rows that only Arkime sees wait for the next traffic"* ]]
+    [[ "$output" == *"FAIL  demo row 2 tcp/80 10.209.0.1/32 -> 10.209.0.2/32: 0 sessions after 240s"* ]]
+    [ "$(grep -c '^python3 ' "$PYTHON3_LOG")" -eq 1 ]
 }

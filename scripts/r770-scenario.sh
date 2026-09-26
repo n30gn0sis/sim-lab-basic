@@ -51,10 +51,14 @@ SCEN_DIR="${SCENARIO_DIR:-$KIT_DIR/scenarios}"
 ADMIN_USER="${GNS3_ADMIN_USER:-admin}"
 SECRET="/etc/lab/secrets/gns3-admin.pw"
 MARKER="r770_scenario"
+# lab-mon0: the kit's own veth end enslaved to br-lab (created by
+# r770-gns3-deploy.sh labnet); its peer lab_mirror0 is Malcolm's capture end.
+LAB_MON="lab-mon0"
 BUNDLE=""; NAME=""; WORK=""; AUTH_HDR=""
 WAIT_SECS="${SCENARIO_WAIT_SECS:-120}"
 LAB_TAPS="${GNS3_LAB_TAPS:-4}"
 TAPS=""; TAP_A=""; TAP_B=""; RUN_FILE=""
+ROTATE_MIN=""  # PCAP_ROTATE_MINUTES, once check_wait_secs has read it; empty otherwise
 usage() { usage_from_header 3; exit 0; }
 
 # ── the pack ─────────────────────────────────────────────────────────────────
@@ -387,17 +391,51 @@ check_wait_secs() {
     m=$(sed -n 's/^PCAP_ROTATE_MINUTES=\([0-9][0-9]*\)$/\1/p' "$f" 2>/dev/null | tail -1)
     if [ -n "$m" ]; then
         CHECK_WAIT_SECS=$((m * 60 + 180))
+        ROTATE_MIN=$m
         note "waiting up to ${CHECK_WAIT_SECS}s for Arkime: it indexes PCAP when netsniff rotates it (PCAP_ROTATE_MINUTES=$m)"
     else
         CHECK_WAIT_SECS=180
         note "waiting up to 180s (no PCAP_ROTATE_MINUTES in $f)"
     fi
 }
+# nudge_netsniff <scenario> — netsniff (Malcolm's PCAP writer for
+# lab_mirror0) rotates a file only on the next packet after
+# PCAP_ROTATE_MINUTES, not on a timer: on a quiet lab bridge a file stays
+# open until the next traffic (measured on VM 9770: file start times
+# 17:45:38, then 18:15:38), and Arkime indexes a file only once it closes.
+# One frame transmitted out of lab-mon0 reaches lab_mirror0 and is enough to
+# make netsniff rotate once the interval has passed. Never gives lab-mon0 an
+# address or touches its bridge membership (CLAUDE.md rule 8) -- it only
+# transmits one frame out of an interface that already exists.
+nudge_netsniff() {
+    if [ ! -e "$(p "/sys/class/net/$LAB_MON")" ]; then
+        note "no lab-mon0 (run r770-gns3-deploy.sh labnet) — cannot nudge netsniff; rows that only Arkime sees wait for the next traffic"
+        return 0
+    fi
+    if python3 - "$LAB_MON" "$1" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" <<'PY'
+import socket
+import sys
+
+iface, scenario, ts = sys.argv[1], sys.argv[2], sys.argv[3]
+mac = bytes.fromhex(open("/sys/class/net/" + iface + "/address").read().strip().replace(":", ""))
+payload = ("r770-kit netsniff rotation nudge " + scenario + " " + ts).encode()
+payload += b"\x00" * max(0, 46 - len(payload))
+frame = b"\xff\xff\xff\xff\xff\xff" + mac + b"\x88\xb5" + payload
+s = socket.socket(socket.AF_PACKET, socket.SOCK_RAW)
+s.bind((iface, 0))
+s.send(frame)
+PY
+    then
+        note "nudged netsniff: one marker frame (ethertype 0x88b5) out of lab-mon0 so it rotates the PCAP holding this run"
+    else
+        warn "could not send the netsniff nudge (python3 exited $?) — rows that only Arkime sees wait for the next traffic"
+    fi
+}
 cmd_check() {
     banner "check — $NAME"
     need_root
     scenario_check "$NAME"
-    local ev="${KIT_EVIDENCE_DIR:-$PWD/r770-evidence}" wait="" waited=0
+    local ev="${KIT_EVIDENCE_DIR:-$PWD/r770-evidence}" wait="" waited=0 nudged=0
     local rec start end s e r n proto port src dst why c pending lbl rows=()
     local -A cnt=()
     if [ -n "${SCENARIO_CHECK_WAIT_SECS+x}" ]; then
@@ -442,6 +480,10 @@ cmd_check() {
             case "${cnt[$n]}" in 0|ERR*) pending=$((pending + 1)) ;; esac
         done
         [ "$pending" -eq 0 ] && break
+        if [ "$nudged" -eq 0 ] && [ -n "$ROTATE_MIN" ] && [ "$waited" -ge "$((ROTATE_MIN * 60))" ]; then
+            nudge_netsniff "$NAME"
+            nudged=1
+        fi
         [ "$waited" -ge "$wait" ] && break
         sleep 10; waited=$((waited + 10))
     done

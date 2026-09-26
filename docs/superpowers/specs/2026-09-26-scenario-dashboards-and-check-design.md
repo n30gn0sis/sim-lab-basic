@@ -50,9 +50,9 @@ The kit first modelled Arkime's pre-5 views API. These are the live answers from
 | The same POST twice | two views with the same name: no duplicate refusal |
 | `DELETE /arkime/api/view/<id>` with the token | 200, `"Deleted view successfully"` |
 
-## Evidence behind Task 7 (VM 9770, 2026-09-26 addendum)
+## Evidence behind Tasks 7 and 8 (VM 9770, 2026-09-26 addendum)
 
-Three facts measured against the live staging stack, after the units below
+Four facts measured against the live staging stack, after the units below
 first shipped:
 
 1. **Malcolm's Arkime tracks no ESP** (IP protocol 50) by default, and Zeek's
@@ -76,6 +76,17 @@ first shipped:
    file only after it closes. The ESP session appeared within 20 minutes;
    `check`'s fixed 180 s default missed it, so `SCENARIO_CHECK_WAIT_SECS`'s
    default now follows `PCAP_ROTATE_MINUTES`.
+4. **netsniff rotates on the next packet, not on a timer** (Task 8 addendum).
+   On a quiet lab bridge a file stays open until the next traffic reaches
+   `lab_mirror0`: file start times went 17:45:38, then 18:15:38. Zeek-live
+   indexes tcp/udp/icmp/ospf in real time but logs no ESP, so an ESP row's
+   session lands only after the next packet following the rotation interval
+   — the 17:48 ESP run was indexed at 18:18, seconds after the next run's
+   first packet. One frame transmitted out of `lab-mon0` (the kit's veth end
+   enslaved to `br-lab`) reaches its peer `lab_mirror0`, where netsniff
+   captures it — enough to make it rotate once the interval has passed.
+   `check` now sends that one marker frame itself, once, when rows are still
+   pending past `PCAP_ROTATE_MINUTES`.
 
 ## Units
 
@@ -105,7 +116,7 @@ Clauses are joined with `&&` in Arkime and with `and` in KQL.
 flow, oriented by whichever endpoint sent its first packet — which need not
 be the row's `src`. A row's direction is proven either by a session opened
 in that orientation, or by the reply half (`packets.dst` / `destination.packets`
-above 0) of a session opened the other way. See "Evidence behind Task 7"
+above 0) of a session opened the other way. See "Evidence behind Tasks 7 and 8"
 below.
 
 **Refusals, each naming the row:** an unknown protocol; a port on `esp`/`ah`/`ospf`/`icmp`; a port outside 1–65535; a src/dst that is not an IPv4 CIDR. The protocol set is closed on purpose: a new protocol is a one-line table change with a test, never a guess.
@@ -139,7 +150,8 @@ For every `scenarios/<s>/` (discovered by glob, the same way `r770-scenario.sh` 
 - **The run.** It takes the newest `scenario-<name>-*.run` under the evidence directory, or `--run`, and refuses a record whose `scenario=` is not `<name>`, or which lacks `start=`/`end=`. It needs root (to read the secret), like the other subcommands.
 - **Reachability.** It probes `GET /api/user` and SKIPs with the reason "Arkime did not answer on 127.0.0.1:8443 — start Malcolm" when the API does not answer, and "no run record — run r770-scenario.sh traffic <name> first" when there is no run.
 - **Per row.** For each row it `GET`s `/arkime/api/sessions` with `expression=expect_arkime`, `startTime`/`stopTime` from the record, `bounding=either` and `length=1`, and reads `recordsFiltered`.
-- **Polling.** It polls every 10 s until every row is above 0 or `SCENARIO_CHECK_WAIT_SECS` passes. Arkime writes a session when it closes or at a periodic save, so an immediate check can be early. `SCENARIO_CHECK_WAIT_SECS` defaults to this Malcolm's own PCAP rotation: `PCAP_ROTATE_MINUTES` (read from `/opt/malcolm/malcolm/config/pcap-capture.env`, last matching line) × 60 + 180, or a fixed 180 when the file or the value is absent — this Malcolm is not capturing live, so Arkime only indexes a PCAP file once netsniff rotates it closed. See "Evidence behind Task 7" below.
+- **Polling.** It polls every 10 s until every row is above 0 or `SCENARIO_CHECK_WAIT_SECS` passes. Arkime writes a session when it closes or at a periodic save, so an immediate check can be early. `SCENARIO_CHECK_WAIT_SECS` defaults to this Malcolm's own PCAP rotation: `PCAP_ROTATE_MINUTES` (read from `/opt/malcolm/malcolm/config/pcap-capture.env`, last matching line) × 60 + 180, or a fixed 180 when the file or the value is absent — this Malcolm is not capturing live, so Arkime only indexes a PCAP file once netsniff rotates it closed. See "Evidence behind Tasks 7 and 8" below.
+- **The netsniff nudge (Task 8).** netsniff rotates a file only on the next packet after `PCAP_ROTATE_MINUTES`, not on a timer, so a quiet lab bridge can leave the file open past that interval with nothing to make it close. Once rows are still pending and `waited` has reached `PCAP_ROTATE_MINUTES*60`, `check` sends one Ethernet frame out of `lab-mon0` — destination broadcast, source `lab-mon0`'s own MAC (read from `/sys/class/net/lab-mon0/address`), ethertype `0x88b5`, payload the ASCII marker `r770-kit netsniff rotation nudge <scenario> <UTC timestamp>` padded to at least 46 bytes — with a raw `AF_PACKET`/`SOCK_RAW` socket in a `python3 -` heredoc (no new packages, no `ip`/`scapy`). This never gives `lab-mon0` an address or touches its bridge membership (rule 8): it only transmits one frame out of an interface that already exists. It fires at most once per `check`, never when no rows are pending and never when `PCAP_ROTATE_MINUTES` is unknown. Missing `lab-mon0` is a `note` ("run r770-gns3-deploy.sh labnet"), never a die; a sender that fails is a `warn`, never a die — either way `check` keeps polling to its usual FAIL. See "Evidence behind Tasks 7 and 8" fact 4 above.
 - **PASS:** `PASS  <s> row <n> <label>: <count> session(s) in <start>–<end>`.
 - **FAIL:** `FAIL  <s> row <n> <label>: 0 sessions after <wait>s`, followed by a diagnosis. The diagnosis says to first confirm the flow is on the mirror (`tcpdump -ni lab_mirror0` with a filter built from the row), then check Malcolm's live capture (`r770-validate.sh --area capture`).
 - **API errors.** An API answer that is not JSON with `recordsFiltered` is a FAIL naming the HTTP status, never a 0.

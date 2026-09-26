@@ -461,7 +461,11 @@ This Malcolm is not capturing live: netsniff writes PCAP that rotates every
 `SCENARIO_CHECK_WAIT_SECS` defaults to that period (read from
 `/opt/malcolm/malcolm/config/pcap-capture.env`) times 60 plus a 180 s margin
 for Arkime's own indexing lag, falling back to a fixed 180 s when the file or
-the value is not there.
+the value is not there. Rows only Arkime sees (ESP) land only once netsniff
+next rotates, which needs a packet after `PCAP_ROTATE_MINUTES` — on a quiet
+lab, `check` sends that packet itself: one marker frame, ethertype `0x88b5`,
+out of `lab-mon0`, so it appears in the capture and netsniff rotates the
+file it is holding.
 A FAIL points at the mirror first, with the `tcpdump` filter for that row.
 It counts sessions that *overlap* the window, because a BGP session or an
 IKE SA outlives a traffic run. It SKIPs, with the reason, when Malcolm is
