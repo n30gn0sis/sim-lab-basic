@@ -269,7 +269,19 @@ queries come from `scripts/lib/expect.sh`, the same translator
 `r770-scenario.sh check` counts with. A row the translator refuses stops the
 step before anything is imported, naming the file and row.
 
-Both are idempotent: the import overwrites, and the views are posted by name.
+Both are idempotent. The import overwrites by id. `arkime-views` reads the
+views Arkime already holds and leaves a view that is present by name as it
+is, because Arkime stores a second copy of a name rather than refusing it; a
+rerun therefore posts nothing. The flip side: a view whose expression changed
+keeps its old expression until you delete the old view in Arkime and rerun.
+
+Arkime keeps only `[-a-zA-Z0-9_: ]` of a view's name, so a row's view is named
+by its row number and protocol (`Scenario bgp - row 1 tcp 179`), while its
+saved search keeps the full label. `arkime-views` refuses, before posting
+anything, any name that holds another character. Its posts carry Arkime's
+`x-arkime-cookie` token, taken from the `ARKIME-COOKIE` cookie that the
+`/arkime/sessions` page sets; the token travels in a 0600 header file, never
+on the command line or in the transcript.
 
 #### Authoring a new dashboard
 

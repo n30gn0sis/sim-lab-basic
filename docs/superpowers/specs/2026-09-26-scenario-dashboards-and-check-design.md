@@ -34,6 +34,22 @@ Queries were made to `GET https://127.0.0.1:8443/arkime/api/sessions` as the kit
 - **Why `either`.** A long-lived control-plane session (BGP, and an IKE SA that survives a window) starts before the window, and Arkime saves it after the window. The default bounding (last packet in range) misses it; `either` (overlaps) does not.
 - **Credentials.** `date=-1` means "all time" and must never be sent with a window. The user is `MALCOLM_ADMIN_USER` (default `analyst`), and the password comes from `/etc/lab/secrets/malcolm-admin.pw`.
 
+## Evidence behind the views API (VM 9770, measured during the final review)
+
+The kit first modelled Arkime's pre-5 views API. These are the live answers from Malcolm's Arkime, through `https://127.0.0.1:8443` as the kit's `analyst` user; the kit and its test stubs are built to them:
+
+| Request | Live answer |
+|---|---|
+| `GET /arkime/api/user/views` | 404, body `Old API` (the pre-5 path is a catch-all) |
+| `GET /arkime/api/views` | 200, `{"data":[{"name":…,"expression":…,"user":"analyst","id":…},…]}` |
+| `GET /arkime/api/user` | 200, the logged-in user (the check's reachability probe) |
+| `GET /arkime/api/sessions?…` | 200 with `recordsFiltered`, unchanged |
+| `POST /arkime/api/view` without `x-arkime-cookie` | 500, `{"success":false,"text":"Missing token"}` |
+| Token source | `GET /arkime/sessions` (the HTML page) sets the cookie `ARKIME-COOKIE`; `GET /arkime/api/user` sets none. The header value is the cookie's value URL-decoded |
+| `POST /arkime/api/view` with the token | 200, `"Created view!"`, but the name is stripped to `[-a-zA-Z0-9_: ]` (`tcp/179 10.0.0.0/24 -> …` came back as `tcp179 1000024 - …`) |
+| The same POST twice | two views with the same name: no duplicate refusal |
+| `DELETE /arkime/api/view/<id>` with the token | 200, `"Deleted view successfully"` |
+
 ## Units
 
 ### 1. `scripts/lib/expect.sh` — the translator (new, sourced)
@@ -74,21 +90,21 @@ For every `scenarios/<s>/` (discovered by glob, the same way `r770-scenario.sh` 
 | saved search (range) | `lab-scenario-<s>` | `Scenario <s> - all traffic (lab)` | `source.ip:"<range>" or destination.ip:"<range>"` |
 | saved search (per row) | `lab-scenario-<s>-row-<n>` | `Scenario <s> - <label> (lab)` | `expect_kql` |
 | Arkime view (range) | — | `Scenario <s> - all traffic` | `ip == <range>` |
-| Arkime view (per row) | — | `Scenario <s> - <label>` | `expect_arkime` |
+| Arkime view (per row) | — | `Scenario <s> - row <n> <proto>[ <port>]`, e.g. `Scenario bgp - row 1 tcp 179` (Arkime keeps only `[-a-zA-Z0-9_: ]` of a name, so the label cannot be used) | `expect_arkime` |
 | dashboard | `lab-scenarios-overview` | `Lab scenarios - Overview (lab)` | one panel per range search, in `scenarios/` order |
 
 - **Shape.** Same line shape and field set as `config/malcolm/dashboards/ipsec.ndjson.template`: one object per line, `{"id":…,"type":…,…}` first, no version fields, and the index pattern as `__NETWORK_INDEX_PATTERN_ID__`, rendered by the existing mechanism.
 - **Columns.** Every search gets the columns `source.ip`, `destination.ip`, `destination.port`, `network.transport`, `network.protocol` and `event.provider`.
 - **Idempotent.** Ids are stable, so a re-run overwrites (`overwrite=true`).
 - **Read back.** The scenario ndjson is written to the kit's scratch space, imported as a second file after the IPsec one, and read back id by id through the same assert-every-object path. A missing object prints `MISSING` with its id, and the step FAILs.
-- **Views.** Arkime views are posted by name after the IPsec views, and read back the same way.
+- **Views.** The step lists the views Arkime holds (`GET /api/views`) once, posts (`POST /api/view`, with the `x-arkime-cookie` token) each IPsec and scenario view whose name is not already present, and reads them all back by name. A name outside `[-a-zA-Z0-9_: ]` is refused before anything is posted. A view already present is left as it is, so a changed expression needs the old view deleted in Arkime first.
 - **Refusals.** A translation refusal stops the step **before any import**, naming `scenarios/<s>/expect.txt` and the row.
 - **What the kit source holds.** No new file under `config/` carries a range. The generator's JSON skeletons (the saved-search line and the dashboard panel) live in the generator function itself, with a test pinning their shape against the IPsec template's lines.
 
 ### 4. `r770-scenario.sh check <name> [--run <file>]` (new subcommand)
 
 - **The run.** It takes the newest `scenario-<name>-*.run` under the evidence directory, or `--run`, and refuses a record whose `scenario=` is not `<name>`, or which lacks `start=`/`end=`. It needs root (to read the secret), like the other subcommands.
-- **Reachability.** It SKIPs with the reason "Arkime did not answer on 127.0.0.1:8443 — start Malcolm" when the API does not answer, and "no run record — run r770-scenario.sh traffic <name> first" when there is no run.
+- **Reachability.** It probes `GET /api/user` and SKIPs with the reason "Arkime did not answer on 127.0.0.1:8443 — start Malcolm" when the API does not answer, and "no run record — run r770-scenario.sh traffic <name> first" when there is no run.
 - **Per row.** For each row it `GET`s `/arkime/api/sessions` with `expression=expect_arkime`, `startTime`/`stopTime` from the record, `bounding=either` and `length=1`, and reads `recordsFiltered`.
 - **Polling.** It polls every 10 s until every row is above 0 or `SCENARIO_CHECK_WAIT_SECS` (default 180) passes. Arkime writes a session when it closes or at a periodic save, so an immediate check can be early.
 - **PASS:** `PASS  <s> row <n> <label>: <count> session(s) in <start>–<end>`.
