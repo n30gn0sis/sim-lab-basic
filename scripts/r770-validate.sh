@@ -225,8 +225,8 @@ area_gns3() {
     if printf '%s' "$v" | grep -q '"version"'; then row "api" "/v3/version answers" "$(printf '%s' "$v" | tr -d '\n' | cut -c1-60)" PASS "curl 127.0.0.1:3080/v3/version"; else row "api" "/v3/version answers" "${v:-no answer}" FAIL "curl 127.0.0.1:3080/v3/version"; diag api "the unit is active but the API does not answer on 127.0.0.1:3080 — journalctl -u gns3 (a root-owned /etc/gns3 is the usual cause)"; return; fi
     local pw tok; pw=$(head -1 "$(p /etc/lab/secrets/gns3-admin.pw)" 2>/dev/null || true)
     [ -n "$pw" ] || { row "login" "token issued" "no admin secret on this box" SKIP "/etc/lab/secrets/gns3-admin.pw"; return; }
-    tok=$(curl -s --max-time 10 -X POST -H 'Content-Type: application/json' -d "{\"username\":\"admin\",\"password\":\"$pw\"}" http://127.0.0.1:3080/v3/access/users/login 2>/dev/null || true)
-    if printf '%s' "$tok" | grep -q 'access_token'; then row "login" "token issued" "access_token present" PASS "POST /v3/access/users/login"; else row "login" "token issued" "no token" FAIL "POST /v3/access/users/login"; diag login "admin login rejected — the rendered config and the secret file disagree; rerun 'r770-gns3-deploy.sh config' then restart the unit"; fi
+    tok=$(curl -s --max-time 10 -X POST -H 'Content-Type: application/json' -d "{\"username\":\"admin\",\"password\":\"$pw\"}" http://127.0.0.1:3080/v3/access/users/authenticate 2>/dev/null || true)
+    if printf '%s' "$tok" | grep -q 'access_token'; then row "login" "token issued" "access_token present" PASS "POST /v3/access/users/authenticate"; else row "login" "token issued" "no token" FAIL "POST /v3/access/users/login"; diag login "admin login rejected — the rendered config and the secret file disagree; rerun 'r770-gns3-deploy.sh config' then restart the unit"; fi
     row "node-boot" "one QEMU + one docker node pass traffic" "not automated" SKIP "needs a project; run by hand per docs/validation.md"
 }
 

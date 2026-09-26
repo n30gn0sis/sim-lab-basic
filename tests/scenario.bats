@@ -160,7 +160,7 @@ PY
     ! grep -q fixture-pw "$STUB_LOG"
     [[ "$output" != *"fixture-pw"* ]]
     [[ "$output" != *"fixture-token"* ]]
-    grep -q 'POST /v3/access/users/login' "$FAKE_GNS3/requests.log"
+    grep -q 'POST /v3/access/users/authenticate' "$FAKE_GNS3/requests.log"
 }
 
 @test "an unknown or malformed scenario name is refused" {

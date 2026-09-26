@@ -79,7 +79,9 @@ gns3_login() {
     ( umask 077
       python3 -c 'import json, sys; print(json.dumps({"username": sys.argv[1], "password": open(sys.argv[2]).readline().strip()}))' \
           "$ADMIN_USER" "$(p "$SECRET")" > "$body" )
-    tok=$(curl -sS --max-time 10 --fail -X POST -H 'Content-Type: application/json' --data @"$body" http://127.0.0.1:3080/v3/access/users/login 2>/dev/null \
+    # /authenticate takes JSON; /login is OAuth2 and wants a form body (422 on
+    # JSON) -- measured on staging VM 9770 against the bundled gns3-server
+    tok=$(curl -sS --max-time 10 --fail -X POST -H 'Content-Type: application/json' --data @"$body" http://127.0.0.1:3080/v3/access/users/authenticate 2>/dev/null \
           | py 'print(d["access_token"])' 2>/dev/null) \
         || die "GNS3 refused the admin login — rerun r770-gns3-deploy.sh config, then restart the unit"
     rm -f "$body"
