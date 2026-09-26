@@ -244,6 +244,8 @@ area_capture() {
     if [ -n "$zl" ]; then
         local pct; pct=$(grep -v '^#' "$zl" | tail -1 | awk '{print $NF}')
         if [ -n "$pct" ] && awk -v p="$pct" 'BEGIN{exit !(p < 0.5)}'; then row "zeek capture_loss" "< 0.5 %" "$pct" PASS "$zl"; elif [ -n "$pct" ]; then row "zeek capture_loss" "< 0.5 %" "$pct" FAIL "$zl"; diag "zeek capture_loss" "Zeek reports loss — check ethtool -S drop deltas on the feed and Arkime's own stats before touching tuning"; else row "zeek capture_loss" "< 0.5 %" "no data rows yet" WARN "$zl"; fi
+    elif grep -qx 'ZEEK_DISABLE_STATS=true' "$(p "$MALCOLM_HOME")/malcolm/config/zeek-live.env" 2>/dev/null; then
+        row "zeek capture_loss" "< 0.5 %" "stats off (ZEEK_DISABLE_STATS=true in config/zeek-live.env)" SKIP "r770-malcolm-deploy.sh configure --capture-ifs ... turns them on"
     else row "zeek capture_loss" "< 0.5 %" "no capture_loss log yet" SKIP "Malcolm not running or no traffic seen"; fi
     if [ -z "$FEED" ] || [ -z "$PCAP" ]; then row "tcpreplay" "packets replayed == packets indexed" "not opted in (--feed IF --pcap FILE)" SKIP "injects traffic"; return; fi
     command -v tcpreplay >/dev/null 2>&1 || { row "tcpreplay" "replayed == indexed" "tcpreplay not installed" SKIP "package not installed yet"; return; }

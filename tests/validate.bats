@@ -103,6 +103,21 @@ report() { cat "$OUT"/validation-*.md; }
     [[ "$output" == *"capture ports never get an IP"* ]]
 }
 
+@test "zeek capture_loss is SKIPPED naming the cause when Malcolm's live Zeek has its stats off" {
+    mkdir -p "$ROOT/opt/malcolm/malcolm/config" "$ROOT/opt/malcolm/malcolm/zeek-logs/live"
+    printf 'ZEEK_LIVE_CAPTURE=true\nZEEK_DISABLE_STATS=true\n' > "$ROOT/opt/malcolm/malcolm/config/zeek-live.env"
+    run validate --area capture
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"SKIP  capture/zeek capture_loss: stats off (ZEEK_DISABLE_STATS=true in config/zeek-live.env) (r770-malcolm-deploy.sh configure --capture-ifs ... turns them on)"* ]]
+    printf 'ZEEK_LIVE_CAPTURE=true\nZEEK_DISABLE_STATS=\n' > "$ROOT/opt/malcolm/malcolm/config/zeek-live.env"
+    run validate --area capture
+    [[ "$output" == *"SKIP  capture/zeek capture_loss: no capture_loss log yet (Malcolm not running or no traffic seen)"* ]]
+    printf '#fields\tts\tts_delta\tpeer\tgaps\tacks\tpercent_lost\n1\t900\tzeek\t0\t100\t0.0\n' > "$ROOT/opt/malcolm/malcolm/zeek-logs/live/capture_loss.log"
+    run validate --area capture
+    [[ "$output" == *"PASS  capture/zeek capture_loss: 0.0"* ]]
+}
+
 @test "a replay is opt-in, and the Arkime comparison is a WARN (indexing lag), not a FAIL" {
     run validate --area capture
     [ "$status" -eq 0 ]

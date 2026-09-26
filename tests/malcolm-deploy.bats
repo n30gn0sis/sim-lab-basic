@@ -197,6 +197,7 @@ STUB
     grep -q '"captureLiveNetworkTraffic": false,' "$r"
     grep -q '"liveArkime": false,' "$r"
     grep -q '"liveZeek": false,' "$r"
+    grep -q '"captureStats": false,' "$r"
     grep -q '"liveSuricata": false,' "$r"
     grep -q '"tweakIface": false,' "$r"
 }
@@ -213,6 +214,7 @@ STUB
     grep -q '"captureLiveNetworkTraffic": true,' "$r"
     grep -q '"liveArkime": true,' "$r"
     grep -q '"liveZeek": true,' "$r"
+    grep -q '"captureStats": true,' "$r"
     grep -q '"liveSuricata": false,' "$r"
     grep -q '"tweakIface": false,' "$r"
     [[ "$output" == *"live capture on: lab_mirror0"* ]]

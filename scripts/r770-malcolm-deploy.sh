@@ -263,7 +263,7 @@ cmd_configure() {
     render "$KIT_CONFIG_DIR/malcolm/malcolm-config.json.template" "$rendered" \
         "PCAP_NODE_NAME=$(hostname -s)" "OS_MEMORY=${os}g" "LS_MEMORY=${ls}m" \
         "ARKIME_MANAGE_PCAP=$manage" "ARKIME_FREE_SPACE_G=$free" "MALCOLM_VER=$ver" \
-        "PCAP_IFACE=$ifaces" "CAPTURE_LIVE=$live" "LIVE_ARKIME=$live" "LIVE_ZEEK=$live"
+        "PCAP_IFACE=$ifaces" "CAPTURE_LIVE=$live" "LIVE_ARKIME=$live" "LIVE_ZEEK=$live" "CAPTURE_STATS=$live"
     # From its own directory: the zip-root installer looks for the stack
     # tarball in its working directory, and anywhere else fails on missing
     # .env.example templates (measured on staging VM 9770, 2026-09-25).
