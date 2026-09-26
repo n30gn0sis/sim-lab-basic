@@ -127,7 +127,10 @@ cmd_config() {
         pass "service user $GNS3_USER created"
     fi
     local g
-    for g in kvm docker; do
+    # ubridge: the GNS3 PPA's ubridge is root:ubridge 0754 with its capabilities
+    # set, so only members of its group may run it (measured on staging VM
+    # 9770, 2026-09-26); GNS3 cannot open a project without it
+    for g in kvm docker ubridge; do
         if getent group "$g" >/dev/null 2>&1; then
             run usermod -aG "$g" "$GNS3_USER" && note "$GNS3_USER in group $g"
         else

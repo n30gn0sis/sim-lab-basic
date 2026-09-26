@@ -24,7 +24,7 @@ if [ "$1" = -m ] && [ "$2" = venv ]; then
   printf "#!/usr/bin/env bash\necho \"pip \$*\" >> \"$STUB_LOG\"\ntouch \"$3/bin/gns3server\"; chmod +x \"$3/bin/gns3server\"\n" > "$3/bin/pip"
   chmod +x "$3/bin/pip"
 fi'
-    stub getent 'case "$1 $2" in "passwd gns3") exit 1;; "group kvm") exit 0;; "group docker") exit 1;; *) exit 1;; esac'
+    stub getent 'case "$1 $2" in "passwd gns3") exit 1;; "group kvm") exit 0;; "group docker") exit 1;; "group ubridge") exit 0;; *) exit 1;; esac'
     stub_log useradd; stub_log usermod; stub_log chown; stub_log systemctl
     stub ss 'echo "LISTEN 0 128 127.0.0.1:3080 0.0.0.0:*"'
     stub curl 'echo "{\"version\":\"fixture\"}"'
@@ -128,7 +128,7 @@ STUB
     stub_docker_reporting docker.io/library/alpine:latest quay.io/frrouting/frr:0.0.0-fixture
     # the service user exists once config's useradd has run, as on a real box
     stub useradd 'echo "useradd $*" >> "$STUB_LOG"; touch "$BATS_TEST_TMPDIR/gns3-user"'
-    stub getent 'case "$1 $2" in "passwd gns3") [ -e "$BATS_TEST_TMPDIR/gns3-user" ];; "group kvm") exit 0;; "group docker") exit 0;; *) exit 1;; esac'
+    stub getent 'case "$1 $2" in "passwd gns3") [ -e "$BATS_TEST_TMPDIR/gns3-user" ];; "group kvm") exit 0;; "group docker") exit 0;; "group ubridge") exit 0;; *) exit 1;; esac'
     stub_labnet_host
     run gns3 full --bundle "$BUNDLE"
     echo "$output"
@@ -260,6 +260,9 @@ STUB
     [ "$status" -eq 2 ]                                  # docker group absent -> WARN
     grep -q '^useradd --system --home-dir /etc/gns3 --no-create-home --shell /usr/sbin/nologin gns3' "$STUB_LOG"
     grep -q '^usermod -aG kvm gns3' "$STUB_LOG"
+    # the GNS3 PPA's ubridge is root:ubridge 0754 -- only its group may run it
+    # (measured on staging VM 9770, 2026-09-26)
+    grep -q '^usermod -aG ubridge gns3' "$STUB_LOG"
     [[ "$output" == *"WARN  group docker does not exist"* ]]
     c="$ROOT/etc/gns3/gns3_server.conf"
     [ "$(stat -c %a "$c")" = "600" ]
