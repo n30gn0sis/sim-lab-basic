@@ -1224,3 +1224,84 @@ This task needs SSH to the staging VM and must be run by the controlling session
 - [ ] **Step 4: Carry the record back.**
   - Add the transcripts' verdict lines to the build repo's rehearsal record: an addendum section in `state/inventory/staging-kit-rehearsal-2026-09-26.md` on the simlab-build branch, plus one BUILD-STATE log line.
   - Push both branches and open the kit PR (base: `rehearsal-fixes`, or `main` once PR #5 merges).
+
+---
+
+## Addendum (2026-09-26, user-approved after the staging proof)
+
+### Task 7: ESP visibility, direction-aware rows, check's wait
+
+The brief used for execution is reproduced here as the record.
+
+
+Context: the staging proof (Task 6) on VM 9770, against the live Malcolm (Arkime 5), measured three facts. Build to them.
+
+1. **Malcolm's Arkime tracks no ESP** (IP protocol 50) by default, and Zeek's conn log has no ESP. So no session from the ESP scenarios existed at all. Appending `ARKIME_default__trackESP=true` to `/opt/malcolm/malcolm/config/arkime.env` fixed it: both Arkime containers load that env file, and Arkime 5 reads `ARKIME_<section>__<key>` env overrides. Afterwards the ESP flow appeared as a session. This held only after Malcolm's `stop`/`start`, which recreates the containers. The installer rewrites the `config/*.env` files on every configure run, so the setting has to be re-applied after each installer run, just as `rebind` re-applies its compose edit.
+2. **Arkime sessions are bidirectional**, oriented by the first packet. The live ESP session was `10.201.0.1 -> 10.201.0.2`, with `source.packets` 7818 and `destination.packets` 2182. The expect row `esp||10.201.0.2/32|10.201.0.1/32` has no session of its own; its packets are the destination half of that session.
+
+   Verified live, this expression matches the session for **both** rows of the pair:
+
+   `ip.protocol == 50 && ((ip.src == S && ip.dst == D) || (ip.src == D && ip.dst == S && packets.dst > 0))`
+
+   (with S and D the row's src and dst).
+3. **Arkime indexes about 10 minutes late on this Malcolm.** Arkime is not capturing live (`ARKIME_LIVE_CAPTURE=false`). netsniff writes PCAP files that rotate every `PCAP_ROTATE_MINUTES` (10, set in `/opt/malcolm/malcolm/config/pcap-capture.env`), and Arkime indexes each file after it closes. The ESP session appeared within 20 minutes; `check`'s 180 s default missed it.
+
+## Requirements
+
+### A — `r770-malcolm-deploy.sh configure` turns ESP tracking on (scripts/r770-malcolm-deploy.sh, tests/malcolm-deploy.bats, tests/helpers/fixtures.bash)
+
+- **New function `track_esp`.** It makes `$(stack)/config/arkime.env` contain exactly one line `ARKIME_default__trackESP=true`:
+  - if that exact line is already there: PASS `trackESP already on in <file>`;
+  - if some other `ARKIME_default__trackESP=` line is there: replace it, and PASS `trackESP turned on in <file> (was: <old value>)`;
+  - otherwise append the line, and PASS `trackESP turned on in <file> — ESP (IP protocol 50) becomes an Arkime session`.
+  - If `arkime.env` is missing: FAIL naming the file ("the installer did not write it"), not die.
+  - Under `--dry-run` it prints `DRY-RUN: set ARKIME_default__trackESP=true in <file>` and changes nothing.
+- **Where it runs.** Call it from `cmd_configure` right after the `live_kept` / `pcap/upload` block and before `do_rebind`, whether or not live capture is on. ESP scenarios can reach Malcolm through uploaded PCAP too. Keep the file's mode and owner: edit in place with `sed -i` or an append, never by recreating the file.
+- **Comment above it.** State why:
+  - Malcolm ships no knob for this;
+  - Arkime 5 reads `ARKIME_<section>__<key>` from the environment;
+  - the installer rewrites `config/*.env` on every run;
+  - it was measured on VM 9770, 2026-09-26.
+- **Fixture.** `make_malcolm_tree` creates `$home/malcolm/config/arkime.env` with two synthetic lines, e.g. `ARKIME_FREESPACEG=` and `ARKIME_ROTATE_INDEX=daily`, as the installer would.
+- **Tests:**
+  - configure appends the line once;
+  - a second configure leaves exactly one line (`grep -c` = 1) and says "already on";
+  - a pre-existing `ARKIME_default__trackESP=false` is replaced, not duplicated;
+  - a missing `arkime.env` is a FAIL naming it;
+  - `--dry-run` changes nothing.
+- **Runbook.** In `docs/deployment-runbook.md`'s Malcolm configure paragraph, add one or two sentences saying `configure` sets `ARKIME_default__trackESP=true` in `config/arkime.env` after every installer run, and why: without it ESP traffic is never an Arkime session, and the IPsec "ESP payload" search and view stay empty.
+
+### B — rows match either orientation (scripts/lib/expect.sh, tests/expect.bats, tests that assert generated queries)
+
+- **`expect_arkime <proto> <port> <src> <dst>`** becomes
+  `<proto clause>[ && port == N] && ((ip.src == S && ip.dst == D) || (ip.src == D && ip.dst == S && packets.dst > 0))`
+- **`expect_kql`** becomes
+  `<proto clause>[ and (source.port:N or destination.port:N)] and ((source.ip:"S" and destination.ip:"D") or (source.ip:"D" and destination.ip:"S" and destination.packets > 0))`
+- **Header comment.** Put a short comment above the two functions saying why: Arkime and Zeek record one bidirectional session per flow, oriented by its first packet. A row's direction is proven either by a session oriented that way, or by the reply half (`packets.dst`/`destination.packets` above 0) of a session opened the other way.
+- **Tests.** Update the exact-string expectations in `tests/expect.bats` for Arkime and KQL. Also update the tests that assert generated queries or expressions:
+  - `tests/malcolm-deploy.bats`: the bgp row-1 KQL, and the views `grep -qF` expressions;
+  - `tests/scenario.bats`: `ROW1`/`ROW2`, which must equal `expect_arkime`'s new output exactly because the stub keys on the expression.
+
+  These edits are required by the contract change; say so in the report.
+- **Views.** A view expression now contains `||`, `(`, `)` and `>`. Confirm the `.views` reader still splits name from expression at the first `|` only (`name=${line%%|*}; vexpr=${line#*|}`), and that no guard refuses those characters in expressions. Add one test asserting a generated view's posted expression contains the `||` alternative intact.
+
+### C — `check`'s default wait follows this Malcolm's PCAP rotation (scripts/r770-scenario.sh, tests/scenario.bats)
+
+- **When `SCENARIO_CHECK_WAIT_SECS` is unset:**
+  - Read `PCAP_ROTATE_MINUTES` from `$(p "${MALCOLM_HOME:-/opt/malcolm}/malcolm/config/pcap-capture.env")` (last matching `PCAP_ROTATE_MINUTES=<digits>` line).
+  - If it is found, the wait is `minutes*60 + 180`, printed as `note "waiting up to <N>s for Arkime: it indexes PCAP when netsniff rotates it (PCAP_ROTATE_MINUTES=<m>)"`.
+  - If the file or the value is absent or not digits, use 180 with `note "waiting up to 180s (no PCAP_ROTATE_MINUTES in <file>)"`.
+- **When `SCENARIO_CHECK_WAIT_SECS` is set,** it wins, with its existing validation.
+- **Tests (all with `sleep` stubbed, as today):**
+  - with a fixture `pcap-capture.env` holding `PCAP_ROTATE_MINUTES=1`, a row whose count never arrives FAILs `after 240s`;
+  - with no file, `after 180s`;
+  - `SCENARIO_CHECK_WAIT_SECS=20` still gives `after 20s`.
+- **Header and runbook.** Update the usage header line (`SCENARIO_CHECK_WAIT_SECS 180` becomes something like `SCENARIO_CHECK_WAIT_SECS (default: PCAP_ROTATE_MINUTES*60+180, else 180)`), and the runbook's `check` paragraph, which currently says 180 s.
+
+### Also
+
+- **Spec.** Update `docs/superpowers/specs/2026-09-26-scenario-dashboards-and-check-design.md`:
+  - the translation-rules table (the either-orientation clause);
+  - the check section's wait;
+  - an evidence line recording facts 1–3 above.
+- **Commits.** One commit per requirement (A, B, C). Each commit keeps `./tests/run.sh` green: shellcheck no exclusions, no version numbers, only 127.0.0.1 URLs, no secrets on argv.
