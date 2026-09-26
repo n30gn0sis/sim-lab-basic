@@ -406,6 +406,7 @@ sudo ./scripts/r770-scenario.sh up ospf --bundle $B     # import, start, configu
 sudo ./scripts/r770-scenario.sh traffic ospf            # known traffic for traffic_secs; run record in r770-evidence/
 sudo ./scripts/r770-scenario.sh status                  # what is up, on which TAPs, last run
 sudo ./scripts/r770-scenario.sh down ospf               # stop and delete the imported project
+sudo ./scripts/r770-scenario.sh check ospf              # every expect.txt row, as Arkime sessions in the run's window
 ```
 
 Each scenario under `scenarios/` is a GNS3 project built only from bundled
@@ -433,6 +434,16 @@ mirror, and the pack is built so that every window does:
   rekey never touches 500);
 - every `iperf3` client is capped at 50 Mbit/s: uncapped, it floods `br-lab`
   and the capture side drops packets, control plane included.
+
+`check` judges a finished run end to end. It reads the newest run record
+(or `--run <file>`) and counts each `expect.txt` row in Arkime over the
+run's window — the same expressions as the generated `Scenario <name> - …`
+views — PASS above zero, FAIL at zero after `SCENARIO_CHECK_WAIT_SECS`
+(180 s; Arkime indexes a session when it closes or at its periodic save).
+A FAIL points at the mirror first, with the `tcpdump` filter for that row.
+It counts sessions that *overlap* the window, because a BGP session or an
+IKE SA outlives a traffic run. It SKIPs, with the reason, when Malcolm is
+not answering or there is no run to judge.
 
 The 2026-09-26 staging rehearsal (VM 9770, air gap blocked, bundle
 `bundle-20260925`) ran all five: `up`, `traffic` and `down` PASS; every

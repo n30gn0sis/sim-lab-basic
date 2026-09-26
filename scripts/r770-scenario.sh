@@ -15,14 +15,17 @@
 #                   record (UTC start/end, range, TAPs) under r770-evidence/
 #   down <name>     stop and delete the imported project (idempotent)
 #   status          which scenarios are up, their TAPs, their last run record
+#   check <name>    judge the newest traffic run in Malcolm: every expect.txt
+#                   row must show sessions in Arkime within the run's window
 #
 #   --bundle <dir>  the bundle (list, up): image references are read from its
 #                   gns3/docker-nodes/image-list.txt, never typed here
 #   --taps a,b      up: the two kit TAPs to bind (default: two free ones)
 #   --force         up: take an existing copy down first
+#   --run <file>    check: judge this run record instead of the newest
 #   --yes / --non-interactive / --dry-run   as everywhere in the kit
 #
-#   SCENARIO_WAIT_SECS 120 · SCENARIO_TRAFFIC_SECS (default: the scenario's
+#   SCENARIO_WAIT_SECS 120 · SCENARIO_CHECK_WAIT_SECS 180 · SCENARIO_TRAFFIC_SECS (default: the scenario's
 #   traffic_secs) · GNS3_LAB_TAPS 4 · GNS3_ADMIN_USER admin
 #
 #   0  done · 2  done with warnings · 1  refused or failed
@@ -36,6 +39,12 @@ set -uo pipefail
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=lib/common.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=lib/expect.sh
+. "$(dirname "${BASH_SOURCE[0]}")/lib/expect.sh"
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=lib/malcolm-api.sh
+. "$(dirname "${BASH_SOURCE[0]}")/lib/malcolm-api.sh"
 
 SCEN_DIR="${SCENARIO_DIR:-$KIT_DIR/scenarios}"
 ADMIN_USER="${GNS3_ADMIN_USER:-admin}"
@@ -44,7 +53,7 @@ MARKER="r770_scenario"
 BUNDLE=""; NAME=""; WORK=""; AUTH_HDR=""
 WAIT_SECS="${SCENARIO_WAIT_SECS:-120}"
 LAB_TAPS="${GNS3_LAB_TAPS:-4}"
-TAPS=""; TAP_A=""; TAP_B=""
+TAPS=""; TAP_A=""; TAP_B=""; RUN_FILE=""
 usage() { usage_from_header 3; exit 0; }
 
 # ── the pack ─────────────────────────────────────────────────────────────────
@@ -337,6 +346,92 @@ cmd_traffic() {
     footer "traffic"
 }
 
+# ── check ────────────────────────────────────────────────────────────────────
+# Each expect.txt row, as the Arkime expression the kit's generated views use
+# (scripts/lib/expect.sh), counted over the run record's window through
+# Arkime's session API. bounding=either (the session overlaps the window): a
+# long-lived session -- BGP, an IKE SA -- starts before the window and is saved
+# after it, and Arkime's default (last packet in range) counts it 0; measured
+# on staging VM 9770. date= is never sent: date=-1 means all time. Uses only
+# the Malcolm netrc (scripts/lib/malcolm-api.sh, which sets the EXIT trap), never
+# the GNS3 work dir.
+arkime_count() {  # arkime_count <expression> <start-epoch> <stop-epoch> — the count; non-zero with the HTTP status instead
+    local body code n
+    body=$(arkime_api GET "/api/sessions" -G -w '\n%{http_code}' \
+        --data-urlencode "expression=$1" --data-urlencode "startTime=$2" --data-urlencode "stopTime=$3" \
+        --data-urlencode "bounding=either" --data-urlencode "length=1" 2>/dev/null) || true
+    code=${body##*$'\n'}
+    n=$(printf '%s' "$body" | sed -n 's/.*"recordsFiltered":\([0-9][0-9]*\).*/\1/p' | head -1)
+    if [ -z "$n" ]; then printf '%s' "${code:-none}"; return 1; fi
+    printf '%s' "$n"
+}
+row_bpf() {  # row_bpf <proto> <port> <src> <dst> — the tcpdump filter that shows one row on the mirror
+    local p=$1
+    [ "$p" = ospf ] && p="proto ospf"
+    printf '%s%s and src net %s and dst net %s' "$p" "${2:+ port $2}" "$3" "$4"
+}
+cmd_check() {
+    banner "check — $NAME"
+    need_root
+    scenario_check "$NAME"
+    local ev="${KIT_EVIDENCE_DIR:-$PWD/r770-evidence}" wait="${SCENARIO_CHECK_WAIT_SECS:-180}" waited=0
+    local rec start end s e r n proto port src dst why c pending lbl rows=()
+    local -A cnt=()
+    case "$wait" in ''|*[!0-9]*) die "SCENARIO_CHECK_WAIT_SECS must be whole seconds (got '$wait')" ;; esac
+    [ -f "$SCEN_DIR/$NAME/expect.txt" ] || die "scenarios/$NAME has no expect.txt — nothing to check"
+    while IFS= read -r r; do
+        IFS='|' read -r n proto port src dst <<< "$r"
+        why=$(expect_problem "$proto" "$port" "$src" "$dst")
+        [ -z "$why" ] || die "refusing scenarios/$NAME/expect.txt row $n: $why"
+        rows+=("$r")
+    done < <(expect_rows "$SCEN_DIR/$NAME")
+    rec=${RUN_FILE:-$(find "$ev" -maxdepth 1 -name "scenario-$NAME-*.run" 2>/dev/null | sort | tail -1)}
+    if [ -z "$rec" ]; then skip "no run record — run r770-scenario.sh traffic $NAME first"; footer "check"; fi
+    [ -f "$rec" ] || die "no run record at $rec"
+    r=$(sed -n 's/^scenario=//p' "$rec" | head -1)
+    [ "$r" = "$NAME" ] || die "$rec is a run of '$r', not $NAME"
+    start=$(sed -n 's/^start=//p' "$rec" | head -1); end=$(sed -n 's/^end=//p' "$rec" | head -1)
+    { [ -n "$start" ] && [ -n "$end" ]; } || die "$rec has no start= or end= — the traffic run did not finish; rerun r770-scenario.sh traffic $NAME"
+    s=$(date -u -d "$start" +%s 2>/dev/null) || die "$rec: start '$start' is not a timestamp"
+    e=$(date -u -d "$end" +%s 2>/dev/null) || die "$rec: end '$end' is not a timestamp"
+    note "run record: $rec ($start – $end)"
+    if [ ! -s "$(p "$MALCOLM_SECRET_FILE")" ]; then
+        skip "no Malcolm credential at $MALCOLM_SECRET_FILE — Malcolm is not set up here (r770-malcolm-deploy.sh secrets)"
+        footer "check"
+    fi
+    osd_auth_file
+    if ! arkime_api GET "/api/user/views" --fail >/dev/null 2>&1; then
+        skip "Arkime did not answer on 127.0.0.1:8443 — start Malcolm (r770-malcolm-deploy.sh start)"
+        footer "check"
+    fi
+    # Arkime writes a session when it closes or at its periodic save, so an
+    # immediate check can be early: ask again every 10s for rows still at 0
+    while :; do
+        pending=0
+        for r in "${rows[@]}"; do
+            IFS='|' read -r n proto port src dst <<< "$r"
+            case "${cnt[$n]:-}" in ''|0|ERR*) ;; *) continue ;; esac
+            if c=$(arkime_count "$(expect_arkime "$proto" "$port" "$src" "$dst")" "$s" "$e"); then cnt[$n]=$c; else cnt[$n]="ERR$c"; fi
+            case "${cnt[$n]}" in 0|ERR*) pending=$((pending + 1)) ;; esac
+        done
+        [ "$pending" -eq 0 ] && break
+        [ "$waited" -ge "$wait" ] && break
+        sleep 10; waited=$((waited + 10))
+    done
+    for r in "${rows[@]}"; do
+        IFS='|' read -r n proto port src dst <<< "$r"
+        lbl=$(expect_label "$proto" "$port" "$src" "$dst")
+        case "${cnt[$n]}" in
+            ERR*) fail "$NAME row $n $lbl: Arkime's answer had no session count (HTTP ${cnt[$n]#ERR}) — is 127.0.0.1:8443 Malcolm, and is the kit's user an Arkime user?" ;;
+            0)    fail "$NAME row $n $lbl: 0 sessions after ${waited}s"
+                  note "first, is the flow on the mirror while traffic runs? tcpdump -ni lab_mirror0 '$(row_bpf "$proto" "$port" "$src" "$dst")'"
+                  note "then, is Malcolm capturing? r770-validate.sh --area capture" ;;
+            *)    pass "$NAME row $n $lbl: ${cnt[$n]} session(s) in $start–$end" ;;
+        esac
+    done
+    footer "check"
+}
+
 # ── status ───────────────────────────────────────────────────────────────────
 cmd_status() {
     banner "scenario status"
@@ -369,12 +464,13 @@ cmd_status() {
 # ── dispatch ─────────────────────────────────────────────────────────────────
 SUB="${1:-}"; [ $# -gt 0 ] && shift
 case "$SUB" in
-    up|traffic|down) case "${1:-}" in -*|"") ;; *) NAME=$1; shift ;; esac ;;
+    up|traffic|down|check) case "${1:-}" in -*|"") ;; *) NAME=$1; shift ;; esac ;;
 esac
 while [ $# -gt 0 ]; do
     case "$1" in
         --bundle)  BUNDLE="${2:-}"; shift ;;
         --taps)    TAPS="${2:-}"; shift ;;
+        --run)     RUN_FILE="${2:-}"; shift ;;
         -h|--help) usage ;;
         *)         common_flag "$1" || die "unknown option: $1 (try --help)" ;;
     esac
@@ -383,7 +479,7 @@ done
 kit_init "r770-scenario"
 case "$SUB" in
     list) cmd_list ;;
-    up|traffic|down)
+    up|traffic|down|check)
         [ -n "$NAME" ] || die "$SUB needs a scenario name (see: r770-scenario.sh list)"
         "cmd_$SUB" ;;
     status) cmd_status ;;

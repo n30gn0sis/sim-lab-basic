@@ -541,3 +541,145 @@ up_demo() { run scenario up demo --bundle "$BUNDLE"; [ "$status" -eq 0 ]; : > "$
     [[ "$output" == *"demo             closed"* ]]
     [[ "$output" != *"demo             up"* ]]
 }
+
+# ── check ────────────────────────────────────────────────────────────────────
+# Arkime is a curl stub: counts.tsv maps an expression to its session count;
+# late.tsv gives an expression's count only from its second query on (the
+# session was indexed while the check waited). arkime-down makes every call
+# fail; arkime-html makes the sessions answer a login page.
+
+arkime_stub() {
+    printf 'fixture-malcolm-pw\n' > "$ROOT/etc/lab/secrets/malcolm-admin.pw"
+    : > "$BATS_TEST_TMPDIR/counts.tsv"
+    printf 'tcp|80|10.209.0.1/32|10.209.0.2/32\n' >> "$SCENARIO_DIR/demo/expect.txt"
+    stub curl "$(cat <<'EOF'
+echo "curl $*" >> "$STUB_LOG"
+T="$BATS_TEST_TMPDIR"; ex=""; url=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --data-urlencode) case "$2" in expression=*) ex=${2#expression=} ;; esac; shift ;;
+    https://*) url=$1 ;;
+  esac
+  shift
+done
+[ -e "$T/arkime-down" ] && exit 7
+case "$url" in
+  */arkime/api/user/views) echo '[]' ;;
+  */arkime/api/sessions)
+    [ -e "$T/arkime-html" ] && { printf '<!DOCTYPE html>\n401'; exit 0; }
+    k=$(printf '%s' "$ex" | sha256sum | cut -c1-16)
+    m=$(( $(cat "$T/q-$k" 2>/dev/null || echo 0) + 1 )); echo "$m" > "$T/q-$k"
+    c=$(awk -F'\t' -v e="$ex" '$1 == e {print $2}' "$T/counts.tsv")
+    l=$(awk -F'\t' -v e="$ex" '$1 == e {print $2}' "$T/late.tsv" 2>/dev/null)
+    if [ -n "$l" ] && [ "$m" -ge 2 ]; then c=$l; fi
+    printf '{"recordsTotal":9,"recordsFiltered":%s,"data":[]}\n200' "${c:-0}" ;;
+  *) exit 7 ;;
+esac
+EOF
+)"
+}
+
+ROW1='ip.protocol == icmp && ip.src == 10.209.0.0/24 && ip.dst == 10.209.0.0/24'
+ROW2='ip.protocol == tcp && port == 80 && ip.src == 10.209.0.1/32 && ip.dst == 10.209.0.2/32'
+count() { printf '%s\t%s\n' "$1" "$2" >> "$BATS_TEST_TMPDIR/${3:-counts}.tsv"; }
+
+run_record() {  # run_record <scenario> [<suffix>] [no-end] — a run record in the evidence dir; prints its path
+    mkdir -p "$KIT_EVIDENCE_DIR"
+    local f="$KIT_EVIDENCE_DIR/scenario-$1-fixturehost-${2:-20260101-000100}.run"
+    printf 'scenario=%s\nrange=10.209.0.0/16\nstart=2026-01-01T00:00:00Z\n' "$1" > "$f"
+    [ "${3:-}" = no-end ] || printf 'end=2026-01-01T00:01:00Z\nsecs=60\n' >> "$f"
+    printf '%s' "$f"
+}
+
+@test "check PASSes every row with sessions in the run's window, with bounding=either and never date=" {
+    arkime_stub; run_record demo >/dev/null
+    count "$ROW1" 3; count "$ROW2" 7
+    run scenario check demo
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"PASS  demo row 1 icmp 10.209.0.0/24 -> 10.209.0.0/24: 3 session(s) in 2026-01-01T00:00:00Z–2026-01-01T00:01:00Z"* ]]
+    [[ "$output" == *"PASS  demo row 2 tcp/80 10.209.0.1/32 -> 10.209.0.2/32: 7 session(s)"* ]]
+    grep -q -- '--data-urlencode bounding=either' "$STUB_LOG"
+    grep -q -- "--data-urlencode startTime=$(date -u -d 2026-01-01T00:00:00Z +%s)" "$STUB_LOG"
+    grep -q -- "--data-urlencode stopTime=$(date -u -d 2026-01-01T00:01:00Z +%s)" "$STUB_LOG"
+    run grep -c 'date=' "$STUB_LOG"
+    [ "$output" = 0 ]
+}
+
+@test "a row with no sessions after the wait is a FAIL that points at the mirror first; a passed row is not asked again" {
+    arkime_stub; run_record demo >/dev/null
+    count "$ROW1" 3
+    SCENARIO_CHECK_WAIT_SECS=20 run scenario check demo
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"PASS  demo row 1"* ]]
+    [[ "$output" == *"FAIL  demo row 2 tcp/80 10.209.0.1/32 -> 10.209.0.2/32: 0 sessions after 20s"* ]]
+    [[ "$output" == *"tcpdump -ni lab_mirror0 'tcp port 80 and src net 10.209.0.1/32 and dst net 10.209.0.2/32'"* ]]
+    [[ "$output" == *"r770-validate.sh --area capture"* ]]
+    run grep -cF "expression=$ROW1" "$STUB_LOG"
+    [ "$output" = 1 ]
+}
+
+@test "a count that appears while check waits is a PASS" {
+    arkime_stub; run_record demo >/dev/null
+    count "$ROW1" 3; count "$ROW2" 5 late
+    run scenario check demo
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"PASS  demo row 2 tcp/80 10.209.0.1/32 -> 10.209.0.2/32: 5 session(s)"* ]]
+}
+
+@test "an answer with no session count is a FAIL naming the HTTP status, never a zero" {
+    arkime_stub; run_record demo >/dev/null
+    touch "$BATS_TEST_TMPDIR/arkime-html"
+    SCENARIO_CHECK_WAIT_SECS=0 run scenario check demo
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"FAIL  demo row 1 icmp 10.209.0.0/24 -> 10.209.0.0/24: Arkime's answer had no session count (HTTP 401)"* ]]
+    [[ "$output" != *"0 sessions"* ]]
+}
+
+@test "check SKIPs, and changes nothing, when Arkime does not answer, when there is no credential, and when there is no run" {
+    arkime_stub; run_record demo >/dev/null
+    touch "$BATS_TEST_TMPDIR/arkime-down"
+    run scenario check demo
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"SKIP  Arkime did not answer on 127.0.0.1:8443 — start Malcolm (r770-malcolm-deploy.sh start)"* ]]
+    rm -f "$BATS_TEST_TMPDIR/arkime-down" "$ROOT/etc/lab/secrets/malcolm-admin.pw"
+    run scenario check demo
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"SKIP  no Malcolm credential at /etc/lab/secrets/malcolm-admin.pw — Malcolm is not set up here"* ]]
+    rm -f "$KIT_EVIDENCE_DIR"/scenario-demo-*.run
+    run scenario check demo
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"SKIP  no run record — run r770-scenario.sh traffic demo first"* ]]
+}
+
+@test "check refuses a record of another scenario or an unfinished one; --run picks the record named" {
+    arkime_stub
+    count "$ROW1" 3; count "$ROW2" 7
+    other=$(run_record needs-ike)
+    run scenario check demo --run "$other"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"is a run of 'needs-ike', not demo"* ]]
+    open=$(run_record demo 20260101-000200 no-end)
+    run scenario check demo --run "$open"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"has no start= or end= — the traffic run did not finish"* ]]
+    done_rec=$(run_record demo 20260101-000100)
+    run scenario check demo --run "$done_rec"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"run record: $done_rec"* ]]
+}
+
+@test "check sends the Malcolm credential through a netrc, never argv or the transcript" {
+    arkime_stub; run_record demo >/dev/null
+    count "$ROW1" 3; count "$ROW2" 7
+    run scenario check demo
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"fixture-malcolm-pw"* ]]
+    run grep -c 'fixture-malcolm-pw' "$STUB_LOG"
+    [ "$output" = 0 ]
+    grep -q -- '--netrc-file' "$STUB_LOG"
+}
