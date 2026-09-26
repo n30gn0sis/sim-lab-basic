@@ -455,8 +455,13 @@ mirror, and the pack is built so that every window does:
 `check` judges a finished run end to end. It reads the newest run record
 (or `--run <file>`) and counts each `expect.txt` row in Arkime over the
 run's window — the same expressions as the generated `Scenario <name> - …`
-views — PASS above zero, FAIL at zero after `SCENARIO_CHECK_WAIT_SECS`
-(180 s; Arkime indexes a session when it closes or at its periodic save).
+views — PASS above zero, FAIL at zero after `SCENARIO_CHECK_WAIT_SECS`.
+This Malcolm is not capturing live: netsniff writes PCAP that rotates every
+`PCAP_ROTATE_MINUTES`, and Arkime indexes a file only once it closes, so
+`SCENARIO_CHECK_WAIT_SECS` defaults to that period (read from
+`/opt/malcolm/malcolm/config/pcap-capture.env`) times 60 plus a 180 s margin
+for Arkime's own indexing lag, falling back to a fixed 180 s when the file or
+the value is not there.
 A FAIL points at the mirror first, with the `tcpdump` filter for that row.
 It counts sessions that *overlap* the window, because a BGP session or an
 IKE SA outlives a traffic run. It SKIPs, with the reason, when Malcolm is

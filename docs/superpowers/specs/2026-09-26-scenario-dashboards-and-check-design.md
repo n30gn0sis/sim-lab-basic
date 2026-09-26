@@ -50,6 +50,33 @@ The kit first modelled Arkime's pre-5 views API. These are the live answers from
 | The same POST twice | two views with the same name: no duplicate refusal |
 | `DELETE /arkime/api/view/<id>` with the token | 200, `"Deleted view successfully"` |
 
+## Evidence behind Task 7 (VM 9770, 2026-09-26 addendum)
+
+Three facts measured against the live staging stack, after the units below
+first shipped:
+
+1. **Malcolm's Arkime tracks no ESP** (IP protocol 50) by default, and Zeek's
+   conn log has none either — no session from the ESP scenarios existed at
+   all. Appending `ARKIME_default__trackESP=true` to
+   `/opt/malcolm/malcolm/config/arkime.env` (both Arkime containers load that
+   env file; Arkime 5 reads `ARKIME_<section>__<key>` overrides) fixed it,
+   after a `stop`/`start` cycle that recreates the containers. The installer
+   rewrites `config/*.env` on every `configure` run, so `r770-malcolm-deploy.sh
+   configure` now re-applies the setting every time (`track_esp`).
+2. **Arkime sessions are bidirectional**, oriented by the first packet. The
+   live ESP session was `10.201.0.1 -> 10.201.0.2`, with `source.packets` 7818
+   and `destination.packets` 2182. The expect row `esp||10.201.0.2/32|10.201.0.1/32`
+   has no session of its own; its packets are the destination half of that
+   session. Verified live, the either-orientation expression above matches
+   the session for both rows of the pair.
+3. **Arkime indexes about 10 minutes late on this Malcolm.** Arkime is not
+   capturing live (`ARKIME_LIVE_CAPTURE=false`); netsniff writes PCAP that
+   rotates every `PCAP_ROTATE_MINUTES` (10, set in
+   `/opt/malcolm/malcolm/config/pcap-capture.env`), and Arkime indexes each
+   file only after it closes. The ESP session appeared within 20 minutes;
+   `check`'s fixed 180 s default missed it, so `SCENARIO_CHECK_WAIT_SECS`'s
+   default now follows `PCAP_ROTATE_MINUTES`.
+
 ## Units
 
 ### 1. `scripts/lib/expect.sh` — the translator (new, sourced)
@@ -70,10 +97,16 @@ Translation rules:
 | proto `tcp` `udp` `icmp` | `ip.protocol == tcp` (by name) | `network.transport:tcp` |
 | proto `esp` / `ah` / `ospf` | `ip.protocol == 50` / `51` / `89` | `network.iana_number:50` / `51` / `89` |
 | port `N` (may be empty) | `port == N`: either side, since IKE is 500↔500 | `(source.port:N or destination.port:N)` |
-| src CIDR | `ip.src == <cidr>` | `source.ip:"<cidr>"` |
-| dst CIDR | `ip.dst == <cidr>` | `destination.ip:"<cidr>"` |
+| src `S`, dst `D`, either orientation | `((ip.src == S && ip.dst == D) \|\| (ip.src == D && ip.dst == S && packets.dst > 0))` | `((source.ip:"S" and destination.ip:"D") or (source.ip:"D" and destination.ip:"S" and destination.packets > 0))` |
 
 Clauses are joined with `&&` in Arkime and with `and` in KQL.
+
+**Either orientation.** Arkime and Zeek record one bidirectional session per
+flow, oriented by whichever endpoint sent its first packet — which need not
+be the row's `src`. A row's direction is proven either by a session opened
+in that orientation, or by the reply half (`packets.dst` / `destination.packets`
+above 0) of a session opened the other way. See "Evidence behind Task 7"
+below.
 
 **Refusals, each naming the row:** an unknown protocol; a port on `esp`/`ah`/`ospf`/`icmp`; a port outside 1–65535; a src/dst that is not an IPv4 CIDR. The protocol set is closed on purpose: a new protocol is a one-line table change with a test, never a guess.
 
@@ -106,7 +139,7 @@ For every `scenarios/<s>/` (discovered by glob, the same way `r770-scenario.sh` 
 - **The run.** It takes the newest `scenario-<name>-*.run` under the evidence directory, or `--run`, and refuses a record whose `scenario=` is not `<name>`, or which lacks `start=`/`end=`. It needs root (to read the secret), like the other subcommands.
 - **Reachability.** It probes `GET /api/user` and SKIPs with the reason "Arkime did not answer on 127.0.0.1:8443 — start Malcolm" when the API does not answer, and "no run record — run r770-scenario.sh traffic <name> first" when there is no run.
 - **Per row.** For each row it `GET`s `/arkime/api/sessions` with `expression=expect_arkime`, `startTime`/`stopTime` from the record, `bounding=either` and `length=1`, and reads `recordsFiltered`.
-- **Polling.** It polls every 10 s until every row is above 0 or `SCENARIO_CHECK_WAIT_SECS` (default 180) passes. Arkime writes a session when it closes or at a periodic save, so an immediate check can be early.
+- **Polling.** It polls every 10 s until every row is above 0 or `SCENARIO_CHECK_WAIT_SECS` passes. Arkime writes a session when it closes or at a periodic save, so an immediate check can be early. `SCENARIO_CHECK_WAIT_SECS` defaults to this Malcolm's own PCAP rotation: `PCAP_ROTATE_MINUTES` (read from `/opt/malcolm/malcolm/config/pcap-capture.env`, last matching line) × 60 + 180, or a fixed 180 when the file or the value is absent — this Malcolm is not capturing live, so Arkime only indexes a PCAP file once netsniff rotates it closed. See "Evidence behind Task 7" below.
 - **PASS:** `PASS  <s> row <n> <label>: <count> session(s) in <start>–<end>`.
 - **FAIL:** `FAIL  <s> row <n> <label>: 0 sessions after <wait>s`, followed by a diagnosis. The diagnosis says to first confirm the flow is on the mirror (`tcpdump -ni lab_mirror0` with a filter built from the row), then check Malcolm's live capture (`r770-validate.sh --area capture`).
 - **API errors.** An API answer that is not JSON with `recordsFiltered` is a FAIL naming the HTTP status, never a 0.

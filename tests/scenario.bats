@@ -700,3 +700,58 @@ run_record() {  # run_record <scenario> [<suffix>] [no-end] — a run record in 
     [ "$output" = 0 ]
     grep -q -- '--netrc-file' "$STUB_LOG"
 }
+
+# ── check's wait: PCAP_ROTATE_MINUTES from this Malcolm ──────────────────────
+# Arkime here is not capturing live: netsniff writes PCAP that rotates every
+# PCAP_ROTATE_MINUTES (config/pcap-capture.env) and Arkime indexes each file
+# only once it closes, so check's default wait follows that rotation rather
+# than a fixed 180s. Measured on staging VM 9770, 2026-09-26.
+
+pcap_capture_env() {  # pcap_capture_env <minutes> — this Malcolm's rotation period
+    mkdir -p "$ROOT/opt/malcolm/malcolm/config"
+    printf 'PCAP_ROTATE_MINUTES=%s\n' "$1" > "$ROOT/opt/malcolm/malcolm/config/pcap-capture.env"
+}
+
+@test "check's default wait is PCAP_ROTATE_MINUTES*60+180 when this Malcolm names a rotation period" {
+    arkime_stub; run_record demo >/dev/null
+    count "$ROW1" 3
+    pcap_capture_env 1
+    run scenario check demo
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"waiting up to 240s for Arkime: it indexes PCAP when netsniff rotates it (PCAP_ROTATE_MINUTES=1)"* ]]
+    [[ "$output" == *"FAIL  demo row 2 tcp/80 10.209.0.1/32 -> 10.209.0.2/32: 0 sessions after 240s"* ]]
+}
+
+@test "check's default wait is 180s when this Malcolm has no pcap-capture.env" {
+    arkime_stub; run_record demo >/dev/null
+    count "$ROW1" 3
+    run scenario check demo
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"waiting up to 180s (no PCAP_ROTATE_MINUTES in $ROOT/opt/malcolm/malcolm/config/pcap-capture.env)"* ]]
+    [[ "$output" == *"FAIL  demo row 2 tcp/80 10.209.0.1/32 -> 10.209.0.2/32: 0 sessions after 180s"* ]]
+}
+
+@test "check's default wait is 180s when pcap-capture.env carries no PCAP_ROTATE_MINUTES, or a non-digit value" {
+    arkime_stub; run_record demo >/dev/null
+    count "$ROW1" 3
+    mkdir -p "$ROOT/opt/malcolm/malcolm/config"
+    printf 'PCAP_IFACE=lab_mirror0\n' > "$ROOT/opt/malcolm/malcolm/config/pcap-capture.env"
+    run scenario check demo
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"waiting up to 180s (no PCAP_ROTATE_MINUTES in $ROOT/opt/malcolm/malcolm/config/pcap-capture.env)"* ]]
+    [[ "$output" == *"FAIL  demo row 2 tcp/80 10.209.0.1/32 -> 10.209.0.2/32: 0 sessions after 180s"* ]]
+}
+
+@test "SCENARIO_CHECK_WAIT_SECS still wins over PCAP_ROTATE_MINUTES" {
+    arkime_stub; run_record demo >/dev/null
+    count "$ROW1" 3
+    pcap_capture_env 1
+    SCENARIO_CHECK_WAIT_SECS=20 run scenario check demo
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" != *"PCAP_ROTATE_MINUTES"* ]]
+    [[ "$output" == *"FAIL  demo row 2 tcp/80 10.209.0.1/32 -> 10.209.0.2/32: 0 sessions after 20s"* ]]
+}

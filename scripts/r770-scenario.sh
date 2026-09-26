@@ -25,8 +25,9 @@
 #   --run <file>    check: judge this run record instead of the newest
 #   --yes / --non-interactive / --dry-run   as everywhere in the kit
 #
-#   SCENARIO_WAIT_SECS 120 · SCENARIO_CHECK_WAIT_SECS 180 · SCENARIO_TRAFFIC_SECS (default: the scenario's
-#   traffic_secs) · GNS3_LAB_TAPS 4 · GNS3_ADMIN_USER admin
+#   SCENARIO_WAIT_SECS 120 · SCENARIO_CHECK_WAIT_SECS (default: this Malcolm's
+#   PCAP_ROTATE_MINUTES*60+180, else 180) · SCENARIO_TRAFFIC_SECS (default: the
+#   scenario's traffic_secs) · GNS3_LAB_TAPS 4 · GNS3_ADMIN_USER admin
 #
 #   0  done · 2  done with warnings · 1  refused or failed
 #
@@ -370,14 +371,39 @@ row_bpf() {  # row_bpf <proto> <port> <src> <dst> — the tcpdump filter that sh
     [ "$p" = ospf ] && p="proto ospf"
     printf '%s%s and src net %s and dst net %s' "$p" "${2:+ port $2}" "$3" "$4"
 }
+# check_wait_secs — SCENARIO_CHECK_WAIT_SECS's default: this Malcolm's own
+# PCAP rotation period plus a 180s margin, not a fixed 180s. This Malcolm's
+# Arkime is not capturing live (ARKIME_LIVE_CAPTURE=false): netsniff writes
+# PCAP that rotates every PCAP_ROTATE_MINUTES (config/pcap-capture.env), and
+# Arkime indexes a file only once it closes. Measured on staging VM 9770,
+# 2026-09-26: a 10-minute rotation, and an ESP session that took up to 20
+# minutes to appear — the fixed 180s default missed it.
+#
+# Sets CHECK_WAIT_SECS and prints the note as a side effect (never called
+# through a $(...) capture: note()'s own output would land in the number).
+check_wait_secs() {
+    local f m
+    f=$(p "${MALCOLM_HOME:-/opt/malcolm}/malcolm/config/pcap-capture.env")
+    m=$(sed -n 's/^PCAP_ROTATE_MINUTES=\([0-9][0-9]*\)$/\1/p' "$f" 2>/dev/null | tail -1)
+    if [ -n "$m" ]; then
+        CHECK_WAIT_SECS=$((m * 60 + 180))
+        note "waiting up to ${CHECK_WAIT_SECS}s for Arkime: it indexes PCAP when netsniff rotates it (PCAP_ROTATE_MINUTES=$m)"
+    else
+        CHECK_WAIT_SECS=180
+        note "waiting up to 180s (no PCAP_ROTATE_MINUTES in $f)"
+    fi
+}
 cmd_check() {
     banner "check — $NAME"
     need_root
     scenario_check "$NAME"
-    local ev="${KIT_EVIDENCE_DIR:-$PWD/r770-evidence}" wait="${SCENARIO_CHECK_WAIT_SECS:-180}" waited=0
+    local ev="${KIT_EVIDENCE_DIR:-$PWD/r770-evidence}" wait="" waited=0
     local rec start end s e r n proto port src dst why c pending lbl rows=()
     local -A cnt=()
-    case "$wait" in ''|*[!0-9]*) die "SCENARIO_CHECK_WAIT_SECS must be whole seconds (got '$wait')" ;; esac
+    if [ -n "${SCENARIO_CHECK_WAIT_SECS+x}" ]; then
+        wait=$SCENARIO_CHECK_WAIT_SECS
+        case "$wait" in ''|*[!0-9]*) die "SCENARIO_CHECK_WAIT_SECS must be whole seconds (got '$wait')" ;; esac
+    fi
     [ -f "$SCEN_DIR/$NAME/expect.txt" ] || die "scenarios/$NAME has no expect.txt — nothing to check"
     while IFS= read -r r; do
         IFS='|' read -r n proto port src dst <<< "$r"
@@ -404,6 +430,7 @@ cmd_check() {
         skip "Arkime did not answer on 127.0.0.1:8443 — start Malcolm (r770-malcolm-deploy.sh start)"
         footer "check"
     fi
+    if [ -z "$wait" ]; then check_wait_secs; wait=$CHECK_WAIT_SECS; fi
     # Arkime writes a session when it closes or at its periodic save, so an
     # immediate check can be early: ask again every 10s for rows still at 0
     while :; do
