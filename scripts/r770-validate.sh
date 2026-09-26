@@ -240,9 +240,10 @@ area_wan() {
 # ── capture ──────────────────────────────────────────────────────────────────
 area_capture() {
     AREA=capture
-    local zl; zl=$(find "$(p "$MALCOLM_HOME")/malcolm/zeek-logs" -name 'capture_loss*.log' 2>/dev/null | head -1)
+    # the newest log, spooled or rotated (.log.gz); one row per worker, so the worst one is the verdict
+    local zl; zl=$(find "$(p "$MALCOLM_HOME")/malcolm/zeek-logs" \( -name 'capture_loss*.log' -o -name 'capture_loss*.log.gz' \) -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
     if [ -n "$zl" ]; then
-        local pct; pct=$(grep -v '^#' "$zl" | tail -1 | awk '{print $NF}')
+        local pct; pct=$(zcat -f "$zl" 2>/dev/null | awk -F'\t' '!/^#/ && NF { if (m == "" || $NF + 0 > m + 0) m = $NF } END { print m }')
         if [ -n "$pct" ] && awk -v p="$pct" 'BEGIN{exit !(p < 0.5)}'; then row "zeek capture_loss" "< 0.5 %" "$pct" PASS "$zl"; elif [ -n "$pct" ]; then row "zeek capture_loss" "< 0.5 %" "$pct" FAIL "$zl"; diag "zeek capture_loss" "Zeek reports loss — check ethtool -S drop deltas on the feed and Arkime's own stats before touching tuning"; else row "zeek capture_loss" "< 0.5 %" "no data rows yet" WARN "$zl"; fi
     elif grep -qx 'ZEEK_DISABLE_STATS=true' "$(p "$MALCOLM_HOME")/malcolm/config/zeek-live.env" 2>/dev/null; then
         row "zeek capture_loss" "< 0.5 %" "stats off (ZEEK_DISABLE_STATS=true in config/zeek-live.env)" SKIP "r770-malcolm-deploy.sh configure --capture-ifs ... turns them on"

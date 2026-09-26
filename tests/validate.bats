@@ -118,6 +118,20 @@ report() { cat "$OUT"/validation-*.md; }
     [[ "$output" == *"PASS  capture/zeek capture_loss: 0.0"* ]]
 }
 
+@test "zeek capture_loss reads the newest log, rotated .gz included, and judges the worst worker" {
+    z="$ROOT/opt/malcolm/malcolm/zeek-logs/live"
+    mkdir -p "$z/logs/2026-01-01" "$z/spool/logger-1"
+    printf '#fields\tts\tts_delta\tpeer\tgaps\tacks\tpercent_lost\n1\t60\tworker-1-1\t0\t100\t0.0\n' > "$z/spool/logger-1/capture_loss.log"
+    touch -d '2 hours ago' "$z/spool/logger-1/capture_loss.log"
+    printf '#fields\tts\tts_delta\tpeer\tgaps\tacks\tpercent_lost\n2\t60\tworker-1-2\t9\t100\t0.9\n2\t60\tworker-1-1\t0\t100\t0.0\n#close\t2026-01-01-01-00-00\n' \
+        | gzip > "$z/logs/2026-01-01/capture_loss.00:00:00-01:00:00.log.gz"
+    run validate --area capture
+    echo "$output"
+    [[ "$output" == *"FAIL  capture/zeek capture_loss: 0.9"* ]]
+    run report
+    [[ "$output" == *"capture_loss.00:00:00-01:00:00.log.gz"* ]]
+}
+
 @test "a replay is opt-in, and the Arkime comparison is a WARN (indexing lag), not a FAIL" {
     run validate --area capture
     [ "$status" -eq 0 ]
