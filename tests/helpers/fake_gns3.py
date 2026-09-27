@@ -21,6 +21,7 @@ import json
 import os
 import re
 import sys
+import urllib.parse
 import zipfile
 
 STATE = os.environ["FAKE_GNS3"]
@@ -114,8 +115,18 @@ def main():
         f.write(f"{method} {route}\n")
     if route == "/v3/version":
         return 7 if flag("down") else reply({"version": "fixture"})
-    if route == "/v3/access/users/login" and method == "POST":
-        creds = json.loads(body_of(data) or b"{}")
+    # As the real controller: /login is OAuth2 and takes a FORM body (JSON gets
+    # a 422); /authenticate takes the same credentials as JSON. Measured on
+    # staging VM 9770 against the bundled gns3-server, 2026-09-26.
+    if route in ("/v3/access/users/login", "/v3/access/users/authenticate") and method == "POST":
+        json_body = any(h.lower().startswith("content-type: application/json") for h in header_lines(headers))
+        raw = body_of(data)
+        if route.endswith("/login"):
+            if json_body:
+                return 22
+            creds = dict(urllib.parse.parse_qsl(raw.decode()))
+        else:
+            creds = json.loads(raw or b"{}") if json_body else {}
         if flag("login-refused") or not creds.get("username") or not creds.get("password"):
             return 22
         return reply({"access_token": TOKEN, "token_type": "bearer"})

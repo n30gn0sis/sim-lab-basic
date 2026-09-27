@@ -1,5 +1,7 @@
 # Lab mirror feed: live GNS3 traffic into Malcolm
 
+> **Correction (2026-09-25, staging rehearsal):** the capture end is named `lab_mirror0`, not `lab-mirror0`. Malcolm's pcap-capture container runs `export $IFACE` for each capture interface, so the name must be a valid shell identifier; the hyphenated name made netsniff capture fail at start.
+
 Date: 2026-09-24 · Status: approved design, not yet implemented
 Sub-project 2 of "test out the dashboards and network scenarios" (order:
 2 mirror feed → 3 scenario pack → review; later 4 dashboards, 5 end-to-end check).

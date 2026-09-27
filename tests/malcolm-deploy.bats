@@ -19,7 +19,13 @@ setup() {
     export MALCOLM_WAIT_SECS=1
     export BATS_TEST_TMPDIR
     stub dpkg 'exit 0'
-    stub python3 'exec bash "$@"'          # the stub installer is bash; the real one is python
+    # the stub installer is bash; the real one is python -- but scenario_ndjson
+    # feeds real python source to `python3 -` (a heredoc), so only redirect the
+    # install.py-style call (a script path, not "-") to the bash stub
+    stub python3 'case "$1" in -) command -p python3 "$@" ;; *) exec bash "$@" ;; esac'
+    # the stack's owner: PUID 1000 in the fixture's config/process.env, in the docker group
+    stub getent 'case "$1 $2" in "passwd 1000") echo "labop:x:1000:1000::/home/labop:/bin/bash";; "group docker") echo "docker:x:988:labop";; *) exit 2;; esac'
+    stub runuser 'echo "runuser $*" >> "$STUB_LOG"; [ "$1" = -u ] && shift 2; [ "$1" = -- ] && shift; exec "$@"'
     stub free 'echo "               total        used        free"; echo "Mem:             128           4         124"'
     stub_log unzip
     stub_log chown
@@ -31,6 +37,7 @@ case "$1" in
   compose) [ "$2" = ps ] && printf "arkime running healthy\nzeek running healthy\nnginx-proxy running healthy\n" ;;
 esac
 exit 0'
+    export SCENARIO_DIR="$BATS_TEST_TMPDIR/no-scenarios"   # tests that want the pack call use_pack
 }
 
 malcolm() { kit_run "$SCRIPT" "$@"; }
@@ -123,7 +130,9 @@ STUB
 }
 
 @test "unpack unzips the one bundled installer into /opt/malcolm and is idempotent" {
-    stub unzip 'echo "unzip $*" >> "$STUB_LOG"; mkdir -p "$ROOT/opt/malcolm/scripts"; touch "$ROOT/opt/malcolm/scripts/install.py"'
+    # the real docker_install.zip (measured on staging VM 9770, 2026-09-25) puts
+    # install.py at its root, beside the stack tarball -- not under scripts/
+    stub unzip 'echo "unzip $*" >> "$STUB_LOG"; mkdir -p "$ROOT/opt/malcolm"; touch "$ROOT/opt/malcolm/install.py" "$ROOT/opt/malcolm/malcolm_fixture.tar.gz"'
     export ROOT
     run malcolm unpack --bundle "$BUNDLE"
     echo "$output"
@@ -140,6 +149,9 @@ STUB
     [ "$status" -eq 0 ]
     grep -q -- "--import-malcolm-config-file $ROOT/opt/malcolm/malcolm-config.rendered.json" "$MALCOLM_STUB_LOG"
     grep -q -- '--non-interactive' "$MALCOLM_STUB_LOG"
+    # the installer finds its stack tarball in its working directory, so the
+    # kit must run it from /opt/malcolm (measured on staging VM 9770, 2026-09-25)
+    grep -qx "install.py cwd $ROOT/opt/malcolm" "$MALCOLM_STUB_LOG"
     r="$ROOT/opt/malcolm/malcolm-config.rendered.json"
     ! grep -q '__[A-Z_]*__' "$r"
     grep -q '"osMemory": "24g"' "$r"                # 128 GB host -> 24g (buildout §8)
@@ -166,7 +178,7 @@ STUB
 
 @test "configure refuses when the bundled installer no longer advertises a flag the kit relies on" {
     make_malcolm_tree "$ROOT"
-    cat > "$ROOT/opt/malcolm/scripts/install.py" <<'STUB'
+    cat > "$ROOT/opt/malcolm/install.py" <<'STUB'
 #!/usr/bin/env bash
 echo "install.py $*" >> "$MALCOLM_STUB_LOG"
 case " $* " in *" --help "*) echo "usage: install.py [--non-interactive] [--configure] [--skip-splash]"; exit 0;; esac
@@ -189,52 +201,89 @@ STUB
     grep -q '"captureLiveNetworkTraffic": false,' "$r"
     grep -q '"liveArkime": false,' "$r"
     grep -q '"liveZeek": false,' "$r"
+    grep -q '"captureStats": false,' "$r"
     grep -q '"liveSuricata": false,' "$r"
     grep -q '"tweakIface": false,' "$r"
 }
 
 @test "configure --capture-ifs turns on live Arkime and Zeek on exactly those interfaces" {
     make_malcolm_tree "$ROOT"
-    mkdir -p "$ROOT/sys/class/net/lab-mirror0"
+    mkdir -p "$ROOT/sys/class/net/lab_mirror0"
     stub ip 'exit 0'
-    run malcolm configure --bundle "$BUNDLE" --capture-ifs lab-mirror0
+    run malcolm configure --bundle "$BUNDLE" --capture-ifs lab_mirror0
     echo "$output"
     [ "$status" -eq 0 ]
     r="$ROOT/opt/malcolm/malcolm-config.rendered.json"
-    grep -q '"pcapIface": \["lab-mirror0"\],' "$r"
+    grep -q '"pcapIface": \["lab_mirror0"\],' "$r"
     grep -q '"captureLiveNetworkTraffic": true,' "$r"
     grep -q '"liveArkime": true,' "$r"
     grep -q '"liveZeek": true,' "$r"
+    grep -q '"captureStats": true,' "$r"
     grep -q '"liveSuricata": false,' "$r"
     grep -q '"tweakIface": false,' "$r"
-    [[ "$output" == *"live capture on: lab-mirror0"* ]]
+    [[ "$output" == *"live capture on: lab_mirror0"* ]]
 }
 
 @test "configure --capture-ifs renders several interfaces as one JSON list" {
     make_malcolm_tree "$ROOT"
-    mkdir -p "$ROOT/sys/class/net/lab-mirror0" "$ROOT/sys/class/net/cap0"
+    mkdir -p "$ROOT/sys/class/net/lab_mirror0" "$ROOT/sys/class/net/cap0"
     stub ip 'exit 0'
-    run malcolm configure --bundle "$BUNDLE" --capture-ifs "lab-mirror0 cap0"
+    run malcolm configure --bundle "$BUNDLE" --capture-ifs "lab_mirror0 cap0"
     echo "$output"
     [ "$status" -eq 0 ]
-    grep -q '"pcapIface": \["lab-mirror0", "cap0"\],' "$ROOT/opt/malcolm/malcolm-config.rendered.json"
+    grep -q '"pcapIface": \["lab_mirror0", "cap0"\],' "$ROOT/opt/malcolm/malcolm-config.rendered.json"
 }
 
 @test "configure --capture-ifs proves the installer kept every live key in its exported config (F5)" {
     make_malcolm_tree "$ROOT"
-    mkdir -p "$ROOT/sys/class/net/lab-mirror0" "$ROOT/sys/class/net/cap0"
+    mkdir -p "$ROOT/sys/class/net/lab_mirror0" "$ROOT/sys/class/net/cap0"
     stub ip 'exit 0'
-    run malcolm configure --bundle "$BUNDLE" --capture-ifs "lab-mirror0 cap0"
+    run malcolm configure --bundle "$BUNDLE" --capture-ifs "lab_mirror0 cap0"
     echo "$output"
     [ "$status" -eq 0 ]
-    [[ "$output" == *"PASS  the installer kept live capture on lab-mirror0 cap0 (captureLiveNetworkTraffic, liveArkime, liveZeek, pcapIface)"* ]]
+    [[ "$output" == *"PASS  the installer kept live capture on lab_mirror0 cap0 (Zeek live; Arkime via liveArkime)"* ]]
+}
+
+@test "configure accepts Arkime capture through netsniff when the installer turns liveArkime off (measured on staging)" {
+    make_malcolm_tree "$ROOT"
+    mkdir -p "$ROOT/sys/class/net/lab_mirror0"
+    stub ip 'exit 0'
+    MALCOLM_STUB_EXPORT_SED='s/"liveArkime": true/"liveArkime": false/; s/"pcapNetSniff": false/"pcapNetSniff": true/' \
+        run malcolm configure --bundle "$BUNDLE" --capture-ifs lab_mirror0
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"PASS  the installer kept live capture on lab_mirror0 (Zeek live; Arkime via pcapNetSniff)"* ]]
+}
+
+@test "configure FAILs when the installer kept no capture path into Arkime" {
+    make_malcolm_tree "$ROOT"
+    mkdir -p "$ROOT/sys/class/net/lab_mirror0"
+    stub ip 'exit 0'
+    MALCOLM_STUB_EXPORT_SED='s/"liveArkime": true/"liveArkime": false/' \
+        run malcolm configure --bundle "$BUNDLE" --capture-ifs lab_mirror0
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"FAIL  the installer kept no capture path into Arkime (liveArkime, pcapNetSniff, pcapTcpDump all off)"* ]]
+}
+
+@test "configure reconfigures an extracted stack with the stack's own installer, from inside the stack" {
+    make_malcolm_tree "$ROOT"
+    # once the stack is extracted, the zip-root installer refuses ("already
+    # exists"); the stack carries scripts/install.py to reconfigure itself
+    cp "$ROOT/opt/malcolm/install.py" "$ROOT/opt/malcolm/malcolm/scripts/install.py"
+    run malcolm configure --bundle "$BUNDLE"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    grep -qx "install.py cwd $ROOT/opt/malcolm/malcolm" "$MALCOLM_STUB_LOG"
+    ! grep -qx "install.py cwd $ROOT/opt/malcolm" "$MALCOLM_STUB_LOG"
+    [[ "$output" == *"reconfiguring the extracted stack with its own installer"* ]]
 }
 
 @test "configure --capture-ifs FAILs, naming the key, when the installer's export dropped liveZeek (F5)" {
     make_malcolm_tree "$ROOT"
-    mkdir -p "$ROOT/sys/class/net/lab-mirror0"
+    mkdir -p "$ROOT/sys/class/net/lab_mirror0"
     stub ip 'exit 0'
-    MALCOLM_STUB_EXPORT_DROP=liveZeek run malcolm configure --bundle "$BUNDLE" --capture-ifs lab-mirror0
+    MALCOLM_STUB_EXPORT_DROP=liveZeek run malcolm configure --bundle "$BUNDLE" --capture-ifs lab_mirror0
     echo "$output"
     [ "$status" -eq 1 ]
     [[ "$output" == *"FAIL  the installer did not keep \"liveZeek\": true — live capture will not start; read $ROOT/opt/malcolm/malcolm-config.exported.json"* ]]
@@ -243,26 +292,26 @@ STUB
 
 @test "status reads live capture from the installer's export, and labels a rendered-only config unconfirmed (F5)" {
     make_malcolm_tree "$ROOT"
-    mkdir -p "$ROOT/sys/class/net/lab-mirror0"
+    mkdir -p "$ROOT/sys/class/net/lab_mirror0"
     stub ip 'exit 0'
-    run malcolm configure --bundle "$BUNDLE" --capture-ifs lab-mirror0
+    run malcolm configure --bundle "$BUNDLE" --capture-ifs lab_mirror0
     [ "$status" -eq 0 ]
     run malcolm status
     echo "$output"
-    [[ "$output" == *'live capture'*'on ["lab-mirror0"]'* ]]
+    [[ "$output" == *'live capture'*'on ["lab_mirror0"]'* ]]
     [[ "$output" != *"not yet confirmed"* ]]
     rm -f "$ROOT/opt/malcolm/malcolm-config.exported.json"
     run malcolm status
     echo "$output"
-    [[ "$output" == *'on ["lab-mirror0"] (rendered, not yet confirmed)'* ]]
+    [[ "$output" == *'on ["lab_mirror0"] (rendered, not yet confirmed)'* ]]
 }
 
 @test "configure refuses a capture interface that does not exist, pointing a lab-* name at labnet" {
     make_malcolm_tree "$ROOT"
-    run malcolm configure --bundle "$BUNDLE" --capture-ifs lab-mirror0
+    run malcolm configure --bundle "$BUNDLE" --capture-ifs lab_mirror0
     echo "$output"
     [ "$status" -eq 1 ]
-    [[ "$output" == *"capture interface lab-mirror0 does not exist"* ]]
+    [[ "$output" == *"capture interface lab_mirror0 does not exist"* ]]
     [[ "$output" == *"r770-gns3-deploy.sh labnet"* ]]
     ! grep -q -- '--configure' "$MALCOLM_STUB_LOG"
 }
@@ -280,11 +329,11 @@ STUB
 
 @test "configure refuses a repeated, empty or malformed --capture-ifs" {
     make_malcolm_tree "$ROOT"
-    mkdir -p "$ROOT/sys/class/net/lab-mirror0"
+    mkdir -p "$ROOT/sys/class/net/lab_mirror0"
     stub ip 'exit 0'
-    run malcolm configure --bundle "$BUNDLE" --capture-ifs "lab-mirror0 lab-mirror0"
+    run malcolm configure --bundle "$BUNDLE" --capture-ifs "lab_mirror0 lab_mirror0"
     [ "$status" -eq 1 ]
-    [[ "$output" == *"names lab-mirror0 twice"* ]]
+    [[ "$output" == *"names lab_mirror0 twice"* ]]
     run malcolm configure --bundle "$BUNDLE" --capture-ifs ""
     [ "$status" -eq 1 ]
     [[ "$output" == *"names no interface"* ]]
@@ -292,6 +341,65 @@ STUB
     [ "$status" -eq 1 ]
     [[ "$output" == *"not an interface name"* ]]
     ! grep -q -- '--configure' "$MALCOLM_STUB_LOG"
+}
+
+# ── configure turns Arkime ESP tracking on (measured on staging VM 9770,
+# 2026-09-26: Malcolm's Arkime tracks no ESP by default, so no ESP scenario
+# ever became a session, until ARKIME_default__trackESP=true was added to
+# config/arkime.env) ─────────────────────────────────────────────────────────
+
+@test "configure turns Arkime's ESP tracking on in config/arkime.env" {
+    make_malcolm_tree "$ROOT"
+    run malcolm configure --bundle "$BUNDLE"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    f="$ROOT/opt/malcolm/malcolm/config/arkime.env"
+    [ "$(grep -c '^ARKIME_default__trackESP=' "$f")" -eq 1 ]
+    grep -qx 'ARKIME_default__trackESP=true' "$f"
+    [[ "$output" == *"PASS  trackESP turned on in $f — ESP (IP protocol 50) becomes an Arkime session"* ]]
+}
+
+@test "a second configure leaves exactly one trackESP line, already on" {
+    make_malcolm_tree "$ROOT"
+    run malcolm configure --bundle "$BUNDLE"
+    [ "$status" -eq 0 ]
+    f="$ROOT/opt/malcolm/malcolm/config/arkime.env"
+    run malcolm configure --bundle "$BUNDLE"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [ "$(grep -c '^ARKIME_default__trackESP=' "$f")" -eq 1 ]
+    [[ "$output" == *"PASS  trackESP already on in $f"* ]]
+}
+
+@test "configure replaces a pre-existing trackESP=false rather than duplicating it" {
+    make_malcolm_tree "$ROOT"
+    printf 'ARKIME_default__trackESP=false\n' >> "$ROOT/opt/malcolm/malcolm/config/arkime.env"
+    run malcolm configure --bundle "$BUNDLE"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    f="$ROOT/opt/malcolm/malcolm/config/arkime.env"
+    [ "$(grep -c '^ARKIME_default__trackESP=' "$f")" -eq 1 ]
+    grep -qx 'ARKIME_default__trackESP=true' "$f"
+    [[ "$output" == *"PASS  trackESP turned on in $f (was: false)"* ]]
+}
+
+@test "configure FAILs, naming the file, when the installer did not write arkime.env" {
+    make_malcolm_tree "$ROOT"
+    rm -f "$ROOT/opt/malcolm/malcolm/config/arkime.env"
+    run malcolm configure --bundle "$BUNDLE"
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"FAIL  $ROOT/opt/malcolm/malcolm/config/arkime.env is missing — the installer did not write it"* ]]
+}
+
+@test "configure --dry-run prints the ESP-tracking change and makes none of it" {
+    make_malcolm_tree "$ROOT"
+    run malcolm configure --bundle "$BUNDLE" --dry-run
+    echo "$output"
+    [ "$status" -eq 0 ]
+    f="$ROOT/opt/malcolm/malcolm/config/arkime.env"
+    [[ "$output" == *"DRY-RUN: set ARKIME_default__trackESP=true in $f"* ]]
+    ! grep -q trackESP "$f"
 }
 
 # ── rebind ──────────────────────────────────────────────────────────────────
@@ -418,34 +526,70 @@ malcolm_secret() {  # the admin credential the API calls authenticate with
 }
 
 stub_curl_osd() {  # a stack that answers; $1.. are the object ids that exist
+    # The Arkime side models the answers measured on Malcolm's Arkime (staging
+    # VM, through 127.0.0.1:8443): the pre-5 /api/user/views is a 404 "Old
+    # API"; GET /api/views is {"data":[...]}; GET /sessions sets the
+    # ARKIME-COOKIE cookie (URL-encoded); POST /api/view without the
+    # x-arkime-cookie header is "Missing token", with it the view is stored
+    # (twice if posted twice: Arkime refuses no duplicate). views.json is the
+    # list Arkime holds; touch views.nostore for an Arkime that accepts a post
+    # and stores nothing.
     printf '%s\n' "$@" > "$BATS_TEST_TMPDIR/present-objects.txt"
     : > "$BATS_TEST_TMPDIR/views.json"
     [ -s "$BATS_TEST_TMPDIR/index-patterns.json" ] || \
         printf '{"saved_objects":[{"type":"index-pattern","id":"idx-net","attributes":{"title":"lab-sessions-*"}}]}' \
             > "$BATS_TEST_TMPDIR/index-patterns.json"
-    stub curl '
+    stub curl "$(cat <<'EOF'
 echo "curl $*" >> "$STUB_LOG"
-url=""; method=GET
+T="$BATS_TEST_TMPDIR"
+url=""; method=GET; fail=0; jar=""; data=""; hdrs=""
 while [ $# -gt 0 ]; do
-  case "$1" in -X) method="$2"; shift ;; https://*) url="$1" ;; esac
+  case "$1" in
+    -X) method="$2"; shift ;;
+    -c) jar="$2"; stat -c %a "$2" >> "$T/secret-modes.log"; shift ;;
+    -d) data="$2"; shift ;;
+    -H) case "$2" in
+          @*) hdrs="$hdrs$(cat "${2#@}")"$'\n'; stat -c %a "${2#@}" >> "$T/secret-modes.log" ;;
+        esac; shift ;;
+    --fail) fail=1 ;;
+    https://*) url="$1" ;;
+  esac
   shift
 done
 case "$url" in
-  */api/status*)               echo "{\"status\":{\"overall\":{\"state\":\"green\"}}}" ;;
-  */_find*type=search*)        cat "$BATS_TEST_TMPDIR/objects.json" 2>/dev/null || echo "{\"saved_objects\":[]}" ;;
-  */_find*type=index-pattern*) cat "$BATS_TEST_TMPDIR/index-patterns.json" ;;
-  */_find*)                    cat "$BATS_TEST_TMPDIR/objects.json" 2>/dev/null || echo "{\"saved_objects\":[]}" ;;
-  */_import*)                  echo "{\"success\":true}" ;;
-  */api/user/views*)           cat "$BATS_TEST_TMPDIR/views.json" 2>/dev/null || echo "[]" ;;
+  */api/status*)               echo '{"status":{"overall":{"state":"green"}}}' ;;
+  */_find*type=search*)        cat "$T/objects.json" 2>/dev/null || echo '{"saved_objects":[]}' ;;
+  */_find*type=index-pattern*) cat "$T/index-patterns.json" ;;
+  */_find*)                    cat "$T/objects.json" 2>/dev/null || echo '{"saved_objects":[]}' ;;
+  */_import*)                  echo '{"success":true}' ;;
+  */arkime/api/user/views*)    printf 'Old API'; [ "$fail" = 1 ] && exit 22 ;;
+  */arkime/api/views)          v=$(cat "$T/views.json" 2>/dev/null); printf '{"data":%s}' "${v:-[]}" ;;
+  */arkime/sessions)
+      [ -n "$jar" ] && printf '# Netscape HTTP Cookie File\n#HttpOnly_127.0.0.1\tFALSE\t/\tTRUE\t0\tARKIME-COOKIE\ttok%%3Dabc\n' > "$jar"
+      echo '<html>' ;;
+  */arkime/api/view)
+      printf '%s' "$hdrs" >> "$T/view-headers.log"
+      if [ "$method" = POST ] && printf '%s' "$hdrs" | grep -q '^x-arkime-cookie: '; then
+        if [ ! -e "$T/views.nostore" ]; then
+          v=$(cat "$T/views.json" 2>/dev/null)
+          case "$v" in ''|'[]') v="[$data]" ;; *) v="${v%]},$data]" ;; esac
+          printf '%s' "$v" > "$T/views.json"
+        fi
+        echo '{"success":true,"text":"Created view!"}'
+      else
+        echo '{"success":false,"text":"Missing token","i18n":"api.viewer.missingToken"}'
+      fi ;;
   */saved_objects/*)
       id="${url##*/}"
-      if grep -qxF "$id" "$BATS_TEST_TMPDIR/present-objects.txt" 2>/dev/null; then
+      if grep -qxF "$id" "$T/present-objects.txt" 2>/dev/null; then
         echo "{\"id\":\"$id\"}"
       else
-        echo "{\"statusCode\":404}"
+        echo '{"statusCode":404}'
       fi ;;
 esac
-exit 0'
+exit 0
+EOF
+)"
 }
 
 stub_curl_down() { stub curl 'echo "curl $*" >> "$STUB_LOG"; exit 7'; }
@@ -537,11 +681,16 @@ ipsec_ids() {  # every id the shipped template declares
     grep -q -- '--netrc-file' "$STUB_LOG"
 }
 
+@test "the Malcolm netrc is written in one place, scripts/lib/malcolm-api.sh, which both API users source" {
+    cd "$BATS_TEST_DIRNAME/.."
+    run grep -l -- '--netrc-file' scripts/*.sh scripts/lib/*.sh
+    [ "$output" = "scripts/lib/malcolm-api.sh" ]
+    grep -q '^\. "$(dirname "${BASH_SOURCE\[0\]}")/lib/malcolm-api.sh"' scripts/r770-malcolm-deploy.sh
+}
+
 @test "arkime-views posts every view in the kit's file and reads them all back" {
     make_malcolm_tree "$ROOT"; malcolm_secret
     stub_curl_osd
-    sed -n 's/^\([^#|][^|]*\)|.*/{"name":"\1"}/p' config/malcolm/arkime-views/ipsec.views \
-        | paste -sd, - | sed 's/^/[/;s/$/]/' > "$BATS_TEST_TMPDIR/views.json"
     run malcolm arkime-views
     echo "$output"
     [ "$status" -eq 0 ]
@@ -553,7 +702,7 @@ ipsec_ids() {  # every id the shipped template declares
 @test "arkime-views FAILs, naming the view, when Arkime accepted the post but stored nothing" {
     make_malcolm_tree "$ROOT"; malcolm_secret
     stub_curl_osd
-    printf '[]' > "$BATS_TEST_TMPDIR/views.json"
+    touch "$BATS_TEST_TMPDIR/views.nostore"
     run malcolm arkime-views
     echo "$output"
     [ "$status" -eq 1 ]
@@ -567,8 +716,238 @@ ipsec_ids() {  # every id the shipped template declares
     run malcolm arkime-views
     echo "$output"
     [ "$status" -eq 1 ]
-    [[ "$output" == *"/api/user/views"* ]]
+    [[ "$output" == *"GET /api/views"* ]]
     [[ "$output" == *"BUNDLE_NOTES.md"* ]]
+}
+
+@test "arkime-views sends Arkime's cookie token only through a 0600 header file, URL-decoded, and removes it" {
+    make_malcolm_tree "$ROOT"; malcolm_secret
+    stub_curl_osd
+    run malcolm arkime-views
+    echo "$output"
+    [ "$status" -eq 0 ]
+    # the token came from the sessions page's cookie jar ...
+    grep -q 'arkime/sessions' "$STUB_LOG"
+    # ... reached every POST as a header read from a file, decoded (%3D -> =)
+    grep -qx 'x-arkime-cookie: tok=abc' "$BATS_TEST_TMPDIR/view-headers.log"
+    run grep -c 'Missing token' <<< "$output"
+    [ "$output" = 0 ]
+    # ... and never through argv or the transcript
+    run grep -cE 'tok=abc|tok%3Dabc|x-arkime-cookie' "$STUB_LOG"
+    [ "$output" = 0 ]
+    run malcolm arkime-views
+    [[ "$output" != *"tok=abc"* ]] && [[ "$output" != *"tok%3Dabc"* ]]
+    # the jar and the header file are 0600, and live only for the run
+    [ -s "$BATS_TEST_TMPDIR/secret-modes.log" ]
+    run grep -cvx 600 "$BATS_TEST_TMPDIR/secret-modes.log"
+    [ "$output" = 0 ]
+    for f in $(grep -oE -- '(-c|-H @)[^ ]+' "$STUB_LOG" | sed -E 's/^(-c|-H @)//' | sort -u); do
+        [ ! -e "$f" ] || { echo "left behind: $f"; return 1; }
+    done
+}
+
+@test "arkime-views dies naming the cookie when Arkime hands out no token, and posts nothing" {
+    make_malcolm_tree "$ROOT"; malcolm_secret
+    stub_curl_osd
+    # an Arkime whose sessions page sets no cookie
+    sed -i 's|\[ -n "\$jar" \] \&\&|false \&\&|' "$BIN/curl"
+    run malcolm arkime-views
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"/arkime/sessions"* ]]
+    [[ "$output" == *"ARKIME-COOKIE"* ]]
+    run grep -c -- '-X POST' "$STUB_LOG"
+    [ "$output" = 0 ]
+}
+
+@test "arkime-views leaves a view already present by name as it is, so a rerun adds nothing" {
+    make_malcolm_tree "$ROOT"; malcolm_secret
+    stub_curl_osd
+    printf '[{"name":"IPsec - ESP payload","expression":"ip.protocol == 50","users":"","user":"analyst","id":"x1"}]' \
+        > "$BATS_TEST_TMPDIR/views.json"
+    run malcolm arkime-views
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"present IPsec - ESP payload"* ]]
+    [[ "$output" == *"+ POST /api/view   (IPsec - AH authenticated)"* ]]
+    run grep -c '"name":"IPsec - ESP payload"' "$STUB_LOG"
+    [ "$output" = 0 ]
+    # a second run finds every view by name: no POST, and no token needed
+    : > "$STUB_LOG"
+    run malcolm arkime-views
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"view(s) present"* ]]
+    run grep -c -- '-X POST' "$STUB_LOG"
+    [ "$output" = 0 ]
+    run grep -c 'arkime/sessions' "$STUB_LOG"
+    [ "$output" = 0 ]
+    run grep -o '"name":"IPsec - AH authenticated"' "$BATS_TEST_TMPDIR/views.json"
+    [ "${#lines[@]}" -eq 1 ]
+}
+
+@test "every fixed view name keeps to the characters Arkime stores ([-a-zA-Z0-9_: ])" {
+    run bash -c "sed -n 's/^\\([^#|][^|]*\\)|.*/\\1/p' config/malcolm/arkime-views/*.views | LC_ALL=C grep -v '^[-a-zA-Z0-9_: ]*\$'"
+    echo "$output"
+    [ -z "$output" ]
+}
+
+@test "arkime-views refuses a view name outside Arkime's character set before posting anything, naming it" {
+    make_malcolm_tree "$ROOT"; malcolm_secret
+    export SCENARIO_DIR="$BATS_TEST_TMPDIR/dotted-pack"
+    mkdir -p "$SCENARIO_DIR/lab.v2"
+    printf 'name=lab.v2\nrange=10.250.0.0/16\n' > "$SCENARIO_DIR/lab.v2/scenario.conf"
+    printf 'icmp||10.250.0.1/32|10.250.0.2/32\n' > "$SCENARIO_DIR/lab.v2/expect.txt"
+    stub_curl_osd
+    run malcolm arkime-views
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"'Scenario lab.v2 - all traffic'"* ]]
+    [[ "$output" == *"[-a-zA-Z0-9_: ]"* ]]
+    run grep -c -- '-X POST' "$STUB_LOG"
+    [ "$output" = 0 ]
+}
+
+# ── the scenario pack's generated objects ────────────────────────────────────
+use_pack() { export SCENARIO_DIR="$BATS_TEST_DIRNAME/../scenarios"; }
+
+pack_ids() {  # every id dashboards should generate from $SCENARIO_DIR, in file order
+    local d s n i
+    for d in "$SCENARIO_DIR"/*/; do
+        s=$(basename "$d"); echo "lab-scenario-$s"
+        n=$(grep -cvE '^(#|$)' "$d/expect.txt")
+        for i in $(seq 1 "$n"); do echo "lab-scenario-$s-row-$i"; done
+    done
+    echo lab-scenarios-overview
+}
+
+search_of() {  # search_of <ndjson> <id> — its title, then its query
+    python3 -c 'import json, sys
+for l in open(sys.argv[1]):
+    o = json.loads(l)
+    if o["id"] == sys.argv[2]:
+        print(o["attributes"]["title"])
+        print(json.loads(o["attributes"]["kibanaSavedObjectMeta"]["searchSourceJSON"])["query"]["query"])' "$1" "$2"
+}
+
+bad_pack() {  # a one-scenario pack whose second row the translator refuses
+    export SCENARIO_DIR="$BATS_TEST_TMPDIR/bad-pack"
+    mkdir -p "$SCENARIO_DIR/bad"
+    printf 'name=bad\nrange=10.250.0.0/16\n' > "$SCENARIO_DIR/bad/scenario.conf"
+    printf 'icmp||10.250.0.1/32|10.250.0.2/32\nsctp||10.250.0.1/32|10.250.0.2/32\n' > "$SCENARIO_DIR/bad/expect.txt"
+}
+
+@test "dashboards generates a range search per scenario, a search per expect row, and an overview of exactly the range searches" {
+    make_malcolm_tree "$ROOT"; malcolm_secret; use_pack
+    stub_curl_osd $(ipsec_ids) $(pack_ids)
+    run malcolm dashboards
+    echo "$output"
+    [ "$status" -eq 0 ]
+    f="$ROOT/opt/malcolm/scenarios.ndjson"
+    [ "$(sed -n 's/^{"id":"\([^"]*\)".*/\1/p' "$f")" = "$(pack_ids)" ]
+    run python3 -c 'import json, sys
+d = [json.loads(l) for l in open(sys.argv[1]) if json.loads(l)["type"] == "dashboard"][0]
+print(d["attributes"]["title"]); print(" ".join(r["id"] for r in d["references"]))' "$f"
+    [ "${lines[0]}" = "Lab scenarios - Overview (lab)" ]
+    [ "${lines[1]}" = "$(for d in "$SCENARIO_DIR"/*/; do printf 'lab-scenario-%s ' "$(basename "$d")"; done | sed 's/ $//')" ]
+    grep -q '"id":"idx-net"' "$f"
+    run grep -c '__NETWORK_INDEX_PATTERN_ID__' "$f"
+    [ "$output" = 0 ]
+}
+
+@test "a generated row search carries the translator's KQL; the range search, the scenario's range" {
+    make_malcolm_tree "$ROOT"; malcolm_secret; use_pack
+    stub_curl_osd $(ipsec_ids) $(pack_ids)
+    run malcolm dashboards
+    [ "$status" -eq 0 ]
+    f="$ROOT/opt/malcolm/scenarios.ndjson"
+    run search_of "$f" lab-scenario-bgp-row-1
+    [ "${lines[0]}" = 'Scenario bgp - tcp/179 10.204.0.0/24 -> 10.204.0.0/24 (lab)' ]
+    [ "${lines[1]}" = 'network.transport:tcp and (source.port:179 or destination.port:179) and ((source.ip:"10.204.0.0/24" and destination.ip:"10.204.0.0/24") or (source.ip:"10.204.0.0/24" and destination.ip:"10.204.0.0/24" and destination.packets > 0))' ]
+    run search_of "$f" lab-scenario-bgp
+    [ "${lines[0]}" = 'Scenario bgp - all traffic (lab)' ]
+    [ "${lines[1]}" = 'source.ip:"10.204.0.0/16" or destination.ip:"10.204.0.0/16"' ]
+}
+
+@test "the generated objects are identical across runs, so a re-import overwrites rather than piles up" {
+    make_malcolm_tree "$ROOT"; malcolm_secret; use_pack
+    stub_curl_osd $(ipsec_ids) $(pack_ids)
+    run malcolm dashboards
+    [ "$status" -eq 0 ]
+    cp "$ROOT/opt/malcolm/scenarios.ndjson" "$BATS_TEST_TMPDIR/first.ndjson"
+    run malcolm dashboards
+    [ "$status" -eq 0 ]
+    cmp "$BATS_TEST_TMPDIR/first.ndjson" "$ROOT/opt/malcolm/scenarios.ndjson"
+}
+
+@test "a generated object that did not land is a FAIL that names it" {
+    make_malcolm_tree "$ROOT"; malcolm_secret; use_pack
+    stub_curl_osd $(ipsec_ids) $(pack_ids | grep -v '^lab-scenarios-overview$')
+    run malcolm dashboards
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"MISSING dashboard/lab-scenarios-overview"* ]]
+}
+
+@test "a row the translator refuses stops dashboards before any import, naming the file and the row" {
+    make_malcolm_tree "$ROOT"; malcolm_secret; bad_pack
+    stub_curl_osd $(ipsec_ids)
+    run malcolm dashboards
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"refusing scenarios/bad/expect.txt row 2: unknown protocol 'sctp'"* ]]
+    run grep -c '_import' "$STUB_LOG"
+    [ "$output" = 0 ]
+}
+
+# ── arkime-views generates the scenario pack's views ─────────────────────────
+
+pack_view_names() {  # every view name arkime-views should generate from $SCENARIO_DIR
+    local d s n p port src dst
+    for d in "$SCENARIO_DIR"/*/; do
+        s=$(basename "$d"); echo "Scenario $s - all traffic"; n=0
+        grep -vE '^(#|$)' "$d/expect.txt" | while IFS='|' read -r p port src dst; do
+            n=$((n + 1)); echo "Scenario $s - row $n $p${port:+ $port}"
+        done
+    done
+}
+
+@test "arkime-views posts a range view and a view per expect row for every scenario, and reads them all back" {
+    make_malcolm_tree "$ROOT"; malcolm_secret; use_pack
+    stub_curl_osd
+    run malcolm arkime-views
+    echo "$output"
+    [ "$status" -eq 0 ]
+    while IFS= read -r v; do
+        [[ "$output" == *"ok      $v"* ]] || { echo "not read back: $v"; return 1; }
+    done < <(pack_view_names)
+    [[ "$output" == *"ok      Scenario bgp - row 1 tcp 179"* ]]
+    [[ "$output" == *"ok      Scenario ospf - row 1 ospf"* ]]
+    [[ "$output" == *"view(s) present"* ]]
+    grep -qF 'ip.protocol == tcp && port == 179 && ((ip.src == 10.204.0.0/24 && ip.dst == 10.204.0.0/24) || (ip.src == 10.204.0.0/24 && ip.dst == 10.204.0.0/24 && packets.dst > 0))' "$STUB_LOG"
+    grep -qF '"name":"Scenario bgp - all traffic","expression":"ip == 10.204.0.0/16"' "$STUB_LOG"
+    grep -qF 'ip.protocol == 89 && ((ip.src == 10.203.23.0/24 && ip.dst == 224.0.0.5/32) || (ip.src == 224.0.0.5/32 && ip.dst == 10.203.23.0/24 && packets.dst > 0))' "$STUB_LOG"
+}
+
+@test "a generated row view's posted expression carries the either-orientation alternative (||) intact" {
+    make_malcolm_tree "$ROOT"; malcolm_secret; use_pack
+    stub_curl_osd
+    run malcolm arkime-views
+    echo "$output"
+    [ "$status" -eq 0 ]
+    grep -qF '"name":"Scenario bgp - row 1 tcp 179","expression":"ip.protocol == tcp && port == 179 && ((ip.src == 10.204.0.0/24 && ip.dst == 10.204.0.0/24) || (ip.src == 10.204.0.0/24 && ip.dst == 10.204.0.0/24 && packets.dst > 0))"' \
+        "$BATS_TEST_TMPDIR/views.json"
+}
+
+@test "a row the translator refuses stops arkime-views before any view is posted" {
+    make_malcolm_tree "$ROOT"; malcolm_secret; bad_pack
+    stub_curl_osd
+    run malcolm arkime-views
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"refusing scenarios/bad/expect.txt row 2: unknown protocol 'sctp'"* ]]
+    run grep -c -- '-X POST' "$STUB_LOG"
+    [ "$output" = 0 ]
 }
 
 # ── full ─────────────────────────────────────────────────────────────────────
@@ -659,4 +1038,67 @@ ipsec_ids() {  # every id the shipped template declares
     [[ "$output" == *"accepted via --yes"* ]]
     [[ "$output" == *"DEPLOYED WITH WARNINGS"* ]]
     [[ "$output" == *"steps: apt"* ]]
+}
+
+# ── Malcolm's control scripts refuse root (measured on staging) ─────────────
+
+@test "configure gives the stack to the user in config/process.env, whom Malcolm's scripts run as" {
+    make_malcolm_tree "$ROOT"
+    run malcolm configure --bundle "$BUNDLE"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    grep -q "^chown -R 1000:1000 $ROOT/opt/malcolm/malcolm$" "$STUB_LOG"
+    [[ "$output" == *"PASS  $ROOT/opt/malcolm/malcolm owned by labop (1000:1000, from config/process.env)"* ]]
+    # Malcolm writes its indexes and PCAP as that user too (start died on a
+    # root-owned /data/index on staging): the dirs the exported config names
+    grep -q "^chown -R 1000:1000 $ROOT/data/index$" "$STUB_LOG"
+    grep -q "^chown -R 1000:1000 $ROOT/data/pcap/raw$" "$STUB_LOG"
+    [ -d "$ROOT/data/pcap/raw" ]
+    [[ "$output" == *"PASS  data dirs owned by labop: /data/index /data/pcap/raw"* ]]
+}
+
+@test "configure refuses a stack whose recorded PUID is root" {
+    make_malcolm_tree "$ROOT"
+    printf 'PUID=0\nPGID=0\n' > "$ROOT/opt/malcolm/malcolm/config/process.env"
+    run malcolm configure --bundle "$BUNDLE"
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"PUID is 0"* ]]
+}
+
+@test "auth runs auth_setup as the stack's owner, never as root" {
+    make_malcolm_tree "$ROOT"
+    mkdir -p "$ROOT/etc/lab/secrets"; echo fixture-pw > "$ROOT/etc/lab/secrets/malcolm-admin.pw"
+    rm -f "$ROOT/opt/malcolm/malcolm/nginx/htpasswd"
+    run malcolm auth --bundle "$BUNDLE"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    grep -q '^runuser -u labop -- ./scripts/auth_setup --auth-noninteractive' "$STUB_LOG"
+}
+
+@test "start and stop run Malcolm's scripts as the stack's owner, and refuse an owner outside the docker group" {
+    make_malcolm_tree "$ROOT"
+    echo "analyst:hash" > "$ROOT/opt/malcolm/malcolm/nginx/htpasswd"
+    sed -i 's|0.0.0.0:443:443/tcp|127.0.0.1:8443:443/tcp|' "$ROOT/opt/malcolm/malcolm/docker-compose.yml"
+    run malcolm start
+    echo "$output"
+    grep -q '^runuser -u labop -- ./scripts/start' "$STUB_LOG"
+    run malcolm stop
+    grep -q '^runuser -u labop -- ./scripts/stop' "$STUB_LOG"
+    stub getent 'case "$1 $2" in "passwd 1000") echo "labop:x:1000:1000::/home/labop:/bin/bash";; "group docker") echo "docker:x:988:";; *) exit 2;; esac'
+    run malcolm start
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"labop is not in the docker group"* ]]
+}
+
+@test "configure refuses a capture interface whose name is not a shell identifier (Malcolm's pcap-capture exports it)" {
+    make_malcolm_tree "$ROOT"
+    mkdir -p "$ROOT/sys/class/net/lab-mirror0"
+    stub ip 'exit 0'
+    run malcolm configure --bundle "$BUNDLE" --capture-ifs lab-mirror0
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"lab-mirror0 cannot be a Malcolm capture interface"* ]]
+    ! grep -q -- '--configure' "$MALCOLM_STUB_LOG"
 }

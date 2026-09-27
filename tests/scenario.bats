@@ -160,7 +160,7 @@ PY
     ! grep -q fixture-pw "$STUB_LOG"
     [[ "$output" != *"fixture-pw"* ]]
     [[ "$output" != *"fixture-token"* ]]
-    grep -q 'POST /v3/access/users/login' "$FAKE_GNS3/requests.log"
+    grep -q 'POST /v3/access/users/authenticate' "$FAKE_GNS3/requests.log"
 }
 
 @test "an unknown or malformed scenario name is refused" {
@@ -310,9 +310,55 @@ PY
     run scenario up demo --bundle "$BUNDLE"
     echo "$output"
     [ "$status" -eq 0 ]
-    grep -q '^docker exec -i cid-a sh -c cat > /tmp/lab-frr.conf && { i=0; until vtysh -f /tmp/lab-frr.conf; do i=$((i+1)); \[ "$i" -ge 15 \] && exit 1; sleep 2; done; }$' "$STUB_LOG"
+    grep -q '^docker exec -i cid-a sh -c cat > /tmp/lab-frr.conf && { i=0; until wf=$(vtysh -c "show watchfrr" 2>/dev/null | grep "^  \[a-z\]") && ! printf "%s\\n" "$wf" | grep -qv " Up \*$" && vtysh -f /tmp/lab-frr.conf; do i=$((i+1)); \[ "$i" -ge 15 \] && exit 1; sleep 2; done; }$' "$STUB_LOG"
     grep -q '^docker exec -i cid-b sh -c mkdir -p /etc/swanctl && cat > /etc/swanctl/swanctl.conf && { i=0; until swanctl --load-all; do i=$((i+1)); \[ "$i" -ge 15 \] && exit 1; sleep 2; done; }$' "$STUB_LOG"
     grep -q 'hostname a' "$BATS_TEST_TMPDIR/stdin-cid-a"
+}
+
+frr_apply_cmd() {  # the frr.conf apply command up sent to cid-a, pointed at a scratch file
+    local cmd
+    cmd=$(sed -n "s/^docker exec -i cid-a sh -c //p" "$STUB_LOG" | grep vtysh)
+    printf '%s' "${cmd//\/tmp\/lab-frr.conf/$BATS_TEST_TMPDIR/lab-frr.conf}"
+}
+fake_vtysh() {  # fake_vtysh <polls-before-all-up> — watchfrr reports ospfd Down for that many polls
+    nb="$BATS_TEST_TMPDIR/node-bin"; mkdir -p "$nb"
+    cat > "$nb/vtysh" <<SH
+#!/bin/sh
+if [ "\$1" = -c ]; then
+    n=\$(cat "$BATS_TEST_TMPDIR/polls" 2>/dev/null || echo 0); n=\$((n + 1)); echo "\$n" > "$BATS_TEST_TMPDIR/polls"
+    [ "$1" -lt 0 ] && exit 1
+    printf 'watchfrr global phase: Idle\\n Restart Command: "x"\\n  zebra                Up\\n'
+    if [ "\$n" -le "$1" ]; then printf '  ospfd                Down\\n'; else printf '  ospfd                Up\\n'; fi
+    exit 0
+fi
+echo "applied after poll \$(cat "$BATS_TEST_TMPDIR/polls")" >> "$BATS_TEST_TMPDIR/applied.log"
+SH
+    printf '#!/bin/sh\nexit 0\n' > "$nb/sleep"
+    chmod +x "$nb"/*
+}
+
+@test "an FRR config is applied only once every daemon watchfrr manages is Up" {
+    printf 'hostname a\n' > "$SCENARIO_DIR/demo/nodes/a.frr.conf"
+    run scenario up demo --bundle "$BUNDLE"
+    [ "$status" -eq 0 ]
+    cmd=$(frr_apply_cmd); [ -n "$cmd" ]
+    fake_vtysh 2
+    run env PATH="$nb:$PATH" sh -c "$cmd" < "$SCENARIO_DIR/demo/nodes/a.frr.conf"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [ "$(cat "$BATS_TEST_TMPDIR/applied.log")" = "applied after poll 3" ]
+}
+
+@test "an FRR config is never applied while watchfrr cannot be reached, and the retry is bounded" {
+    printf 'hostname a\n' > "$SCENARIO_DIR/demo/nodes/a.frr.conf"
+    run scenario up demo --bundle "$BUNDLE"
+    [ "$status" -eq 0 ]
+    cmd=$(frr_apply_cmd); [ -n "$cmd" ]
+    fake_vtysh -1
+    run env PATH="$nb:$PATH" sh -c "$cmd" < "$SCENARIO_DIR/demo/nodes/a.frr.conf"
+    [ "$status" -ne 0 ]
+    [ "$(cat "$BATS_TEST_TMPDIR/polls")" = 15 ]
+    [ ! -e "$BATS_TEST_TMPDIR/applied.log" ]
 }
 
 @test "a node config apply stops at once when its file cannot be written, and never runs the loader" {
@@ -494,4 +540,353 @@ up_demo() { run scenario up demo --bundle "$BUNDLE"; [ "$status" -eq 0 ]; : > "$
     [ "$status" -eq 0 ]
     [[ "$output" == *"demo             closed"* ]]
     [[ "$output" != *"demo             up"* ]]
+}
+
+# ── check ────────────────────────────────────────────────────────────────────
+# Arkime is a curl stub: counts.tsv maps an expression to its session count;
+# late.tsv gives an expression's count only from its second query on (the
+# session was indexed while the check waited). late-nudge.tsv (Task 8) gives
+# an expression's count only once $PYTHON3_LOG is non-empty (the row was
+# indexed only once the netsniff nudge — see python3_stub — has fired), which
+# never happens unless a test opts in with count_after_nudge. arkime-down
+# makes every call fail; arkime-html makes the sessions answer a login page.
+
+arkime_stub() {
+    printf 'fixture-malcolm-pw\n' > "$ROOT/etc/lab/secrets/malcolm-admin.pw"
+    : > "$BATS_TEST_TMPDIR/counts.tsv"
+    printf 'tcp|80|10.209.0.1/32|10.209.0.2/32\n' >> "$SCENARIO_DIR/demo/expect.txt"
+    stub curl "$(cat <<'EOF'
+echo "curl $*" >> "$STUB_LOG"
+T="$BATS_TEST_TMPDIR"; ex=""; url=""; fail=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --data-urlencode) case "$2" in expression=*) ex=${2#expression=} ;; esac; shift ;;
+    --fail) fail=1 ;;
+    https://*) url=$1 ;;
+  esac
+  shift
+done
+[ -e "$T/arkime-down" ] && exit 7
+case "$url" in
+  # measured on Malcolm's Arkime (staging VM): the pre-5 views path is a
+  # catch-all 404 "Old API"; /api/user answers the logged-in user
+  */arkime/api/user/views) printf 'Old API'; [ "$fail" = 1 ] && exit 22 ;;
+  */arkime/api/user) echo '{"enabled":true}' ;;
+  */arkime/api/sessions)
+    [ -e "$T/arkime-html" ] && { printf '<!DOCTYPE html>\n401'; exit 0; }
+    k=$(printf '%s' "$ex" | sha256sum | cut -c1-16)
+    m=$(( $(cat "$T/q-$k" 2>/dev/null || echo 0) + 1 )); echo "$m" > "$T/q-$k"
+    c=$(awk -F'\t' -v e="$ex" '$1 == e {print $2}' "$T/counts.tsv")
+    l=$(awk -F'\t' -v e="$ex" '$1 == e {print $2}' "$T/late.tsv" 2>/dev/null)
+    if [ -n "$l" ] && [ "$m" -ge 2 ]; then c=$l; fi
+    n=$(awk -F'\t' -v e="$ex" '$1 == e {print $2}' "$T/late-nudge.tsv" 2>/dev/null)
+    if [ -n "$n" ] && [ -n "${PYTHON3_LOG:-}" ] && [ -s "$PYTHON3_LOG" ]; then c=$n; fi
+    printf '{"recordsTotal":9,"recordsFiltered":%s,"data":[]}\n200' "${c:-0}" ;;
+  *) exit 7 ;;
+esac
+EOF
+)"
+}
+
+ROW1='ip.protocol == icmp && ((ip.src == 10.209.0.0/24 && ip.dst == 10.209.0.0/24) || (ip.src == 10.209.0.0/24 && ip.dst == 10.209.0.0/24 && packets.dst > 0))'
+ROW2='ip.protocol == tcp && port == 80 && ((ip.src == 10.209.0.1/32 && ip.dst == 10.209.0.2/32) || (ip.src == 10.209.0.2/32 && ip.dst == 10.209.0.1/32 && packets.dst > 0))'
+count() { printf '%s\t%s\n' "$1" "$2" >> "$BATS_TEST_TMPDIR/${3:-counts}.tsv"; }
+
+run_record() {  # run_record <scenario> [<suffix>] [no-end] — a run record in the evidence dir; prints its path
+    mkdir -p "$KIT_EVIDENCE_DIR"
+    local f="$KIT_EVIDENCE_DIR/scenario-$1-fixturehost-${2:-20260101-000100}.run"
+    printf 'scenario=%s\nrange=10.209.0.0/16\nstart=2026-01-01T00:00:00Z\n' "$1" > "$f"
+    [ "${3:-}" = no-end ] || printf 'end=2026-01-01T00:01:00Z\nsecs=60\n' >> "$f"
+    printf '%s' "$f"
+}
+
+@test "check PASSes every row with sessions in the run's window, with bounding=either and never date=" {
+    arkime_stub; run_record demo >/dev/null
+    count "$ROW1" 3; count "$ROW2" 7
+    run scenario check demo
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"PASS  demo row 1 icmp 10.209.0.0/24 -> 10.209.0.0/24: 3 session(s) in 2026-01-01T00:00:00Z–2026-01-01T00:01:00Z"* ]]
+    [[ "$output" == *"PASS  demo row 2 tcp/80 10.209.0.1/32 -> 10.209.0.2/32: 7 session(s)"* ]]
+    grep -q -- '--data-urlencode bounding=either' "$STUB_LOG"
+    grep -q -- "--data-urlencode startTime=$(date -u -d 2026-01-01T00:00:00Z +%s)" "$STUB_LOG"
+    grep -q -- "--data-urlencode stopTime=$(date -u -d 2026-01-01T00:01:00Z +%s)" "$STUB_LOG"
+    run grep -c 'date=' "$STUB_LOG"
+    [ "$output" = 0 ]
+}
+
+@test "a row with no sessions after the wait is a FAIL that points at the mirror first; a passed row is not asked again" {
+    arkime_stub; run_record demo >/dev/null
+    count "$ROW1" 3
+    SCENARIO_CHECK_WAIT_SECS=20 run scenario check demo
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"PASS  demo row 1"* ]]
+    [[ "$output" == *"FAIL  demo row 2 tcp/80 10.209.0.1/32 -> 10.209.0.2/32: 0 sessions after 20s"* ]]
+    [[ "$output" == *"tcpdump -ni lab_mirror0 'tcp port 80 and src net 10.209.0.1/32 and dst net 10.209.0.2/32'"* ]]
+    [[ "$output" == *"r770-validate.sh --area capture"* ]]
+    run grep -cF "expression=$ROW1" "$STUB_LOG"
+    [ "$output" = 1 ]
+}
+
+@test "a count that appears while check waits is a PASS" {
+    arkime_stub; run_record demo >/dev/null
+    count "$ROW1" 3; count "$ROW2" 5 late
+    run scenario check demo
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"PASS  demo row 2 tcp/80 10.209.0.1/32 -> 10.209.0.2/32: 5 session(s)"* ]]
+}
+
+@test "an answer with no session count is a FAIL naming the HTTP status, never a zero" {
+    arkime_stub; run_record demo >/dev/null
+    touch "$BATS_TEST_TMPDIR/arkime-html"
+    SCENARIO_CHECK_WAIT_SECS=0 run scenario check demo
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"FAIL  demo row 1 icmp 10.209.0.0/24 -> 10.209.0.0/24: Arkime's answer had no session count (HTTP 401)"* ]]
+    [[ "$output" != *"0 sessions"* ]]
+}
+
+@test "check SKIPs, and changes nothing, when Arkime does not answer, when there is no credential, and when there is no run" {
+    arkime_stub; run_record demo >/dev/null
+    touch "$BATS_TEST_TMPDIR/arkime-down"
+    run scenario check demo
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"SKIP  Arkime did not answer on 127.0.0.1:8443 — start Malcolm (r770-malcolm-deploy.sh start)"* ]]
+    rm -f "$BATS_TEST_TMPDIR/arkime-down" "$ROOT/etc/lab/secrets/malcolm-admin.pw"
+    run scenario check demo
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"SKIP  no Malcolm credential at /etc/lab/secrets/malcolm-admin.pw — Malcolm is not set up here"* ]]
+    rm -f "$KIT_EVIDENCE_DIR"/scenario-demo-*.run
+    run scenario check demo
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"SKIP  no run record — run r770-scenario.sh traffic demo first"* ]]
+}
+
+@test "check refuses a record of another scenario or an unfinished one; --run picks the record named" {
+    arkime_stub
+    count "$ROW1" 3; count "$ROW2" 7
+    other=$(run_record needs-ike)
+    run scenario check demo --run "$other"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"is a run of 'needs-ike', not demo"* ]]
+    open=$(run_record demo 20260101-000200 no-end)
+    run scenario check demo --run "$open"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"has no start= or end= — the traffic run did not finish"* ]]
+    done_rec=$(run_record demo 20260101-000100)
+    run scenario check demo --run "$done_rec"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"run record: $done_rec"* ]]
+}
+
+@test "check probes Arkime at /api/user, so an Arkime that answers the pre-5 /api/user/views with 404 is still checked" {
+    arkime_stub; run_record demo >/dev/null
+    count "$ROW1" 3; count "$ROW2" 7
+    run scenario check demo
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"SKIP"* ]]
+    [[ "$output" == *"PASS  demo row 2"* ]]
+    grep -qE -- 'https://127\.0\.0\.1:8443/arkime/api/user( |$)' "$STUB_LOG"
+    run grep -c 'api/user/views' "$STUB_LOG"
+    [ "$output" = 0 ]
+}
+
+@test "check sends the Malcolm credential through a netrc, never argv or the transcript" {
+    arkime_stub; run_record demo >/dev/null
+    count "$ROW1" 3; count "$ROW2" 7
+    run scenario check demo
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"fixture-malcolm-pw"* ]]
+    run grep -c 'fixture-malcolm-pw' "$STUB_LOG"
+    [ "$output" = 0 ]
+    grep -q -- '--netrc-file' "$STUB_LOG"
+}
+
+# ── check's wait: PCAP_ROTATE_MINUTES from this Malcolm ──────────────────────
+# Arkime here is not capturing live: netsniff writes PCAP that rotates every
+# PCAP_ROTATE_MINUTES (config/pcap-capture.env) and Arkime indexes each file
+# only once it closes, so check's default wait follows that rotation rather
+# than a fixed 180s. Measured on staging VM 9770, 2026-09-26.
+
+pcap_capture_env() {  # pcap_capture_env <minutes> — this Malcolm's rotation period
+    mkdir -p "$ROOT/opt/malcolm/malcolm/config"
+    printf 'PCAP_ROTATE_MINUTES=%s\n' "$1" > "$ROOT/opt/malcolm/malcolm/config/pcap-capture.env"
+}
+
+@test "check's default wait is PCAP_ROTATE_MINUTES*60+180 when this Malcolm names a rotation period" {
+    arkime_stub; run_record demo >/dev/null
+    count "$ROW1" 3
+    pcap_capture_env 1
+    run scenario check demo
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"waiting up to 240s for Arkime: it indexes PCAP when netsniff rotates it (PCAP_ROTATE_MINUTES=1)"* ]]
+    [[ "$output" == *"FAIL  demo row 2 tcp/80 10.209.0.1/32 -> 10.209.0.2/32: 0 sessions after 240s"* ]]
+}
+
+@test "check's default wait is 180s when this Malcolm has no pcap-capture.env" {
+    arkime_stub; run_record demo >/dev/null
+    count "$ROW1" 3
+    run scenario check demo
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"waiting up to 180s (no PCAP_ROTATE_MINUTES in $ROOT/opt/malcolm/malcolm/config/pcap-capture.env)"* ]]
+    [[ "$output" == *"FAIL  demo row 2 tcp/80 10.209.0.1/32 -> 10.209.0.2/32: 0 sessions after 180s"* ]]
+}
+
+@test "check's default wait is 180s when pcap-capture.env carries no PCAP_ROTATE_MINUTES, or a non-digit value" {
+    arkime_stub; run_record demo >/dev/null
+    count "$ROW1" 3
+    mkdir -p "$ROOT/opt/malcolm/malcolm/config"
+    printf 'PCAP_IFACE=lab_mirror0\n' > "$ROOT/opt/malcolm/malcolm/config/pcap-capture.env"
+    run scenario check demo
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"waiting up to 180s (no PCAP_ROTATE_MINUTES in $ROOT/opt/malcolm/malcolm/config/pcap-capture.env)"* ]]
+    [[ "$output" == *"FAIL  demo row 2 tcp/80 10.209.0.1/32 -> 10.209.0.2/32: 0 sessions after 180s"* ]]
+}
+
+@test "SCENARIO_CHECK_WAIT_SECS still wins over PCAP_ROTATE_MINUTES" {
+    arkime_stub; run_record demo >/dev/null
+    count "$ROW1" 3
+    pcap_capture_env 1
+    SCENARIO_CHECK_WAIT_SECS=20 run scenario check demo
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" != *"PCAP_ROTATE_MINUTES"* ]]
+    [[ "$output" == *"FAIL  demo row 2 tcp/80 10.209.0.1/32 -> 10.209.0.2/32: 0 sessions after 20s"* ]]
+}
+
+# ── check nudges netsniff (Task 8) ────────────────────────────────────────────
+# netsniff rotates lab_mirror0's PCAP only on the next packet after
+# PCAP_ROTATE_MINUTES, not on a timer, so a quiet lab bridge can leave a file
+# open indefinitely and Arkime never indexes it. check sends one marker frame
+# out of lab-mon0 once the wait has reached that interval, so netsniff rotates.
+
+python3_stub() {  # python3_stub [<rc>] — records `python3 $*` and its stdin to $PYTHON3_LOG; exits <rc> (default 0)
+    PYTHON3_LOG="$BATS_TEST_TMPDIR/python3.log"
+    : > "$PYTHON3_LOG"
+    export PYTHON3_LOG
+    local rc=${1:-0}
+    stub python3 "echo \"python3 \$*\" >> \"\$PYTHON3_LOG\"; cat >> \"\$PYTHON3_LOG\"; exit $rc"
+}
+
+lab_mon0() { mkdir -p "$ROOT/sys/class/net/lab-mon0"; printf '02:00:00:00:00:01\n' > "$ROOT/sys/class/net/lab-mon0/address"; }
+
+@test "check nudges netsniff once with a marker frame out of lab-mon0 once PCAP_ROTATE_MINUTES has passed" {
+    arkime_stub; run_record demo >/dev/null
+    python3_stub
+    pcap_capture_env 1
+    lab_mon0
+    count "$ROW1" 3
+    run scenario check demo
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [ "$(grep -c '^python3 ' "$PYTHON3_LOG")" -eq 1 ]
+    grep -q -- '- lab-mon0 demo ' "$PYTHON3_LOG"
+    grep -q 'AF_PACKET' "$PYTHON3_LOG"
+    grep -qF 'b"\x88\xb5"' "$PYTHON3_LOG"
+    [[ "$output" == *"nudged netsniff: one marker frame (ethertype 0x88b5) out of lab-mon0 so it rotates the PCAP holding this run"* ]]
+    [[ "$output" == *"FAIL  demo row 2 tcp/80 10.209.0.1/32 -> 10.209.0.2/32: 0 sessions after 240s"* ]]
+}
+
+@test "a row that appears only once netsniff is nudged still PASSes, and python3 was called once" {
+    arkime_stub; run_record demo >/dev/null
+    python3_stub
+    pcap_capture_env 1
+    lab_mon0
+    count "$ROW1" 3
+    count "$ROW2" 5 late-nudge
+    run scenario check demo
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"PASS  demo row 2 tcp/80 10.209.0.1/32 -> 10.209.0.2/32: 5 session(s)"* ]]
+    [ "$(grep -c '^python3 ' "$PYTHON3_LOG")" -eq 1 ]
+}
+
+@test "check never nudges when every row already has sessions on the first poll" {
+    arkime_stub; run_record demo >/dev/null
+    python3_stub
+    pcap_capture_env 1
+    lab_mon0
+    count "$ROW1" 3; count "$ROW2" 7
+    run scenario check demo
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [ ! -s "$PYTHON3_LOG" ]
+}
+
+@test "check never calls python3 without lab-mon0, and notes why once rather than every poll" {
+    arkime_stub; run_record demo >/dev/null
+    python3_stub
+    pcap_capture_env 1
+    count "$ROW1" 3
+    run scenario check demo
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [ ! -s "$PYTHON3_LOG" ]
+    [ "$(grep -c 'no lab-mon0 (run r770-gns3-deploy.sh labnet)' <<< "$output")" -eq 1 ]
+    [[ "$output" == *"no lab-mon0 (run r770-gns3-deploy.sh labnet) — cannot nudge netsniff; rows that only Arkime sees wait for the next traffic"* ]]
+    [[ "$output" == *"FAIL  demo row 2 tcp/80 10.209.0.1/32 -> 10.209.0.2/32: 0 sessions after 240s"* ]]
+}
+
+@test "check never calls python3 when this Malcolm names no PCAP_ROTATE_MINUTES" {
+    arkime_stub; run_record demo >/dev/null
+    python3_stub
+    lab_mon0
+    count "$ROW1" 3
+    run scenario check demo
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [ ! -s "$PYTHON3_LOG" ]
+}
+
+@test "check WARNs, not dies, when the nudge sender fails, and keeps waiting to a FAIL" {
+    arkime_stub; run_record demo >/dev/null
+    python3_stub 1
+    pcap_capture_env 1
+    lab_mon0
+    count "$ROW1" 3
+    run scenario check demo
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"WARN  could not send the netsniff nudge (python3 exited 1) — rows that only Arkime sees wait for the next traffic"* ]]
+    [[ "$output" == *"FAIL  demo row 2 tcp/80 10.209.0.1/32 -> 10.209.0.2/32: 0 sessions after 240s"* ]]
+    [ "$(grep -c '^python3 ' "$PYTHON3_LOG")" -eq 1 ]
+}
+
+@test "an explicit SCENARIO_CHECK_WAIT_SECS still nudges netsniff once the rotation interval has passed" {
+    arkime_stub; run_record demo >/dev/null
+    python3_stub
+    pcap_capture_env 1
+    lab_mon0
+    count "$ROW1" 3
+    SCENARIO_CHECK_WAIT_SECS=120 run scenario check demo
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [ "$(grep -c '^python3 ' "$PYTHON3_LOG")" -eq 1 ]
+    [[ "$output" == *"0 sessions after 120s"* ]]
+}
+
+@test "check --run with no value is refused, never a silent fall back to the newest record" {
+    arkime_stub; run_record demo >/dev/null
+    count "$ROW1" 3; count "$ROW2" 7
+    run scenario check demo --run
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"--run needs a run record path"* ]]
+    [[ "$output" != *"PASS  demo row"* ]]
+}
+
+@test "check refuses a scenario whose expect.txt has no data rows, rather than a READY with nothing tested" {
+    arkime_stub; run_record demo >/dev/null
+    printf '# only a comment\n\n' > "$SCENARIO_DIR/demo/expect.txt"
+    run scenario check demo
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"scenarios/demo/expect.txt has no rows — nothing to check"* ]]
 }

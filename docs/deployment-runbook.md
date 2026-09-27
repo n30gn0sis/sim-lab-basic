@@ -155,6 +155,14 @@ proxy. There is no registry to reach.
 
 - [ ] Disposition: every package the lab needs is in the curated set (an unplanned `apt install` will fail by design until the next bundle)
 
+`apt` points APT at the local repo; it installs nothing. The packages later
+steps need — `python3-venv` and `python3-pip-whl` (GNS3 `venv`),
+`python3-ruamel.yaml` and `python3-dotenv` (Malcolm `unpack`/`configure`),
+`ubridge` (GNS3 `service`), `easy-rsa` and `nginx` (front door) — are
+installed from that repo by the build repo's base-OS phase, and each step
+refuses by name when its package is absent. The 2026-09-26 staging rehearsal
+installed them by hand from `/srv/repo/apt` to stand in for that phase.
+
 ### Step M7 — files
 
 ```bash
@@ -196,7 +204,7 @@ hand.
 B=/srv/bundles/bundle-YYYYMMDD
 sudo ./scripts/r770-malcolm-deploy.sh unpack --bundle $B       # needs python3-ruamel.yaml, python3-dotenv (apt/)
 sudo ./scripts/r770-malcolm-deploy.sh configure --bundle $B    # renders the kit's config template, replays it through install.py
-#   add --capture-ifs lab-mirror0 for live capture of the lab (run GNS3's labnet first)
+#   add --capture-ifs lab_mirror0 for live capture of the lab (run GNS3's labnet first)
 sudo ./scripts/r770-malcolm-deploy.sh secrets                  # /etc/lab/secrets/malcolm-admin.pw, once
 sudo ./scripts/r770-malcolm-deploy.sh auth --bundle $B         # auth_setup, hashes generated on the box
 sudo ./scripts/r770-malcolm-deploy.sh rebind                   # 0.0.0.0:443 -> 127.0.0.1:8443, the front door owns 443
@@ -211,9 +219,24 @@ surprise. The template pins PCAP to `/data/pcap/raw` and indexes to
 Zeek feed pulls off. `--arkime-free-space-g N` turns on oldest-first deletion
 of raw PCAP below N GB free; Phase 10 sets that from measured feed rates, so
 the default is off. `--capture-ifs "<if ...>"` turns on live Arkime and Zeek
-capture on those interfaces (each must exist and carry no address); without
-it live capture stays off. `rebind` is re-applied after every installer run
-because a compose override file is ignored. `start` refuses before `auth` and
+capture on those interfaces (each must exist, carry no address, and be a
+shell identifier — Malcolm's `pcap-capture` exports each name as a variable,
+so `lab-mirror0` would crash it), together with Zeek's `capture_loss.log`
+that `--area capture` reads; without it live capture stays off. The
+installer keeps live Arkime as netsniff (`pcapNetSniff`), which `configure`
+accepts. The first `configure` runs the zip's `install.py` from
+`/opt/malcolm`; once the stack exists it runs the installer inside the
+stack (`/opt/malcolm/malcolm/scripts/install.py`). Malcolm's control scripts refuse root, so `auth`,
+`start` and `stop` run as the stack's owner — the `PUID`/`PGID` in
+`/opt/malcolm/malcolm/config/process.env`, which must not be root and must be in the `docker`
+group — and `configure`/`rebind` give that user the stack and the configured
+index and PCAP directories. `rebind` is re-applied after every installer run
+because a compose override file is ignored. `configure` also sets
+`ARKIME_default__trackESP=true` in
+`/opt/malcolm/malcolm/config/arkime.env` after every installer run, the same
+way — Malcolm ships no knob for it, and without it ESP (IP protocol 50) is
+never an Arkime session, so the IPsec "ESP payload" search and view stay
+empty. `start` refuses before `auth` and
 before `rebind`. Arkime and logstash are the last to go healthy; `start` waits up to
 `MALCOLM_WAIT_SECS` and can be rerun to keep waiting.
 
@@ -242,7 +265,28 @@ for a partial import exactly as it reports a whole one — the same lie
 land. `arkime-views` does the same for
 `config/malcolm/arkime-views/ipsec.views`, reading each view back by name.
 
-Both are idempotent: the import overwrites, and the views are posted by name.
+Both steps also generate the scenario pack's objects from `scenarios/`, so
+each scenario's range and flows live once, in its `scenario.conf` and
+`expect.txt`: a saved search and an Arkime view for its whole range
+(`Scenario <name> - all traffic`), one of each per `expect.txt` row, and the
+**Lab scenarios - Overview** dashboard with one panel per scenario. The
+queries come from `scripts/lib/expect.sh`, the same translator
+`r770-scenario.sh check` counts with. A row the translator refuses stops the
+step before anything is imported, naming the file and row.
+
+Both are idempotent. The import overwrites by id. `arkime-views` reads the
+views Arkime already holds and leaves a view that is present by name as it
+is, because Arkime stores a second copy of a name rather than refusing it; a
+rerun therefore posts nothing. The flip side: a view whose expression changed
+keeps its old expression until you delete the old view in Arkime and rerun.
+
+Arkime keeps only `[-a-zA-Z0-9_: ]` of a view's name, so a row's view is named
+by its row number and protocol (`Scenario bgp - row 1 tcp 179`), while its
+saved search keeps the full label. `arkime-views` refuses, before posting
+anything, any name that holds another character. Its posts carry Arkime's
+`x-arkime-cookie` token, taken from the `ARKIME-COOKIE` cookie that the
+`/arkime/sessions` page sets; the token travels in a 0600 header file, never
+on the command line or in the transcript.
 
 #### Authoring a new dashboard
 
@@ -300,37 +344,43 @@ sudo ./scripts/r770-gns3-deploy.sh service                # unit; asserts 127.0.
 `venv` refuses without `python3-venv` (the rehearsal's venv came up with no
 pip) and refuses while a pip index is configured. `config` chowns `/etc/gns3`
 to the service user because GNS3 v3 writes its database and JWT key beside its
-config — root-owned, it fails with "unable to open database file". `service`
-FAILs if the server listens on anything but loopback.
+config — root-owned, it fails with "unable to open database file" — and puts
+it in the `kvm`, `docker` and `ubridge` groups. `service` refuses without
+`ubridge` (GNS3 wires every node link through it; without it a project opens
+with 409 "uBridge is not available"), whose binary is `root:ubridge 0754`
+with `cap_net_admin,cap_net_raw` — hence the group. `service` FAILs if the
+server listens on anything but loopback. The kit logs in through
+`/v3/access/users/authenticate` (JSON); `/v3/access/users/login` is the
+OAuth2 form endpoint and answers JSON with 422.
 
 ### Step G10 — labnet  *(GATED)*
 
 ```bash
-sudo ./scripts/r770-gns3-deploy.sh labnet     # br-lab (hub mode), lab-tap0..3, lab-mon0 <-> lab-mirror0
+sudo ./scripts/r770-gns3-deploy.sh labnet     # br-lab (hub mode), lab-tap0..3, lab-mon0 <-> lab_mirror0
 ```
 
 The lab bridge every scenario shares, mirrored into Malcolm by construction:
 `br-lab` runs with `ageing_time 0`, so it floods every frame to every port —
-including `lab-mon0`, whose veth peer `lab-mirror0` is what Malcolm captures.
+including `lab-mon0`, whose veth peer `lab_mirror0` is what Malcolm captures.
 A scenario puts a link on the bridge by binding a GNS3 Cloud node to a
 `lab-tapN` (owned by the `gns3` user) **on the Cloud's TAP tab, never its
 Ethernet tab** — in a project file, the Cloud's `ports_mapping` entry has
 `"type": "tap"` and `"interface": "lab-tapN"`. gns3-server types an interface
 as a TAP only when its name starts with `tap`; bound from the Ethernet tab,
 `lab-tapN` is opened with a raw packet socket, and a TAP that no process holds
-open drops those frames, so nothing reaches `br-lab`. (That behaviour was read
-from gns3-server's master branch; the staging rehearsal confirms it against
-the bundled GNS3 before this procedure is relied on.)
+open drops those frames, so nothing reaches `br-lab`. (Read from
+gns3-server's source; the 2026-09-26 staging rehearsal confirmed TAP-tab
+Clouds carrying every scenario's traffic onto `lab_mirror0`.)
 
 The step installs `/etc/systemd/network/05-*lab*` files (the bridge with
 MAC learning and multicast snooping off, the veth, the TAPs, and
-`05-lab-mirror0.link`, which turns offloads off on the capture end) and runs
+`05-lab_mirror0.link`, which turns offloads off on the capture end) and runs
 `networkctl reload`; it refuses while systemd-networkd is inactive, before
 `config` has created the service user, and when one of its names already
 belongs to something else. After the reload it waits for the whole end state,
 then proves hub mode, no multicast snooping, the ports, that no physical
 interface joined the bridge directly or through a VLAN or bond (rule 8), that
-`lab-mirror0` is up, promiscuous and address-less with gro/lro/tso off, and
+`lab_mirror0` is up, promiscuous and address-less with gro/lro/tso off, and
 whether Docker's `br_netfilter` + `FORWARD DROP` could drop bridged IP (a
 WARN with the rule to add by hand — the kit adds none). `GNS3_LAB_TAPS`
 changes the TAP count (default 4); lowering it removes the TAPs and files it
@@ -340,20 +390,20 @@ no longer declares, through the gate. Files in place but interfaces missing
 box.
 
 Then turn Malcolm's live capture on (Malcolm procedure, `configure`):
-`r770-malcolm-deploy.sh configure --bundle $B --capture-ifs lab-mirror0`.
+`r770-malcolm-deploy.sh configure --bundle $B --capture-ifs lab_mirror0`.
 
 Evidence that the feed is live, once a scenario runs:
 - the Cloud's TAP binding brings `lab-tapN` to carrier — `ip link show
   lab-tap0` no longer says `NO-CARRIER` while the node runs;
-- `tcpdump -c 5 -i lab-mirror0` shows frames;
+- `tcpdump -c 5 -i lab_mirror0` shows frames;
 - labnet's netfilter line is a PASS, or — if it WARNed — a ping between two
-  scenario nodes shows up in `tcpdump -ni lab-mirror0` in both directions (if
+  scenario nodes shows up in `tcpdump -ni lab_mirror0` in both directions (if
   it does not, add `iptables -I DOCKER-USER -i br-lab -o br-lab -j ACCEPT`,
   record it, and rerun labnet);
 - Arkime shows sessions from the scenario's address range within about a
   minute, with matching Zeek logs;
 - `r770-validate.sh --area network --lab-bridge br-lab --capture-ifs
-  lab-mirror0` and `--area capture` report the wiring and `capture_loss`.
+  lab_mirror0` and `--area capture` report the wiring and `capture_loss`.
 
 ### GNS3 — validate note
 
@@ -373,6 +423,7 @@ sudo ./scripts/r770-scenario.sh up ospf --bundle $B     # import, start, configu
 sudo ./scripts/r770-scenario.sh traffic ospf            # known traffic for traffic_secs; run record in r770-evidence/
 sudo ./scripts/r770-scenario.sh status                  # what is up, on which TAPs, last run
 sudo ./scripts/r770-scenario.sh down ospf               # stop and delete the imported project
+sudo ./scripts/r770-scenario.sh check ospf              # every expect.txt row, as Arkime sessions in the run's window
 ```
 
 Each scenario under `scenarios/` is a GNS3 project built only from bundled
@@ -387,18 +438,46 @@ transcript. `ipsec-ike` refuses until a bundle carries a strongSwan image.
 Each scenario owns one /16 (`client-server` 10.205, `ipsec-esp` 10.201,
 `ipsec-ike` 10.202, `ospf` 10.203, `bgp` 10.204), so two can share the hub.
 
-What only the staging rehearsal proves — check each once on VM 9770.
-First, the images themselves:
-`docker run --rm --network none <alpine ref> sh -c 'command -v nc'` prints a
-path (`client-server`'s server is a busybox `nc` loop — stock alpine has no
-`httpd`), and `docker image ls --format '{{.Repository}}:{{.Tag}}'` shows how
-names display (short, like `alpine:latest`, or as the list writes them; the
-kit normalises either form). Then:
-the admin login and the project import answer as the kit expects; a Cloud
-bound through the TAP tab brings `lab-tapN` to carrier; GNS3's docker nodes
-allow `ip addr`, `sysctl` and `ip xfrm`; the FRR nodes' `ospfd`/`bgpd` start
-(`vtysh -c 'show ip ospf neighbor'`, `show bgp summary`); with Malcolm's live
-capture on, a run's window shows up in Arkime from the scenario's range.
+A scenario's `expect.txt` lists the flows a run's window must show on the
+mirror, and the pack is built so that every window does:
+- FRR config is applied only once `vtysh -c 'show watchfrr'` reports every
+  daemon Up — `vtysh -f` exits 0 while silently skipping a daemon still
+  starting, which on staging left one router with no `router ospf`;
+- BGP neighbours keep alive every 5 s (`timers 5 15`): the session comes up
+  during `up`, and at FRR's 60 s default a window can hold no `tcp/179`;
+- `ipsec-ike`'s traffic first tears the IKE SA down on `gw-a`, so `cl-a`'s
+  ping makes the trap renegotiate inside the window — IKE_SA_INIT on
+  `udp/500`, then IKE_AUTH on `udp/4500` (strongSwan floats to 4500, and a
+  rekey never touches 500);
+- every `iperf3` client is capped at 50 Mbit/s: uncapped, it floods `br-lab`
+  and the capture side drops packets, control plane included.
+
+`check` judges a finished run end to end. It reads the newest run record
+(or `--run <file>`) and counts each `expect.txt` row in Arkime over the
+run's window — the same expressions as the generated `Scenario <name> - …`
+views — PASS above zero, FAIL at zero after `SCENARIO_CHECK_WAIT_SECS`.
+This Malcolm is not capturing live: netsniff writes PCAP that rotates every
+`PCAP_ROTATE_MINUTES`, and Arkime indexes a file only once it closes, so
+`SCENARIO_CHECK_WAIT_SECS` defaults to that period (read from
+`/opt/malcolm/malcolm/config/pcap-capture.env`) times 60 plus a 180 s margin
+for Arkime's own indexing lag, falling back to a fixed 180 s when the file or
+the value is not there. Rows only Arkime sees (ESP) land only once netsniff
+next rotates, which needs a packet after `PCAP_ROTATE_MINUTES` — on a quiet
+lab, `check` sends that packet itself: one marker frame, ethertype `0x88b5`,
+out of `lab-mon0`, so it appears in the capture and netsniff rotates the
+file it is holding.
+A FAIL points at the mirror first, with the `tcpdump` filter for that row.
+It counts sessions that *overlap* the window, because a BGP session or an
+IKE SA outlives a traffic run. It SKIPs, with the reason, when Malcolm is
+not answering or there is no run to judge.
+
+The 2026-09-26 staging rehearsal (VM 9770, air gap blocked, bundle
+`bundle-20260925`) ran all five: `up`, `traffic` and `down` PASS; every
+`expect.txt` row seen on `lab_mirror0` with 0 kernel drops; `ipsec-esp` and
+`ipsec-ike` showed no cleartext from the client ranges; Zeek's `conn.log`
+carried each scenario (`http`, `ospf`, BGP on 179, `spicy_ipsec_ike_udp` and
+`spicy_ipsec_udp` for IKE), and Arkime indexed `client-server`'s run as
+sessions from 10.205.0.10.
 
 ---
 

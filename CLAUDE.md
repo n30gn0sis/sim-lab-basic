@@ -60,7 +60,7 @@ sudo ./scripts/r770-portal-deploy.sh nginx --dry-run          # the optional fro
   before their own service-specific steps; run them in any order — the
   shared prep steps are idempotent, so a later `full` just reports "already
   done". The one ordering exception: Malcolm's `configure --capture-ifs
-  lab-mirror0` needs GNS3's `labnet` first (it refuses an interface that
+  lab_mirror0` needs GNS3's `labnet` first (it refuses an interface that
   does not exist yet). The optional front door, `scripts/r770-portal-deploy.sh`
   (`ca cert htpasswd nginx`), is a separate, explicit sequence run after
   Malcolm is up; it serves `docs.lab` but does not build it, and it is not
@@ -142,7 +142,7 @@ sudo ./scripts/r770-portal-deploy.sh nginx --dry-run          # the optional fro
 7. **One change at a time** when something fails: reproduce, read the
    transcript, one hypothesis, one controlled change, rerun `--from <stage>`.
 8. Capture ports never get an IP and are never bridged to the lab fabric.
-   The lab mirror's capture end (`lab-mirror0`) is fed BY the lab fabric
+   The lab mirror's capture end (`lab_mirror0`) is fed BY the lab fabric
    through a veth (its peer `lab-mon0` is the bridge port) but is never a
    port of it. `r770-validate.sh --area network --capture-ifs ...` fails on
    an address or a master.
