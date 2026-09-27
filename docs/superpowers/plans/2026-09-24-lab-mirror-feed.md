@@ -1,5 +1,7 @@
 # Lab Mirror Feed Implementation Plan
 
+> **Correction (2026-09-25, staging rehearsal):** the capture end is named `lab_mirror0`, not `lab-mirror0`. Malcolm's pcap-capture container runs `export $IFACE` for each capture interface, so the name must be a valid shell identifier; the hyphenated name made netsniff capture fail at start.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Traffic crossing a kit-created, hub-mode lab bridge (`br-lab`) reaches Malcolm's live capture through a veth (`lab-mirror0`), so a running GNS3 scenario shows up in Arkime, Zeek and the dashboards within about a minute.

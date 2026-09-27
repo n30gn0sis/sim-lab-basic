@@ -16,7 +16,7 @@
 #   service    install + enable the systemd unit, assert 127.0.0.1:3080  (GATED)
 #   labnet     the mirrored lab bridge: br-lab (hub mode), lab-tap0..N-1 for
 #              GNS3 Cloud nodes (Cloud -> TAP tab, not Ethernet), lab-mon0
-#              <-> lab-mirror0 for Malcolm's capture; systemd-networkd
+#              <-> lab_mirror0 for Malcolm's capture; systemd-networkd
 #              files, then proven from sysfs (GATED)
 #   status     what is in place
 #   full       the whole GNS3 pipeline, in order, stopping at the first step
@@ -127,7 +127,10 @@ cmd_config() {
         pass "service user $GNS3_USER created"
     fi
     local g
-    for g in kvm docker; do
+    # ubridge: the GNS3 PPA's ubridge is root:ubridge 0754 with its capabilities
+    # set, so only members of its group may run it (measured on staging VM
+    # 9770, 2026-09-26); GNS3 cannot open a project without it
+    for g in kvm docker ubridge; do
         if getent group "$g" >/dev/null 2>&1; then
             run usermod -aG "$g" "$GNS3_USER" && note "$GNS3_USER in group $g"
         else
@@ -159,6 +162,10 @@ cmd_service() {
     need_root
     [ -x "$(venv)/bin/gns3server" ] || die "no gns3server at $(venv) — run venv first"
     [ -s "$(p "$GNS3_ETC")/gns3_server.conf" ] || die "no $GNS3_ETC/gns3_server.conf — run config first"
+    # GNS3 opens every link (Cloud TAP ports included) through uBridge, which the
+    # wheelhouse does not carry; without it no project opens ("uBridge is not
+    # available") -- measured on staging VM 9770, 2026-09-26
+    require_pkg ubridge
     gate "install and start the GNS3 systemd unit" svc_current svc_proposed \
         "systemctl disable --now gns3; rm /etc/systemd/system/gns3.service; systemctl daemon-reload"
     run install -m 0644 "$KIT_CONFIG_DIR/systemd/gns3.service" "$(p /etc/systemd/system)/gns3.service" || die "could not install the unit"
@@ -202,7 +209,7 @@ cmd_status() {
 
 # ── labnet — the mirrored lab bridge ─────────────────────────────────────────
 # br-lab runs with ageing_time 0, so it keeps no MAC table and floods every
-# frame to every port -- including lab-mon0, whose veth peer lab-mirror0 is
+# frame to every port -- including lab-mon0, whose veth peer lab_mirror0 is
 # the interface Malcolm captures. A scenario puts a link on the bridge by
 # binding a GNS3 Cloud node to a lab-tapN (Cloud -> TAP tab, not Ethernet:
 # gns3-server treats a name that does not start with "tap" as an ethernet
@@ -211,15 +218,17 @@ cmd_status() {
 # leaves netplan and every existing interface alone. The names are the kit's
 # own: it creates them, it never picks one.
 LABNET_STALE=()   # installed 05-lab-tap<i>.* files with i >= LAB_TAPS
+LABNET_LEGACY=()  # mirror files a pre-rename labnet installed (the capture end was lab-mirror0)
+LEGACY_MIRROR=lab-mirror0   # the capture end's old name: Malcolm's pcap-capture cannot take a '-'
 lab_names() {  # every interface name this step owns, one per line
     local i
-    printf '%s\n' br-lab lab-mon0 lab-mirror0
+    printf '%s\n' br-lab lab-mon0 lab_mirror0
     for ((i = 0; i < LAB_TAPS; i++)); do printf 'lab-tap%s\n' "$i"; done
 }
 lab_owner_file() {  # lab_owner_file <ifname> — the installed .netdev that declares it
     case "$1" in
         br-lab)               echo 05-br-lab.netdev ;;
-        lab-mon0|lab-mirror0) echo 05-lab-mirror.netdev ;;
+        lab-mon0|lab_mirror0) echo 05-lab-mirror.netdev ;;
         *)                    echo "05-$1.netdev" ;;
     esac
 }
@@ -229,8 +238,8 @@ labnet_stage() {  # labnet_stage <dir> — every file this step installs, render
     cp "$src/br-lab.network" "$d/05-br-lab.network"
     cp "$src/lab-mirror.netdev" "$d/05-lab-mirror.netdev"
     cp "$src/lab-mon0.network" "$d/05-lab-mon0.network"
-    cp "$src/lab-mirror0.network" "$d/05-lab-mirror0.network"
-    cp "$src/lab-mirror0.link" "$d/05-lab-mirror0.link"
+    cp "$src/lab_mirror0.network" "$d/05-lab_mirror0.network"
+    cp "$src/lab_mirror0.link" "$d/05-lab_mirror0.link"
     for ((i = 0; i < LAB_TAPS; i++)); do
         DRY=0 render "$src/lab-tap.netdev.template" "$d/05-lab-tap$i.netdev" "TAP_NAME=lab-tap$i" "TAP_USER=$GNS3_USER" >/dev/null
         DRY=0 render "$src/lab-tap.network.template" "$d/05-lab-tap$i.network" "TAP_NAME=lab-tap$i" >/dev/null
@@ -246,6 +255,18 @@ labnet_find_stale() {  # labnet_find_stale <netd> — fill LABNET_STALE: TAP fil
         [ "$i" -ge "$LAB_TAPS" ] && LABNET_STALE+=("${f##*/}")
     done
 }
+# labnet_find_legacy <netd> — fill LABNET_LEGACY. networkd never recreates an
+# existing netdev on reload, so a box set up before the rename keeps the pair
+# lab-mon0 <-> lab-mirror0 until that pair is deleted (measured on VM 9770).
+labnet_find_legacy() {
+    local f
+    LABNET_LEGACY=()
+    for f in "$1/05-$LEGACY_MIRROR.network" "$1/05-$LEGACY_MIRROR.link"; do
+        [ -e "$f" ] && LABNET_LEGACY+=("${f##*/}")
+    done
+    return 0
+}
+legacy_veth() { [ -e "$(p /sys/class/net)/$LEGACY_MIRROR" ]; }   # the old pair is still up
 labnet_stale_taps() {  # the TAP names behind LABNET_STALE, one per line, once each
     local f i
     for f in "${LABNET_STALE[@]}"; do
@@ -269,15 +290,17 @@ labnet_proposed() {
     done
     for f in "${LABNET_STALE[@]}"; do echo "    remove $NETD/$f   (GNS3_LAB_TAPS is now $LAB_TAPS)"; done
     for n in $(labnet_stale_taps); do echo "    ip link del $n"; done
+    for f in "${LABNET_LEGACY[@]}"; do echo "    remove $NETD/$f   (the capture end is lab_mirror0 now)"; done
+    if legacy_veth; then echo "    ip link del lab-mon0   (its peer is still $LEGACY_MIRROR; the reload recreates the pair as lab-mon0 <-> lab_mirror0)"; fi
 }
 labnet_ready() {  # the whole end state the reload should produce
     local sys n; sys="$(p /sys/class/net)"
     [ -d "$sys/br-lab/bridge" ] || return 1
     for n in $(lab_names); do
-        case "$n" in br-lab|lab-mirror0) continue ;; esac
+        case "$n" in br-lab|lab_mirror0) continue ;; esac
         [ -e "$sys/br-lab/brif/$n" ] || return 1
     done
-    [ "$(cat "$sys/lab-mirror0/operstate" 2>/dev/null)" = "up" ]
+    [ "$(cat "$sys/lab_mirror0/operstate" 2>/dev/null)" = "up" ]
 }
 labnet_wait() {  # the reload creates and enslaves the links asynchronously; give it a moment
     local waited=0
@@ -288,7 +311,7 @@ labnet_wait() {  # the reload creates and enslaves the links asynchronously; giv
 }
 labnet_assert() {
     local sys b m n at mc flags addrs offl nf missing="" phys=""
-    sys="$(p /sys/class/net)"; b="$sys/br-lab"; m="$sys/lab-mirror0"
+    sys="$(p /sys/class/net)"; b="$sys/br-lab"; m="$sys/lab_mirror0"
     if [ ! -d "$b/bridge" ]; then
         fail "br-lab did not appear after networkctl reload — networkctl status br-lab; journalctl -u systemd-networkd"
         return 0
@@ -300,7 +323,7 @@ labnet_assert() {
     if [ "$mc" = "0" ]; then pass "br-lab does no multicast snooping: every group reaches lab-mon0"
     else fail "br-lab multicast_snooping is $mc, not 0 — multicast to groups lab-mon0 never joined would miss the mirror; check MulticastSnooping=no in $NETD/05-br-lab.netdev"; fi
     for n in $(lab_names); do
-        case "$n" in br-lab|lab-mirror0) continue ;; esac
+        case "$n" in br-lab|lab_mirror0) continue ;; esac
         [ -e "$b/brif/$n" ] || missing="$missing $n"
     done
     if [ -z "$missing" ]; then pass "lab-mon0 and $LAB_TAPS TAP(s) are ports of br-lab"
@@ -309,17 +332,17 @@ labnet_assert() {
     if [ -z "$phys" ]; then pass "br-lab has no physical port, directly or through a VLAN/bond (rule 8: capture ports never join the lab fabric)"
     else fail "physical interface(s) on br-lab: $phys — remove them; the lab fabric never touches a physical port"; fi
     flags=$(cat "$m/flags" 2>/dev/null || echo 0)
-    if [ "$(cat "$m/operstate" 2>/dev/null)" = "up" ] && [ $(( flags & 0x100 )) -ne 0 ]; then pass "lab-mirror0 is up and promiscuous"
-    else fail "lab-mirror0 is not up and promiscuous — networkctl status lab-mirror0"; fi
-    addrs=$(ip -o addr show dev lab-mirror0 2>/dev/null | grep -c . || true)
-    if [ "$addrs" -eq 0 ]; then pass "lab-mirror0 carries no address (IPv4, IPv6 or link-local)"
-    else fail "lab-mirror0 has $addrs address(es) — the capture end must be silent; networkctl status lab-mirror0"; fi
+    if [ "$(cat "$m/operstate" 2>/dev/null)" = "up" ] && [ $(( flags & 0x100 )) -ne 0 ]; then pass "lab_mirror0 is up and promiscuous"
+    else fail "lab_mirror0 is not up and promiscuous — networkctl status lab_mirror0"; fi
+    addrs=$(ip -o addr show dev lab_mirror0 2>/dev/null | grep -c . || true)
+    if [ "$addrs" -eq 0 ]; then pass "lab_mirror0 carries no address (IPv4, IPv6 or link-local)"
+    else fail "lab_mirror0 has $addrs address(es) — the capture end must be silent; networkctl status lab_mirror0"; fi
     if command -v ethtool >/dev/null 2>&1; then
-        offl=$(ethtool -k lab-mirror0 2>/dev/null | grep -E '^(generic-receive-offload|large-receive-offload|tcp-segmentation-offload):' | grep -c ': on' || true)
-        if [ "$offl" -eq 0 ]; then pass "lab-mirror0 offloads (gro/lro/tso) are off"
-        else fail "lab-mirror0 has $offl offload(s) still on — ethtool -k lab-mirror0; ethtool -K lab-mirror0 tso off gso off gro off lro off"; fi
+        offl=$(ethtool -k lab_mirror0 2>/dev/null | grep -E '^(generic-receive-offload|large-receive-offload|tcp-segmentation-offload):' | grep -c ': on' || true)
+        if [ "$offl" -eq 0 ]; then pass "lab_mirror0 offloads (gro/lro/tso) are off"
+        else fail "lab_mirror0 has $offl offload(s) still on — ethtool -k lab_mirror0; ethtool -K lab_mirror0 tso off gso off gro off lro off"; fi
     else
-        skip "lab-mirror0 offloads unchecked: ethtool not installed ($NETD/05-lab-mirror0.link turns them off when the link is created)"
+        skip "lab_mirror0 offloads unchecked: ethtool not installed ($NETD/05-lab_mirror0.link turns them off when the link is created)"
     fi
     # Docker loads br_netfilter and sets FORWARD's policy to DROP; with
     # bridge-nf-call-iptables=1, IP frames crossing br-lab traverse that chain.
@@ -334,7 +357,7 @@ labnet_assert() {
     elif iptables -S DOCKER-USER 2>/dev/null | grep -qx -- '-A DOCKER-USER -i br-lab -o br-lab -j ACCEPT'; then
         pass "bridged traffic on br-lab is accepted by DOCKER-USER ahead of FORWARD's DROP policy"
     else
-        warn "bridged IP on br-lab passes iptables FORWARD, whose policy is DROP (Docker) — lab traffic and its mirror copy may be dropped; confirm on staging with ping + tcpdump -ni lab-mirror0, and if dropped add: iptables -I DOCKER-USER -i br-lab -o br-lab -j ACCEPT"
+        warn "bridged IP on br-lab passes iptables FORWARD, whose policy is DROP (Docker) — lab traffic and its mirror copy may be dropped; confirm on staging with ping + tcpdump -ni lab_mirror0, and if dropped add: iptables -I DOCKER-USER -i br-lab -o br-lab -j ACCEPT"
     fi
 }
 cmd_labnet() {
@@ -359,8 +382,11 @@ cmd_labnet() {
     trap 'rm -rf "$LABNET_STAGE"' EXIT
     labnet_stage "$LABNET_STAGE"
     labnet_find_stale "$netd"
+    labnet_find_legacy "$netd"
     for f in "$LABNET_STAGE"/*; do cmp -s "$f" "$netd/$(basename "$f")" || changed=1; done
     [ "${#LABNET_STALE[@]}" -eq 0 ] || changed=1
+    [ "${#LABNET_LEGACY[@]}" -eq 0 ] || changed=1
+    if legacy_veth; then changed=1; fi
     if [ "$changed" -eq 0 ]; then
         pass "lab network files already in place in $NETD"
         for n in $(lab_names); do [ -e "$sys/$n" ] || missing="$missing $n"; done
@@ -377,9 +403,11 @@ cmd_labnet() {
         for f in "$LABNET_STAGE"/*; do
             run install -m 0644 "$f" "$netd/$(basename "$f")" || die "could not install $(basename "$f")"
         done
-        for f in "${LABNET_STALE[@]}"; do
+        for f in "${LABNET_STALE[@]}" "${LABNET_LEGACY[@]}"; do
             run rm -f "$netd/$f" || die "could not remove $NETD/$f"
         done
+        # before the reload: it recreates the pair from the new .netdev only once the old one is gone
+        if legacy_veth; then run ip link del lab-mon0 || die "could not delete the old pair lab-mon0 <-> $LEGACY_MIRROR — ip link del lab-mon0"; fi
         run networkctl reload || die "networkctl reload failed — journalctl -u systemd-networkd"
         for n in $(labnet_stale_taps); do   # networkd never deletes a netdev whose file went away
             [ -e "$sys/$n" ] || continue
@@ -392,9 +420,9 @@ cmd_labnet() {
     [ "$DRY" = "1" ] && footer "labnet"
     labnet_wait
     # a .link file applies only when udev sees the link created; an existing
-    # lab-mirror0 gets the same offload settings now
+    # lab_mirror0 gets the same offload settings now
     if [ "$reloaded" -eq 1 ] && command -v ethtool >/dev/null 2>&1; then
-        run ethtool -K lab-mirror0 tso off gso off gro off lro off || warn "ethtool -K lab-mirror0 failed — the offload check below says which are still on"
+        run ethtool -K lab_mirror0 tso off gso off gro off lro off || warn "ethtool -K lab_mirror0 failed — the offload check below says which are still on"
     fi
     labnet_assert
     footer "labnet"

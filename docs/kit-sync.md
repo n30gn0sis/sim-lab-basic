@@ -95,7 +95,10 @@ is asserted against those tools' `--help` before use.
   scenario-pack section, carried back into `docs/wiki/gns3.md`; and the
   strongSwan pin (`STRONGSWAN_IMG` in `GNS3_NODE_IMAGES`, resynced into
   `staging/r770-offline-fetch.sh`).
-- **strongSwan does not start charon by itself.** The pinned image's own
-  documentation starts it by hand (`./charon &`), so `scenarios/ipsec-ike`
-  must start it — settled on the staging rehearsal, where the image can be
-  inspected.
+- **strongSwan does not start charon by itself** — settled on the staging
+  rehearsal: `scenarios/ipsec-ike`'s gateway scripts start
+  `/usr/libexec/ipsec/charon`; the image carries `swanctl` and `iproute2`.
+- **ubridge (in the build repo, to resync).** `simlab-build` PR #11 also
+  fetches `ubridge` from GNS3's PPA into the APT set, a commit this resync
+  predates; once PR #11 merges, resync `staging/` from it again and
+  regenerate `staging/PROVENANCE.txt`.
