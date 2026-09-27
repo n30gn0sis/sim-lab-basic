@@ -4,20 +4,25 @@
 #
 #   ./r770-build-bundle.sh              build here
 #   ./r770-build-bundle.sh --pack       emit a self-extracting builder to stdout
+#   ./r770-build-bundle.sh --only s,s   / --skip s,s   run a selection of fetch
+#                                       stages (see the fetch's --list); the
+#                                       pause, manifest and strict gate still
+#                                       run, so a partial bundle fails the gate
+#                                       by design -- use the fetch script
+#                                       directly for section-by-section work
 #
 # Chains the four steps that have to happen in this order, and refuses to
 # continue when one of them fails:
 #
 #   1. preflight   is this host fit to build at all?
 #   2. fetch       the long download
-#   3. PAUSE       stage the manual categories -- dell/ and licensed appliances
+#   3. PAUSE       stage the manual category -- licensed GNS3 appliances
 #   4. manifest    regenerate, now that the manual files exist
 #   5. verify      --strict, before the media is allowed to move
 #
 # STEP 3 BEFORE STEP 4 IS THE WHOLE POINT. The fetch writes a manifest covering
-# what it downloaded. Dell firmware and licensed GNS3 appliances are added by
-# hand afterwards, and a manifest written before those files existed cannot see
-# them -- so the gate passes a bundle whose manual content is entirely
+# what it downloaded. Licensed GNS3 appliances are added by hand afterwards,
+# and a manifest written before those files existed cannot see them -- so the gate passes a bundle whose manual content is entirely
 # unverified. Running these steps by hand is how that gets forgotten; this
 # script exists so it cannot be.
 #
@@ -41,8 +46,10 @@ CONTENTS="r770-build-bundle.sh r770-staging-preflight.sh r770-offline-fetch.sh r
 
 ASSUME_YES="${BUILD_ASSUME_YES:-0}"
 INTERACTIVE=1
+[ -t 0 ] || INTERACTIVE=0
 BUNDLE_DIR="${BUILD_BUNDLE_DIR:-}"
 DO_PACK=0
+FETCH_ARGS=()     # --only/--skip, handed to the fetch verbatim
 
 die()  { echo "r770-build-bundle: $*" >&2; exit 1; }
 step() { printf '\n== %s\n' "$*"; }
@@ -99,6 +106,7 @@ while [ $# -gt 0 ]; do
         --bundle-dir)      BUNDLE_DIR="${2:-}"; [ -n "$BUNDLE_DIR" ] || die "--bundle-dir needs a path"; shift ;;
         --yes|-y)          ASSUME_YES=1 ;;
         --non-interactive) INTERACTIVE=0 ;;
+        --only|--skip)     [ -n "${2:-}" ] || die "$1 needs a stage list"; FETCH_ARGS+=("$1" "$2"); shift ;;
         -h|--help)         sed -n '2,28p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *)                 die "unknown argument: $1 (try --help)" ;;
     esac
@@ -124,7 +132,7 @@ case "$rc" in
         elif [ "$INTERACTIVE" = "0" ]; then
             die "warnings need a decision and this run is non-interactive — rerun with --yes once you have dispositioned them"
         else
-            read -r -p "Continue anyway? [y/N] " a
+            read -r -p "Continue anyway? [y/N] " a || a=""
             case "$a" in [yY]*) ;; *) die "stopped at preflight" ;; esac
         fi ;;
     *) die "preflight refused this host — nothing was downloaded" ;;
@@ -133,9 +141,9 @@ esac
 # ── 2. fetch ─────────────────────────────────────────────────────────────────
 step "2/5  Fetch — this is the long one, and it is resumable"
 if [ -n "$BUNDLE_DIR" ]; then
-    BUNDLE_DIR="$BUNDLE_DIR" "$FETCH" || die "fetch failed — rerun to resume; completed items are skipped"
+    BUNDLE_DIR="$BUNDLE_DIR" "$FETCH" "${FETCH_ARGS[@]}" || die "fetch failed — rerun to resume; completed items are skipped"
 else
-    "$FETCH" || die "fetch failed — rerun to resume; completed items are skipped"
+    "$FETCH" "${FETCH_ARGS[@]}" || die "fetch failed — rerun to resume; completed items are skipped"
     BUNDLE_DIR="$(pwd)/bundle-$(date +%Y%m%d)"
 fi
 
@@ -143,21 +151,21 @@ fi
 step "3/5  Manual items — nothing below can be scripted"
 cat <<'MANUAL'
 
-  dell/                    firmware DUPs for the service tag, and perccli2.
-                           Only a DUP NEWER than what is installed; Phase 1
-                           holds the baselines. Keep Dell's published checksum
-                           beside each file.
-
   gns3/appliances/         licensed appliance images you hold entitlements for.
                            The .gns3a definitions are already staged and are
                            free even where the images are not.
 
-Both are added by hand, AFTER the fetch wrote its manifest. That manifest
-cannot see them. Step 4 regenerates it so it can.
+They are added by hand, AFTER the fetch wrote its manifest. That manifest
+cannot see them. Step 4 regenerates it so it can. (Dell firmware is not a
+bundle item: it is handled on the R770 directly.)
 
 MANUAL
-if [ "$ASSUME_YES" != "1" ] && [ "$INTERACTIVE" = "1" ]; then
-    read -r -p "Staged everything you intend to ship? [y/N] " a
+if [ "$ASSUME_YES" = "1" ]; then
+    :
+elif [ "$INTERACTIVE" = "0" ]; then
+    die "stopped before the manifest — stage the manual items, then rerun with --yes (or from a terminal to be asked)"
+else
+    read -r -p "Staged everything you intend to ship? [y/N] " a || a=""
     case "$a" in [yY]*) ;; *) die "stopped before the manifest — stage the manual items, then rerun" ;; esac
 fi
 
