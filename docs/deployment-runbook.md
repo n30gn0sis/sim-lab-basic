@@ -231,7 +231,12 @@ stack (`/opt/malcolm/malcolm/scripts/install.py`). Malcolm's control scripts ref
 `/opt/malcolm/malcolm/config/process.env`, which must not be root and must be in the `docker`
 group — and `configure`/`rebind` give that user the stack and the configured
 index and PCAP directories. `rebind` is re-applied after every installer run
-because a compose override file is ignored. `start` refuses before `auth` and
+because a compose override file is ignored. `configure` also sets
+`ARKIME_default__trackESP=true` in
+`/opt/malcolm/malcolm/config/arkime.env` after every installer run, the same
+way — Malcolm ships no knob for it, and without it ESP (IP protocol 50) is
+never an Arkime session, so the IPsec "ESP payload" search and view stay
+empty. `start` refuses before `auth` and
 before `rebind`. Arkime and logstash are the last to go healthy; `start` waits up to
 `MALCOLM_WAIT_SECS` and can be rerun to keep waiting.
 
@@ -260,7 +265,28 @@ for a partial import exactly as it reports a whole one — the same lie
 land. `arkime-views` does the same for
 `config/malcolm/arkime-views/ipsec.views`, reading each view back by name.
 
-Both are idempotent: the import overwrites, and the views are posted by name.
+Both steps also generate the scenario pack's objects from `scenarios/`, so
+each scenario's range and flows live once, in its `scenario.conf` and
+`expect.txt`: a saved search and an Arkime view for its whole range
+(`Scenario <name> - all traffic`), one of each per `expect.txt` row, and the
+**Lab scenarios - Overview** dashboard with one panel per scenario. The
+queries come from `scripts/lib/expect.sh`, the same translator
+`r770-scenario.sh check` counts with. A row the translator refuses stops the
+step before anything is imported, naming the file and row.
+
+Both are idempotent. The import overwrites by id. `arkime-views` reads the
+views Arkime already holds and leaves a view that is present by name as it
+is, because Arkime stores a second copy of a name rather than refusing it; a
+rerun therefore posts nothing. The flip side: a view whose expression changed
+keeps its old expression until you delete the old view in Arkime and rerun.
+
+Arkime keeps only `[-a-zA-Z0-9_: ]` of a view's name, so a row's view is named
+by its row number and protocol (`Scenario bgp - row 1 tcp 179`), while its
+saved search keeps the full label. `arkime-views` refuses, before posting
+anything, any name that holds another character. Its posts carry Arkime's
+`x-arkime-cookie` token, taken from the `ARKIME-COOKIE` cookie that the
+`/arkime/sessions` page sets; the token travels in a 0600 header file, never
+on the command line or in the transcript.
 
 #### Authoring a new dashboard
 
@@ -397,6 +423,7 @@ sudo ./scripts/r770-scenario.sh up ospf --bundle $B     # import, start, configu
 sudo ./scripts/r770-scenario.sh traffic ospf            # known traffic for traffic_secs; run record in r770-evidence/
 sudo ./scripts/r770-scenario.sh status                  # what is up, on which TAPs, last run
 sudo ./scripts/r770-scenario.sh down ospf               # stop and delete the imported project
+sudo ./scripts/r770-scenario.sh check ospf              # every expect.txt row, as Arkime sessions in the run's window
 ```
 
 Each scenario under `scenarios/` is a GNS3 project built only from bundled
@@ -424,6 +451,25 @@ mirror, and the pack is built so that every window does:
   rekey never touches 500);
 - every `iperf3` client is capped at 50 Mbit/s: uncapped, it floods `br-lab`
   and the capture side drops packets, control plane included.
+
+`check` judges a finished run end to end. It reads the newest run record
+(or `--run <file>`) and counts each `expect.txt` row in Arkime over the
+run's window — the same expressions as the generated `Scenario <name> - …`
+views — PASS above zero, FAIL at zero after `SCENARIO_CHECK_WAIT_SECS`.
+This Malcolm is not capturing live: netsniff writes PCAP that rotates every
+`PCAP_ROTATE_MINUTES`, and Arkime indexes a file only once it closes, so
+`SCENARIO_CHECK_WAIT_SECS` defaults to that period (read from
+`/opt/malcolm/malcolm/config/pcap-capture.env`) times 60 plus a 180 s margin
+for Arkime's own indexing lag, falling back to a fixed 180 s when the file or
+the value is not there. Rows only Arkime sees (ESP) land only once netsniff
+next rotates, which needs a packet after `PCAP_ROTATE_MINUTES` — on a quiet
+lab, `check` sends that packet itself: one marker frame, ethertype `0x88b5`,
+out of `lab-mon0`, so it appears in the capture and netsniff rotates the
+file it is holding.
+A FAIL points at the mirror first, with the `tcpdump` filter for that row.
+It counts sessions that *overlap* the window, because a BGP session or an
+IKE SA outlives a traffic run. It SKIPs, with the reason, when Malcolm is
+not answering or there is no run to judge.
 
 The 2026-09-26 staging rehearsal (VM 9770, air gap blocked, bundle
 `bundle-20260925`) ran all five: `up`, `traffic` and `down` PASS; every

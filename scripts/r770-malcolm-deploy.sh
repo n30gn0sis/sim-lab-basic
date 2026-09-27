@@ -53,6 +53,7 @@
 #   MALCOLM_HOME        /opt/malcolm        MALCOLM_ADMIN_USER   analyst
 #   MALCOLM_WAIT_SECS   600                 MALCOLM_OS_MEM_G / MALCOLM_LS_MEM_M
 #                                           override the heaps computed from free -g
+#   SCENARIO_DIR        <kit>/scenarios
 #
 #   0  done · 2  done with warnings · 1  refused or failed
 #
@@ -67,12 +68,18 @@ set -uo pipefail
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=lib/common.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=lib/malcolm-api.sh
+. "$(dirname "${BASH_SOURCE[0]}")/lib/malcolm-api.sh"
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=lib/expect.sh
+. "$(dirname "${BASH_SOURCE[0]}")/lib/expect.sh"
 
-BUNDLE=""; FREE_G=""; IDX=""; OSD_NETRC=""
+BUNDLE=""; FREE_G=""; IDX=""
 CAPTURE_IFS=""; CAPTURE_SET=0
 MEDIA=""; DEVICE=""; FROM=""; TO=""; ONLY=""
 MALCOLM_HOME="${MALCOLM_HOME:-/opt/malcolm}"
-ADMIN_USER="${MALCOLM_ADMIN_USER:-analyst}"
+ADMIN_USER="$MALCOLM_API_USER"
 WAIT_SECS="${MALCOLM_WAIT_SECS:-600}"
 AUTH_FLAGS=(--auth-noninteractive --auth-method --auth-admin-username --auth-admin-password-openssl
             --auth-admin-password-htpasswd --auth-generate-webcerts --auth-generate-fwcerts
@@ -82,7 +89,8 @@ AUTH_FLAGS=(--auth-noninteractive --auth-method --auth-admin-username --auth-adm
 INSTALL_FLAGS=(--non-interactive --skip-splash --configure --import-malcolm-config-file --export-malcolm-config-file)
 REBIND_FROM='^    - 0.0.0.0:443:443/tcp$'
 REBIND_TO='    - 127.0.0.1:8443:443/tcp'
-SECRET="/etc/lab/secrets/malcolm-admin.pw"
+SECRET="$MALCOLM_SECRET_FILE"
+SCEN_DIR="${SCENARIO_DIR:-$KIT_DIR/scenarios}"   # the pack dashboards and arkime-views generate from
 STEPS=(preflight gate copy apt phone-home docker files load unpack configure secrets auth rebind start)
 # test seam: lets a suite stub out every call this script makes to
 # r770-import-bundle.sh under `full`, and record what was called.
@@ -230,6 +238,40 @@ heap_sizes() {  # prints "<os-g> <ls-m>" from the host's memory, unless overridd
     [ "$ls" -lt 2500 ] && ls=2500
     printf '%s %s' "${MALCOLM_OS_MEM_G:-$os}" "${MALCOLM_LS_MEM_M:-$ls}"
 }
+# track_esp — turn on Arkime's ESP (IP protocol 50) session tracking in
+# config/arkime.env. Malcolm ships no knob for this; Arkime 5 reads
+# ARKIME_<section>__<key> overrides from its env file, and both Arkime
+# containers load config/arkime.env. The installer rewrites every
+# config/*.env file on every configure run, so this is re-applied after each
+# one, the same as do_rebind's compose edit. Measured on staging VM 9770,
+# 2026-09-26: without it, Zeek's conn log has no ESP either, so no session
+# from an ESP scenario existed at all; appending the line and cycling
+# stop/start (which recreates the containers) fixed it.
+track_esp() {
+    local f old want='ARKIME_default__trackESP=true'
+    f="$(stack)/config/arkime.env"
+    if [ "$DRY" = "1" ]; then
+        echo "DRY-RUN: set $want in $f"
+        return 0
+    fi
+    if [ ! -f "$f" ]; then
+        fail "$f is missing — the installer did not write it"
+        return 0
+    fi
+    if grep -qxF "$want" "$f"; then
+        pass "trackESP already on in $f"
+        return 0
+    fi
+    old=$(sed -n 's/^ARKIME_default__trackESP=//p' "$f" | head -1)
+    if [ -n "$old" ]; then
+        sed -i "s|^ARKIME_default__trackESP=.*|$want|" "$f"
+        pass "trackESP turned on in $f (was: $old)"
+    else
+        printf '%s\n' "$want" >> "$f"
+        pass "trackESP turned on in $f — ESP (IP protocol 50) becomes an Arkime session"
+    fi
+}
+
 cmd_configure() {
     banner "configure — replay the kit's config through the installer"
     need_root
@@ -278,6 +320,7 @@ cmd_configure() {
             if run chown 1000:1000 "$(stack)/pcap/upload"; then pass "pcap/upload owned by 1000:1000 (the drop-off the rehearsal measured)"; fi
         fi
     fi
+    track_esp
     do_rebind
     own_stack
     footer "configure"
@@ -473,35 +516,7 @@ cmd_status() {
 }
 
 # ── dashboards and arkime views ──────────────────────────────────────────────
-# Everything below reaches the stack through the rebound proxy on
-# 127.0.0.1:8443 — the entry point `rebind` guarantees, and the only one the
-# air gap admits. The admin credential never reaches argv or the transcript:
-# curl reads it from a 0600 netrc that lives only for the length of the run.
-# There is no jq on this box, so every response is read with sed and grep, and
-# any shape this kit was not written for is a refusal, never a guess.
-osd_cleanup() {
-    if [ -n "$OSD_NETRC" ]; then rm -f "$OSD_NETRC"; fi
-    OSD_NETRC=""
-}
-osd_auth_file() {
-    local pw
-    pw=$(secret_read "$(p "$SECRET")") || exit 1
-    OSD_NETRC=$(mktemp) || die "mktemp failed"
-    chmod 600 "$OSD_NETRC"
-    printf 'machine 127.0.0.1 login %s password %s\n' "$ADMIN_USER" "$pw" > "$OSD_NETRC"
-    trap osd_cleanup EXIT
-}
-osd_api() {  # osd_api <method> <path> [extra args...]
-    local m=$1 path=$2; shift 2
-    curl -sS -k --max-time 60 --netrc-file "$OSD_NETRC" -X "$m" -H 'osd-xsrf: true' "https://127.0.0.1:8443/dashboards${path}" "$@"
-}
-arkime_api() {  # arkime_api <method> <path> [extra args...]
-    local m=$1 path=$2; shift 2
-    curl -sS -k --max-time 60 --netrc-file "$OSD_NETRC" -X "$m" -H 'Content-Type: application/json' "https://127.0.0.1:8443/arkime${path}" "$@"
-}
-# osd_reachable — a named SKIP beats a wall of curl errors when the stack is
-# simply not up yet.
-osd_reachable() { osd_api GET "/api/status" --fail >/dev/null 2>&1; }
+# The API helpers (osd_api, arkime_api, the netrc) are scripts/lib/malcolm-api.sh's.
 
 # osd_objects <find-query> — "<type> <id> <title>" per line. Each object is put
 # on a line of its own first; that is as much JSON as bash should ever parse.
@@ -571,6 +586,104 @@ assert_saved_objects() {
     pass "all ${total} saved object(s) present"
 }
 
+# ── the scenario pack's objects, generated ──────────────────────────────────
+# Each scenario's range lives once, in its scenario.conf; its flows once, in
+# its expect.txt. The searches and views below are generated from them through
+# scripts/lib/expect.sh — the same translator r770-scenario.sh check queries
+# with — so nothing under config/ restates a range.
+
+# pack_rows — the pack as lines the generators read, every row already through
+# the translator's checks: "S|<name>|<range>" per scenario, then
+# "R|<name>|<n>|<proto>|<port>|<src>|<dst>" per expect.txt row. Call it with a
+# redirect, never in $() or a pipe: a refusal must stop the step, and it must
+# stop it before anything is imported.
+pack_rows() {
+    local c d s range n proto port src dst why
+    for c in "$SCEN_DIR"/*/scenario.conf; do
+        [ -e "$c" ] || continue
+        d=$(dirname "$c"); s=$(basename "$d")
+        range=$(sed -n 's/^range=//p' "$c" | head -1)
+        expect_cidr "$range" || die "refusing scenarios/$s/scenario.conf: range '$range' is not an IPv4 CIDR — nothing was imported"
+        [ -f "$d/expect.txt" ] || die "refusing scenarios/$s: no expect.txt — nothing was imported"
+        printf 'S|%s|%s\n' "$s" "$range"
+        while IFS='|' read -r n proto port src dst; do
+            why=$(expect_problem "$proto" "$port" "$src" "$dst")
+            [ -z "$why" ] || die "refusing scenarios/$s/expect.txt row $n: $why — nothing was imported"
+            printf 'R|%s|%s|%s|%s|%s|%s\n' "$s" "$n" "$proto" "$port" "$src" "$dst"
+        done < <(expect_rows "$d")
+    done
+}
+
+# scenario_spec <pack-file> — "<range|row><TAB><id><TAB><title><TAB><description><TAB><kql>" per search
+scenario_spec() {
+    local kind a b c d e f
+    while IFS='|' read -r kind a b c d e f; do
+        case "$kind" in
+            S) printf 'range\tlab-scenario-%s\tScenario %s - all traffic (lab)\tEverything scenario %s puts on br-lab: its whole range, %s.\tsource.ip:"%s" or destination.ip:"%s"\n' \
+                   "$a" "$a" "$a" "$b" "$b" "$b" ;;
+            R) printf 'row\tlab-scenario-%s-row-%s\tScenario %s - %s (lab)\tRow %s of scenarios/%s/expect.txt: a flow every traffic run must show.\t%s\n' \
+                   "$a" "$b" "$a" "$(expect_label "$c" "$d" "$e" "$f")" "$b" "$a" "$(expect_kql "$c" "$d" "$e" "$f")" ;;
+        esac
+    done < "$1"
+}
+
+# scenario_ndjson <spec> <out> — the searches and the overview dashboard, in the
+# shape of config/malcolm/dashboards/ipsec.ndjson.template: one object per
+# line, {"id":…,"type":…} first, no version fields, the index pattern as the
+# token render() fills. python3 writes the JSON (Malcolm's installer already
+# needs it); bash would have to hand-escape a query inside a JSON string inside
+# a JSON string.
+scenario_ndjson() {
+    python3 - "$1" "$2" <<'PY'
+import json, sys
+spec, out = sys.argv[1], sys.argv[2]
+tight = dict(separators=(",", ":"))
+cols = ["source.ip", "destination.ip", "destination.port", "network.transport", "network.protocol", "event.provider"]
+ref = "kibanaSavedObjectMeta.searchSourceJSON.index"
+objs, panels = [], []
+for raw in open(spec):
+    kind, oid, title, desc, query = raw.rstrip("\n").split("\t")
+    ssj = json.dumps({"query": {"query": query, "language": "kuery"}, "filter": [], "indexRefName": ref}, **tight)
+    objs.append({"id": oid, "type": "search",
+                 "attributes": {"title": title, "description": desc, "hits": 0, "columns": cols,
+                                "sort": [["@timestamp", "desc"]],
+                                "kibanaSavedObjectMeta": {"searchSourceJSON": ssj}},
+                 "references": [{"name": ref, "type": "index-pattern", "id": "__NETWORK_INDEX_PATTERN_ID__"}]})
+    if kind == "range":
+        panels.append(oid)
+grid = [{"version": "", "gridData": {"x": 0, "y": 12 * i, "w": 48, "h": 12, "i": str(i + 1)},
+         "panelIndex": str(i + 1), "embeddableConfig": {}, "panelRefName": "panel_%d" % (i + 1)}
+        for i in range(len(panels))]
+objs.append({"id": "lab-scenarios-overview", "type": "dashboard",
+             "attributes": {"title": "Lab scenarios - Overview (lab)",
+                            "description": "One panel per scenario in the kit's pack: every session in its range. The per-row searches (Scenario <name> - ...) drill down.",
+                            "hits": 0, "timeRestore": False, "version": 1,
+                            "optionsJSON": json.dumps({"hidePanelTitles": False, "useMargins": True}, **tight),
+                            "panelsJSON": json.dumps(grid, **tight),
+                            "kibanaSavedObjectMeta": {"searchSourceJSON": json.dumps({"query": {"query": "", "language": "kuery"}, "filter": []}, **tight)}},
+             "references": [{"name": "panel_%d" % (i + 1), "type": "search", "id": p} for i, p in enumerate(panels)]})
+with open(out, "w") as f:
+    for o in objs:
+        f.write(json.dumps(o, ensure_ascii=False, **tight) + "\n")
+PY
+}
+
+# scenario_views <pack-file> — the pack's Arkime views in the kit's .views
+# format: the same expressions r770-scenario.sh check counts with. Arkime
+# keeps only [-a-zA-Z0-9_: ] of a view's name, so a row view is named by its
+# row number and protocol ("Scenario bgp - row 1 tcp 179"); the saved searches
+# keep the full label, and arkime-views refuses any name Arkime would rewrite.
+scenario_views() {
+    local kind a b c d e f
+    echo "# generated by r770-malcolm-deploy.sh arkime-views from scenarios/ — not edited by hand"
+    while IFS='|' read -r kind a b c d e f; do
+        case "$kind" in
+            S) printf 'Scenario %s - all traffic|ip == %s\n' "$a" "$b" ;;
+            R) printf 'Scenario %s - row %s %s%s|%s\n' "$a" "$b" "$c" "${d:+ $d}" "$(expect_arkime "$c" "$d" "$e" "$f")" ;;
+        esac
+    done < "$1"
+}
+
 cmd_inventory() {
     banner "inventory — what this Dashboards holds now"
     need_root
@@ -597,16 +710,32 @@ cmd_inventory() {
 cmd_dashboards() {
     banner "dashboards — install the kit's saved objects"
     need_root
-    local dir tpl rendered idx base
+    local dir tpl rendered idx base gen tpls=()
     dir="$KIT_CONFIG_DIR/malcolm/dashboards"
     [ -d "$dir" ] || die "no dashboards directory at $dir"
+    for tpl in "$dir"/*.ndjson.template; do
+        [ -e "$tpl" ] || die "no *.ndjson.template under $dir"
+        tpls+=("$tpl")
+    done
     if [ "$DRY" = "1" ]; then
-        for tpl in "$dir"/*.ndjson.template; do
-            [ -e "$tpl" ] || die "no *.ndjson.template under $dir"
+        pack_rows > /dev/null
+        for tpl in "${tpls[@]}"; do
             echo "DRY-RUN: render $(basename "$tpl"), import it, then assert every id it declares"
         done
+        echo "DRY-RUN: generate the scenario pack's searches and overview from $SCEN_DIR, import them, then assert every id"
         footer "dashboards"
     fi
+    # generated before any call: a refused row stops the step with nothing imported
+    gen="$(home)/scenarios.ndjson.template"
+    pack_rows > "$gen.pack"
+    if [ -s "$gen.pack" ]; then
+        scenario_spec "$gen.pack" > "$gen.tsv"
+        scenario_ndjson "$gen.tsv" "$gen" || die "could not generate $gen"
+        tpls+=("$gen")
+    else
+        note "no scenarios under $SCEN_DIR — only the kit's fixed objects"
+    fi
+    rm -f "$gen.pack" "$gen.tsv"
     osd_auth_file
     if ! osd_reachable; then
         skip "Dashboards did not answer on 127.0.0.1:8443 — start the stack first; nothing was changed"
@@ -614,8 +743,7 @@ cmd_dashboards() {
     fi
     idx=$(resolve_index_pattern) || exit 1
     note "index pattern: $idx"
-    for tpl in "$dir"/*.ndjson.template; do
-        [ -e "$tpl" ] || die "no *.ndjson.template under $dir"
+    for tpl in "${tpls[@]}"; do
         base=$(basename "${tpl%.template}")
         rendered="$(home)/$base"
         render "$tpl" "$rendered" "NETWORK_INDEX_PATTERN_ID=$idx"
@@ -629,24 +757,43 @@ cmd_dashboards() {
     footer "dashboards"
 }
 
+# Arkime's view API, as measured on Malcolm's Arkime: GET /api/views lists
+# ({"data":[…]}), POST /api/view creates and needs the x-arkime-cookie token
+# (arkime_token), a name is stripped to [-a-zA-Z0-9_: ], and a second POST of
+# the same name makes a second view. So every name is checked against that set
+# before anything is posted, and a view already present by name is left as it
+# is — a changed expression needs the old view deleted in Arkime first.
+ARKIME_VIEW_CHARS='[-a-zA-Z0-9_: ]'
 cmd_arkime_views() {
     banner "arkime-views — install the kit's Arkime views"
     need_root
-    local dir f bn line name vexpr listed total=0 missing=0
+    local dir f bn line name vexpr gen resp present i total=0 missing=0 files=() names=() exprs=()
     dir="$KIT_CONFIG_DIR/malcolm/arkime-views"
     [ -d "$dir" ] || die "no arkime views directory at $dir"
-    if [ "$DRY" = "1" ]; then
-        for f in "$dir"/*.views; do
-            [ -e "$f" ] || die "no *.views under $dir"
-            echo "DRY-RUN: post each view in $(basename "$f"), then read them all back"
-        done
-        footer "arkime-views"
-    fi
-    osd_auth_file
-    arkime_api GET "/api/user/views" --fail >/dev/null 2>&1 \
-        || die "Arkime did not answer GET /api/user/views on 127.0.0.1:8443 — the stack is down, or this Arkime's view API moved; read the bundle's BUNDLE_NOTES.md before changing the kit"
     for f in "$dir"/*.views; do
         [ -e "$f" ] || die "no *.views under $dir"
+        files+=("$f")
+    done
+    if [ "$DRY" = "1" ]; then
+        pack_rows > /dev/null
+        for f in "${files[@]}"; do
+            echo "DRY-RUN: post each view in $(basename "$f") not already present by name, then read them all back"
+        done
+        echo "DRY-RUN: generate the scenario pack's views from $SCEN_DIR, post those not already present, then read them all back"
+        footer "arkime-views"
+    fi
+    # generated before any call: a refused row stops the step with nothing posted
+    gen="$(home)/scenarios.views"
+    pack_rows > "$gen.pack"
+    if [ -s "$gen.pack" ]; then
+        scenario_views "$gen.pack" > "$gen"
+        files+=("$gen")
+    else
+        note "no scenarios under $SCEN_DIR — only the kit's fixed views"
+    fi
+    rm -f "$gen.pack"
+    # every line checked before any call: a refusal leaves nothing posted
+    for f in "${files[@]}"; do
         bn=$(basename "$f")
         while IFS= read -r line; do
             case "$line" in ''|'#'*) continue ;; esac
@@ -655,25 +802,44 @@ cmd_arkime_views() {
             if [ -z "$name" ] || [ -z "$vexpr" ]; then
                 die "refusing ${bn}: '$line' has an empty name or expression"
             fi
-            case "${name}${vexpr}" in *'"'*|*\\*) die "refusing ${bn}: '${name}' carries a quote or backslash, which this format cannot encode without a JSON writer" ;; esac
-            total=$((total + 1))
-            echo "+ POST /api/user/views   (${name})"
-            arkime_api POST "/api/user/views" -d "$(printf '{"name":"%s","expression":"%s"}' "$name" "$vexpr")" >/dev/null 2>&1 || true
+            case "$vexpr" in *'"'*|*\\*) die "refusing ${bn}: the expression of '${name}' carries a quote or backslash, which this format cannot encode without a JSON writer" ;; esac
+            # spelled out, not a-z: a range in a bracket follows the locale
+            case "$name" in
+                *[!abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_:\ -]*)
+                    die "refusing ${bn}: view name '${name}' holds a character outside ${ARKIME_VIEW_CHARS}, which Arkime strips — the stored name would not match; nothing was posted" ;;
+            esac
+            printf '%s\n' "${names[@]}" | grep -qxF -- "$name" \
+                && die "refusing ${bn}: view name '${name}' is declared twice — Arkime would store both; nothing was posted"
+            names+=("$name"); exprs+=("$vexpr")
         done < "$f"
     done
-    listed=$(arkime_api GET "/api/user/views" 2>/dev/null || true)
-    for f in "$dir"/*.views; do
-        while IFS= read -r line; do
-            case "$line" in ''|'#'*) continue ;; esac
-            case "$line" in *'|'*) ;; *) continue ;; esac
-            name=${line%%|*}
-            if printf '%s' "$listed" | grep -qF "\"${name}\""; then
-                echo "ok      ${name}"
-            else
-                echo "MISSING ${name}"
-                missing=$((missing + 1))
-            fi
-        done < "$f"
+    total=${#names[@]}
+    osd_auth_file
+    present=$(arkime_view_names) \
+        || die "Arkime did not answer GET /api/views on 127.0.0.1:8443 with its view list — the stack is down, or this Arkime's view API moved; read the bundle's BUNDLE_NOTES.md before changing the kit"
+    for i in "${!names[@]}"; do
+        name=${names[$i]}
+        if printf '%s\n' "$present" | grep -qxF -- "$name"; then
+            echo "present ${name}"
+            continue
+        fi
+        [ -n "$ARKIME_HDR" ] || arkime_token
+        echo "+ POST /api/view   (${name})"
+        resp=$(arkime_api POST "/api/view" -H "@${ARKIME_HDR}" \
+                   -d "$(printf '{"name":"%s","expression":"%s"}' "$name" "${exprs[$i]}")" 2>&1 || true)
+        case "$resp" in
+            *'"success":true'*) ;;
+            *) note "Arkime did not report success for '${name}': $(printf '%s' "$resp" | head -c 200)" ;;
+        esac
+    done
+    present=$(arkime_view_names) || present=""
+    for name in "${names[@]}"; do
+        if printf '%s\n' "$present" | grep -qxF -- "$name"; then
+            echo "ok      ${name}"
+        else
+            echo "MISSING ${name}"
+            missing=$((missing + 1))
+        fi
     done
     if [ "$missing" -gt 0 ]; then
         fail "${missing} of ${total} view(s) absent after the call — Arkime accepted the post but did not store them"
