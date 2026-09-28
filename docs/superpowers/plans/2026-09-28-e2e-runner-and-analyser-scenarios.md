@@ -2,10 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** One command, `r770-e2e.sh`, proves the whole lab end to end, Malcolm working with GNS3:
-- the lab mirror, Malcolm's capture and GNS3 are validated;
-- every scenario of the pack is run and then judged in Malcolm;
-- three new scenarios (DNS, TLS, SSH) exercise Malcolm's protocol analysers beyond today's HTTP/IPsec/OSPF/BGP pack.
+**Goal:** Prove the whole lab from nothing: Malcolm working with GNS3, from a freshly cut bundle to scenario traffic judged in Malcolm.
+- A fresh bundle is cut on a staging VM that has internet (the offline download).
+- The VM is air-gapped and every pipeline is deployed from scratch.
+- One command, `r770-e2e.sh`, then validates the lab mirror, Malcolm's capture and GNS3, runs every scenario of the pack, and judges each run in Malcolm.
+- Three new scenarios (DNS, TLS, SSH) exercise Malcolm's protocol analysers beyond today's HTTP/IPsec/OSPF/BGP pack.
 
 **Architecture:**
 - The new scenarios are ordinary pack entries under `scenarios/`, built from the bundled `netshoot` image only. Their dashboards and views generate automatically from `expect.txt`, and `r770-scenario.sh check` judges them with no change to either.
@@ -15,7 +16,8 @@
 
 **Spec:** The Design section below, as agreed with the user on 2026-09-28:
 - "One-command E2E runner";
-- "Add 2-3 new" scenarios.
+- "Add 2-3 new" scenarios;
+- "use one of the VM's to perform the offline download and deployment as well".
 
 It builds on `docs/superpowers/specs/2026-09-24-scenario-pack-design.md` and `docs/superpowers/specs/2026-09-26-scenario-dashboards-and-check-design.md`.
 
@@ -39,6 +41,13 @@ It builds on `docs/superpowers/specs/2026-09-24-scenario-pack-design.md` and `do
 2. **Run.** For each selected scenario: SKIP it if `r770-scenario.sh list --bundle` says it isn't runnable. Otherwise `up`, then `traffic` (keeping its run record), then `down`.
 3. **Judge.** `check <s> --run <record>` for every scenario that produced a record. All traffic runs first, so the first `check` absorbs Malcolm's PCAP-rotation wait and nudge, and the rest pass quickly.
 4. **Report.** Write one markdown table (step · verdict · detail) under the evidence dir, beside a directory of every child's output. Exit via `footer` (0/2/1).
+
+**The staging run**, on VM 9770, which is this session's own; 9771 belongs to another session and is never touched:
+1. Roll the VM back to `clean-2026-09-24`.
+2. With internet: cut a fresh bundle with the kit's `staging/`, pointing `SITE_SRC_ROOT` at a simlab-build clone. The licensed appliances are SYNTHETIC placeholders, so this is a test cut.
+3. Block the air gap, and write the bundle to a loop-device "media" image.
+4. Deploy from scratch through the kit only: GNS3 `full`, Malcolm `full` with live capture, docs `full`, then the portal. The base-OS packages and Phase 3 volumes are stood in for exactly as the 2026-09-26 rehearsal did.
+5. Run `r770-e2e.sh`.
 
 ## Global Constraints
 
@@ -66,29 +75,68 @@ It builds on `docs/superpowers/specs/2026-09-24-scenario-pack-design.md` and `do
 
 ---
 
-### Task 1: Confirm what the bundled netshoot image carries (controller, on staging)
+### Task 1: A fresh VM, a fresh bundle, and the netshoot facts (controller, on staging)
 
-This task is not bats work: it needs the staging VM, so the controlling session does it. The three scenarios assume these tools are in the bundled `netshoot` image: `python3`, `sshd`, `ssh`, `ssh-keygen`, `openssl`, `dig`, `curl`, and `nc` with `-z`. Confirm that before Tasks 2–4 are dispatched.
+This task is not bats work: it needs the staging VM, so the controlling session does it. It runs from a simlab-build checkout (for `scripts/r770-staging-vm.sh`) and the kit checkout.
 
-- [ ] **Step 1: Start VM 9770 and wait for SSH.** Use the build repo's driver, from a simlab-build checkout:
+**Destructive step.** Step 1 rolls VM 9770 back to `clean-2026-09-24`. That erases its current deployment, `bundle-20260925` and every earlier evidence file on it. The user approves the rollback when they approve this plan. Do not roll back 9771.
+
+- [ ] **Step 1: Roll back and start.**
 
 ```bash
+STAGING_VMID=9770 ./scripts/r770-staging-vm.sh rollback clean-2026-09-24
 STAGING_VMID=9770 ./scripts/r770-staging-vm.sh start && STAGING_VMID=9770 ./scripts/r770-staging-vm.sh wait-ssh 300
+ssh ubuntu@192.168.4.78 'free -g | sed -n 2p; nproc; df -h / | tail -1'
 ```
 
-- [ ] **Step 2: Inspect the loaded image**, offline and with no network:
+- [ ] **Step 2: Memory.**
+  - **The problem.** The snapshot's config is 8 GiB, and Malcolm needs 12, so the rollback leaves the VM too small. The session's token has no `VM.Config.Memory`.
+  - **Ask the user** to set 12 GiB (12288 MiB, balloon 0) in the Proxmox UI and restart the VM. Then re-run `free -g` and confirm about 11 GiB is usable before going on.
+
+- [ ] **Step 3: Put both repos on the VM.**
+  - **simlab-build:** clone the public repo at `main`, recording its commit.
+  - **The kit:** carry it from this checkout, since it is private.
 
 ```bash
-ssh ubuntu@192.168.4.78 'img=$(sudo docker image ls --format "{{.Repository}}:{{.Tag}}" | grep -m1 netshoot); echo "$img"; sudo docker run --rm --network none --entrypoint sh "$img" -c "for t in python3 sshd ssh ssh-keygen openssl dig curl nc; do printf \"%-10s %s\n\" \$t \"\$(command -v \$t || echo MISSING)\"; done; nc -h 2>&1 | grep -c -- \" -z\""'
+ssh ubuntu@192.168.4.78 'git clone -q https://github.com/n30gn0sis/simlab-build ~/simlab-build && git -C ~/simlab-build rev-parse HEAD'
+tar -c staging scripts scenarios config | ssh ubuntu@192.168.4.78 'mkdir -p ~/sim-lab-basic && tar -x -C ~/sim-lab-basic'
+```
+
+- [ ] **Step 4: The staging preflight.**
+
+```bash
+ssh ubuntu@192.168.4.78 'cd ~/sim-lab-basic && ./staging/r770-staging-preflight.sh'
+```
+
+Expected: `READY`, with egress verified. If Docker is missing on the rolled-back image, the preflight names what to install. Follow `simlab-build`'s `state/inventory/staging-vm-9770.md` for its Docker CE install; that is staging-host setup, not the R770.
+
+- [ ] **Step 5: Cut the bundle,** in `tmux` so the SSH session can drop without killing it. It takes hours.
+
+```bash
+ssh ubuntu@192.168.4.78 'tmux new -d -s cut "cd ~/sim-lab-basic && SITE_SRC_ROOT=~/simlab-build SEED_FROM=none ./staging/r770-build-bundle.sh --yes --bundle-dir ~/bundles/bundle-$(date +%Y%m%d) 2>&1 | tee ~/cut.log"'
+```
+
+At the manual-items pause, stage SYNTHETIC placeholders for the licensed GNS3 appliances with `sudo`, the way `simlab-build`'s `state/inventory/staging-rehearsal-2026-09-25.md` did. The bundle is root-owned, so writing without `sudo` fails. This cut is **not for transfer**.
+
+- [ ] **Step 6: Gate the cut.**
+  - **The expected result.** The builder's own `verify --strict` gate FAILs only on the SYNTHETIC placeholders' WARNs. Disposition them as a test cut.
+  - **Check it.** Run the bundle's verifier non-strict, the way the R770 does. It must exit 0 or 2. Record every WARN line, and confirm `site/` is present.
+
+```bash
+ssh ubuntu@192.168.4.78 'b=$(ls -d ~/bundles/bundle-*/ | tail -1); "$b"r770-bundle.sh verify "$b"; echo "verify exit=$?"; grep -c "" "$b"MANIFEST.sha256; du -sh "$b"; ls "$b"site/scripts | head'
+```
+
+- [ ] **Step 7: Check the netshoot image.** The staging Docker still holds the image the cut pulled, so check it offline:
+
+```bash
+ssh ubuntu@192.168.4.78 'img=$(docker image ls --format "{{.Repository}}:{{.Tag}}" | grep -m1 netshoot); echo "$img"; docker run --rm --network none --entrypoint sh "$img" -c "for t in python3 sshd ssh ssh-keygen openssl dig curl nc; do printf \"%-10s %s\n\" \$t \"\$(command -v \$t || echo MISSING)\"; done; nc -h 2>&1 | grep -c -- \" -z\""'
 ```
 
 Expected: a path for every tool, and a non-zero `-z` count.
 
-- [ ] **Step 3: Record the result in the ledger.**
-  - **Any tool MISSING:** stop, and bring the finding to the user before Tasks 2–4. Say which scenario it breaks and the alternative, e.g. busybox-extras `nc -l` for a server.
-  - **All present:** record "netshoot tools confirmed <date>" and continue.
-
----
+- [ ] **Step 8: Record in the ledger.**
+  - **What to record:** the simlab-build commit, the bundle name and size, the verify exit and its WARN lines, and the netshoot facts.
+  - **If any netshoot tool is MISSING:** stop, and bring it to the user before Tasks 2–4. Say which scenario it breaks and an alternative, e.g. busybox-extras `nc -l` for a server.
 
 ### Task 2: The `dns` scenario
 
@@ -944,50 +992,109 @@ git commit -m "r770-e2e.sh: validate, run every scenario, judge every run in Mal
 
 ---
 
-### Task 6: The staging proof on VM 9770 (controller)
+### Task 6: Air-gapped deployment from scratch (controller, on staging)
 
-This task needs the staging VM, so the controlling session does it; it isn't bats work.
+This task needs the VM, so the controlling session does it. It runs on VM 9770 after Tasks 1–5, and uses only the kit's scripts: CLAUDE.md, "Run the kit's scripts, not hand-typed commands". The two stand-ins are for build-repo phases the kit doesn't own; each is named where it happens.
 
-- [ ] **Step 1: Sync the kit to the VM.** From the kit checkout:
+- [ ] **Step 1: Sync the finished kit and block the air gap.** Give the gap enough time for the whole deploy and the e2e run (360 minutes). It reverts by itself.
 
 ```bash
-tar -c scripts scenarios config | ssh ubuntu@192.168.4.78 'tar -x -C ~/sim-lab-basic'
+tar -c scripts scenarios config staging | ssh ubuntu@192.168.4.78 'tar -x -C ~/sim-lab-basic'
+ssh ubuntu@192.168.4.78 'sudo ~/simlab-build/scripts/r770-airgap-sim.sh block --minutes 360 && sudo ~/simlab-build/scripts/r770-airgap-sim.sh status'
 ```
 
-- [ ] **Step 2: Confirm the stack is up.**
+- [ ] **Step 2: Phase 3 volumes (stand-in).** The kit's `preflight` refuses Phase 3 directories that aren't their own mount points. Give each one a loop-mounted ext4 file in `/etc/fstab`, as the 2026-09-26 rehearsal did:
+  - directories: `/var/lib/docker`, `/data/pcap`, `/data/index`, `/data/staging`, `/srv/vms`, `/srv/gns3`, `/srv/work`, `/srv/backup`;
+  - backing files: `/var/lib/lab-volumes/<name>.img`, sized to fit the VM's disk. Record the sizes.
+
+  Afterwards `findmnt` shows each one mounted.
+
+- [ ] **Step 3: The media.** A loop-device image carries the bundle, so the kit's `gate` mounts it read-only like real transfer media. Discover the device; never guess it.
 
 ```bash
-ssh ubuntu@192.168.4.78 'cd ~/sim-lab-basic && sudo ./scripts/r770-malcolm-deploy.sh status; sudo ./scripts/r770-validate.sh --area gns3'
+ssh ubuntu@192.168.4.78 'b=$(ls -d ~/bundles/bundle-*/ | tail -1); sz=$(( $(du -sm "$b" | cut -f1) * 11 / 10 + 1024 )); sudo truncate -s ${sz}M /data/staging/media.img && sudo mkfs.ext4 -q /data/staging/media.img && sudo mkdir -p /mnt/media && sudo mount -o loop /data/staging/media.img /mnt/media && sudo cp -a "$b" /mnt/media/ && sudo umount /mnt/media && sudo losetup -f --show /data/staging/media.img'
 ```
 
-If Malcolm isn't healthy, run `r770-malcolm-deploy.sh start`. If GNS3 isn't answering, run `r770-gns3-deploy.sh service`.
+Record the `/dev/loopN` it prints as `<dev>`, and the bundle's directory name as `bundle-<date>`.
 
-- [ ] **Step 3: Install the generated objects** for the three new scenarios:
+- [ ] **Step 4: Shared prep.** The first pipeline brings the bundle in, stopping after `files`:
 
 ```bash
-ssh ubuntu@192.168.4.78 'cd ~/sim-lab-basic && sudo ./scripts/r770-malcolm-deploy.sh dashboards --index-pattern "arkime_sessions3-*" && sudo ./scripts/r770-malcolm-deploy.sh arkime-views'
+ssh ubuntu@192.168.4.78 'cd ~/sim-lab-basic && sudo ./scripts/r770-gns3-deploy.sh full --bundle /mnt/media/bundle-<date> --media /mnt/media --device <dev> --yes --to files'
 ```
 
-Expected: both READY, with the new `lab-scenario-dns|tls|ssh*` objects read back.
+Expected: `preflight`, `gate`, `copy`, `apt`, `phone-home`, `docker` and `files` all PASS. APT now points only at `file:/srv/repo/apt`.
 
-- [ ] **Step 4: The full run.**
+- [ ] **Step 5: Base-OS packages (stand-in).** The build repo's base-OS phase installs these, and the kit's steps refuse by name without them. Install from the bundle's local repo only:
 
 ```bash
-ssh ubuntu@192.168.4.78 'cd ~/sim-lab-basic && sudo ./scripts/r770-e2e.sh --bundle /srv/bundles/bundle-20260925 --capture-ifs lab_mirror0 --lab-bridge br-lab'
+ssh ubuntu@192.168.4.78 'sudo apt-get install -y python3-venv python3-pip-whl python3-ruamel.yaml python3-dotenv easy-rsa nginx ubridge'
+```
+
+- [ ] **Step 6: GNS3, then Malcolm with live capture, then docs.**
+
+```bash
+ssh ubuntu@192.168.4.78 'cd ~/sim-lab-basic && B=/srv/bundles/bundle-<date>; sudo ./scripts/r770-gns3-deploy.sh full --bundle $B --media /mnt/media --device <dev> --yes --from load'
+ssh ubuntu@192.168.4.78 'cd ~/sim-lab-basic && B=/srv/bundles/bundle-<date>; sudo ./scripts/r770-malcolm-deploy.sh full --bundle $B --media /mnt/media --device <dev> --capture-ifs lab_mirror0 --yes --from load'
+ssh ubuntu@192.168.4.78 'cd ~/sim-lab-basic && B=/srv/bundles/bundle-<date>; sudo ./scripts/r770-docs-deploy.sh full --bundle $B --media /mnt/media --device <dev> --yes --from load'
+```
+
+Expected:
+- **GNS3:** DEPLOYED, `labnet` all PASS.
+- **Malcolm:** DEPLOYED, every service healthy, live capture on `lab_mirror0`, and `trackESP turned on`.
+- **Docs:** DEPLOYED.
+
+If `full` doesn't accept `--capture-ifs`, run Malcolm's `configure --capture-ifs lab_mirror0` step on its own, then `full --from secrets`.
+
+Each FAIL is a finding. Handle it one change at a time (CLAUDE.md rule 7): read the transcript under `r770-evidence/`, fix the kit test-first on this branch, re-sync, then rerun `--from <step>`.
+
+- [ ] **Step 7: The front door and the generated objects.**
+
+```bash
+ssh ubuntu@192.168.4.78 'cd ~/sim-lab-basic && for s in ca cert htpasswd nginx; do sudo ./scripts/r770-portal-deploy.sh $s --yes || break; done'
+ssh ubuntu@192.168.4.78 'cd ~/sim-lab-basic && sudo ./scripts/r770-malcolm-deploy.sh inventory && sudo ./scripts/r770-malcolm-deploy.sh dashboards --index-pattern "arkime_sessions3-*" && sudo ./scripts/r770-malcolm-deploy.sh arkime-views'
+```
+
+Expected: every portal step PASSes. `dashboards` and `arkime-views` are READY, with every scenario's objects read back, the new `dns`, `tls` and `ssh` included. If the stack holds a different sessions pattern, use the one `inventory` lists.
+
+---
+
+### Task 7: The end-to-end run and the record (controller, on staging)
+
+This task needs the VM, so the controlling session does it.
+
+- [ ] **Step 1: The full run.** In `tmux`, since it takes over half an hour:
+
+```bash
+ssh ubuntu@192.168.4.78 'tmux new -d -s e2e "cd ~/sim-lab-basic && sudo ./scripts/r770-e2e.sh --bundle /srv/bundles/bundle-<date> --capture-ifs lab_mirror0 --lab-bridge br-lab 2>&1 | tee ~/e2e.out"'
 ```
 
 Expected:
 - READY (exit 0), or READY WITH WARNINGS with each warning explained;
-- every scenario's `up`, `traffic`, `down` and `check` rows PASS, including `dns`, `tls` and `ssh`.
+- every scenario's `up`, `traffic`, `down` and `check` rows PASS: all eight, `dns`, `tls` and `ssh` included, with ESP both ways.
 
 Any FAIL is a finding. Handle it one change at a time (CLAUDE.md rule 7): read that child's log under the report's directory, and for a `check` FAIL, start with the tcpdump filter it prints.
 
-- [ ] **Step 5: Confirm the analysers fired,** beyond session counts. In Zeek's live logs for the run window, the new scenarios must appear in `dns.log` (both NOERROR and NXDOMAIN), `ssl.log` (`server_name` `tls.lab.scenario`) and `ssh.log` (`auth_success` F). Record the three lines as evidence:
+- [ ] **Step 2: Confirm the analysers fired,** beyond session counts. In Zeek's live logs, the new scenarios must appear in `dns.log` (both NOERROR and NXDOMAIN), `ssl.log` (`server_name` `tls.lab.scenario`) and `ssh.log` (`auth_success` F):
 
 ```bash
 ssh ubuntu@192.168.4.78 'cd /opt/malcolm/malcolm/zeek-logs/live/spool/logger-1 && for f in dns ssl ssh; do echo "== $f.log"; sudo grep -h -E "10\.20(6|7|8)\." $f.log | tail -2; done'
 ```
 
-- [ ] **Step 6: Carry the record back.**
-  - Add an addendum to the build repo's `state/inventory/staging-kit-rehearsal-2026-09-26.md` with the e2e report's table and the Zeek evidence, plus one `state/BUILD-STATE.md` log line.
-  - Push the kit branch and open the PR.
+- [ ] **Step 3: Take the air gap down,** and confirm it:
+
+```bash
+ssh ubuntu@192.168.4.78 'sudo ~/simlab-build/scripts/r770-airgap-sim.sh unblock; sudo ~/simlab-build/scripts/r770-airgap-sim.sh status'
+```
+
+- [ ] **Step 4: Carry the record back.**
+  - **Build repo:** add `state/inventory/staging-e2e-<date>.md` to simlab-build, on a branch, holding:
+    - the cut (commit, size, verify result);
+    - the stand-ins;
+    - each pipeline's result;
+    - the e2e report's table;
+    - the Zeek evidence;
+    - every finding and its fix.
+
+    Add one `state/BUILD-STATE.md` log line, and open a PR there.
+  - **Kit:** push this branch, and open its PR.
