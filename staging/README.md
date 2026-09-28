@@ -15,14 +15,22 @@ and **never on the R770**. Nothing under the kit's `scripts/` calls them.
 ## Use
 
 ```bash
-./staging/r770-build-bundle.sh                 # here, on the staging host
-./staging/r770-build-bundle.sh --pack > r770-bundle-builder.sh   # one file for a host with no checkout
+SITE_SRC_ROOT=<simlab-build checkout> ./staging/r770-build-bundle.sh      # here, on the staging host
+BUILD_PACK_ROOT=<simlab-build checkout> ./staging/r770-build-bundle.sh --pack > r770-bundle-builder.sh
 ```
 
+Since the 2026-09-27 resync the fetch has a `site` stage that ships the
+**build repo's** reviewed `simlab-build/scripts/`, `simlab-build/config/` and `simlab-build/docs/analyst-wiki/` as
+the bundle's `site/`, and the verifier expects it. It reads them from a
+simlab-build git checkout: from this kit's tree it refuses at startup, even
+for `--list` and `--dry-run`, rather than guess — so point `SITE_SRC_ROOT`
+(and, for `--pack`, `BUILD_PACK_ROOT`) at a clean simlab-build checkout.
+`--pack` embeds that checkout's exact commit, and refuses this kit's tree.
+
 Exit **0** bundle built and gated clean · **2** built with warnings to
-disposition · **1** failed — do not move the media. The manual categories
-(Dell firmware, licensed GNS3 appliances) are added by hand at the pause;
-the manifest is regenerated **after** them so it can see them.
+disposition · **1** failed — do not move the media. The manual category
+(licensed GNS3 appliances) is added by hand at the pause; the manifest is
+regenerated **after** it so it can see it. Dell firmware is not a bundle item.
 
 The packed builder is gitignored: its base64 payload would hide the pin block
 from the guard that keeps pins in one place.

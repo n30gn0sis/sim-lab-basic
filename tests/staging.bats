@@ -36,8 +36,25 @@ setup() { cd "$BATS_TEST_DIRNAME/.."; }
     [[ "$output" == *"one command, one verified bundle"* ]]
 }
 
-@test "--pack emits a valid self-extracting builder carrying all four scripts" {
+# a simlab-build-shaped checkout: --pack now embeds a git archive of that
+# repo's scripts/, config/ and docs/analyst-wiki/ as the bundle's site/
+fake_build_repo() {
+    local r="$BATS_TEST_TMPDIR/simlab-build"
+    mkdir -p "$r/scripts" "$r/config" "$r/docs/analyst-wiki"
+    echo '#!/bin/sh' > "$r/scripts/r770-offline-fetch.sh"
+    echo 'x' > "$r/config/x.conf"; echo '# wiki' > "$r/docs/analyst-wiki/index.md"
+    git -C "$r" init -q && git -C "$r" add -A && git -C "$r" -c user.email=t@t -c user.name=t commit -qm fixture
+    printf '%s' "$r"
+}
+
+@test "--pack refuses the kit's own tree: site/ must come from a simlab-build checkout, never from this kit" {
     run ./staging/r770-build-bundle.sh --pack
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"docs/analyst-wiki"* ]]
+}
+
+@test "--pack emits a valid self-extracting builder carrying all four scripts" {
+    BUILD_PACK_ROOT=$(fake_build_repo) run ./staging/r770-build-bundle.sh --pack
     [ "$status" -eq 0 ]
     printf '%s' "$output" > "$BATS_TEST_TMPDIR/packed.sh"
     for s in r770-build-bundle.sh r770-staging-preflight.sh r770-offline-fetch.sh r770-bundle.sh; do
@@ -52,6 +69,11 @@ setup() { cd "$BATS_TEST_DIRNAME/.."; }
     make_bundle "$B"; stage_manual "$B"
     rm "$B/r770-bundle.sh" "$B/MANIFEST.sha256"          # the fixture's stub verifier and fake manifest
     cp staging/r770-bundle.sh "$B/"                       # what the fetch does: the verifier travels in the root
+    # what the fetch's site stage ships: simlab-build's own scripts, which the verifier now requires
+    for sc in $(sed -n 's/^SITE_REQUIRED_SCRIPTS=(\(.*\))$/\1/p' staging/r770-bundle.sh); do
+        mkdir -p "$B/site/$(dirname "$sc")"; echo '#!/bin/sh' > "$B/site/$sc"
+    done
+    [ -s "$B/site/scripts/r770-bundle.sh" ]
     run ./staging/r770-bundle.sh manifest "$B"
     echo "$output"
     [ "$status" -eq 0 ]

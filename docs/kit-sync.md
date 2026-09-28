@@ -53,14 +53,32 @@ checking that category. `seed()` also never reuses a prior bundle's
 monitoring tarball (it may predate the trim), and stage 4 is labelled "Docs
 build image".
 
-**How a resync handles it** (last done 2026-09-25, from `simlab-build`
-`f66d71b`): copy all four scripts from the build repo's commit, then reapply
+**How a resync handles it** (last done 2026-09-27, from `simlab-build`
+`6ee96d2`, the merge of PR #11 — the stage-4 relabel now reads `[4/11]`): copy all four scripts from the build repo's commit, then reapply
 exactly this divergence to `r770-offline-fetch.sh` — its header says so, and
 `diff` against the upstream file shows only these hunks. Record the commit in
 `staging/PROVENANCE.txt` and regenerate the four hashes; the other three
 scripts are that commit byte for byte. Bundles cut by the build repo itself
 still carry the full monitoring set; the kit reads only `mkdocs-material` out
 of that list, so either kind of bundle works here.
+
+## The 2026-09-27 resync: the build repo now ships its own `site/`
+
+`simlab-build` `6ee96d2` adds a `site` stage to the fetch: the bundle carries
+that repo's reviewed `simlab-build/scripts/`, `simlab-build/config/` and `simlab-build/docs/analyst-wiki/` as
+`site/`, at an exact commit. Carrying it here, byte for byte, means:
+
+- **Cutting a bundle needs a simlab-build checkout.** The fetch refuses at
+  startup — even `--list` and `--dry-run` — unless `SITE_SRC_ROOT` points at
+  one (or `SITE_ARCHIVE` + `SITE_COMMIT` from a packed builder); from this
+  kit's tree it would otherwise guess what belongs in `site/`. `--pack` reads
+  the same tree through `BUILD_PACK_ROOT` and refuses this kit's own tree
+  (`tests/staging.bats`).
+- **The verifier expects `site/`.** A bundle without it, or missing one of
+  the verifier's `SITE_REQUIRED_SCRIPTS`, is a WARN — so `--strict` (the
+  builder's gate) fails it. The kit's R770 side runs `<bundle>/r770-bundle.sh
+  verify` non-strict, so an older bundle imports with that WARN to
+  disposition; nothing in `scripts/` reads `site/`.
 
 ## The no-pins rule
 
@@ -98,7 +116,15 @@ is asserted against those tools' `--help` before use.
 - **strongSwan does not start charon by itself** — settled on the staging
   rehearsal: `scenarios/ipsec-ike`'s gateway scripts start
   `/usr/libexec/ipsec/charon`; the image carries `swanctl` and `iproute2`.
-- **ubridge (in the build repo, to resync).** `simlab-build` PR #11 also
-  fetches `ubridge` from GNS3's PPA into the APT set, a commit this resync
-  predates; once PR #11 merges, resync `staging/` from it again and
-  regenerate `staging/PROVENANCE.txt`.
+- **ubridge** comes from GNS3's PPA in the APT set, and the node-image
+  archive is reused only when its list matches the pins — both carried in
+  the 2026-09-27 resync (`simlab-build` `6ee96d2`).
+- **Upstream `config/` changes since `f66d71b`, not ported (2026-09-27).**
+  The build repo's analyst-stack work added `simlab-build/config/nginx/00-default-reject.conf`,
+  `conf.d/lab-connection-upgrade.conf`, `snippets/lab-headers.conf`,
+  `portal.lab.conf`, security-header and websocket edits to `malcolm.lab.conf`
+  and `docs.lab.conf`, and a rendered `simlab-build/config/malcolm/malcolm-config.json`.
+  They are rendered by that repo's own `site/scripts` (`r770-portal.sh`,
+  `r770-lab-ca.sh`, `r770-malcolm-deploy.sh`), a second R770 deploy path
+  beside this kit's `scripts/`. Whether to port them depends on which path
+  is canonical; until that is decided they are recorded here, not copied.

@@ -39,7 +39,7 @@ sudo ./scripts/r770-gns3-deploy.sh full \
 sudo ./scripts/r770-docs-deploy.sh full \
     --bundle <dir> --media <mnt> --device /dev/<discovered> --dry-run # the analyst wiki's pipeline, same contract, independent of both
 sudo ./scripts/r770-portal-deploy.sh nginx --dry-run          # the optional front door, one step at a time, run after Malcolm is up
-./staging/r770-build-bundle.sh --dry-run                     # same, staging side
+SITE_SRC_ROOT=<simlab-build checkout> ./staging/r770-build-bundle.sh --dry-run   # same, staging side (refuses without a simlab-build checkout)
 ```
 
 ## Architecture
