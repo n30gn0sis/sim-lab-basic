@@ -47,7 +47,3 @@ stub_log() {  # stub_log <name> [rc] — records argv, exits rc (default 0)
 unstub() { rm -f "$BIN/$1"; }
 
 kit_run() { PATH="$KIT_PATH" "$@"; }
-
-stub_called() {  # stub_called <name> [<substring>] — did the log record it?
-    if [ -n "${2:-}" ]; then grep -q "^$1 .*$2" "$STUB_LOG"; else grep -q "^$1" "$STUB_LOG"; fi
-}
