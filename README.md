@@ -24,8 +24,11 @@ iDRAC (out-of-band)               recovery path — verified before any networki
 ## Cutting a bundle (staging host)
 
 ```bash
-./staging/r770-build-bundle.sh          # preflight → fetch → manual-items pause → manifest → verify --strict
+SITE_SRC_ROOT=<simlab-build checkout> ./staging/r770-build-bundle.sh   # preflight → fetch → manual-items pause → manifest → verify --strict
 ```
+
+The fetch's `site` stage ships the build repo's own tree into the bundle, so
+it needs a simlab-build checkout to read it from (`staging/README.md`).
 
 Exit **0** gated clean · **2** built with warnings to disposition · **1**
 failed, do not move the media. `staging/README.md` says what each of the four

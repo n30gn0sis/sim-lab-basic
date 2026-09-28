@@ -2,14 +2,16 @@
 # build repo. tests/staging.bats fails if a file here no longer matches its hash: a change
 # is made in the build repo, then resynced (docs/kit-sync.md), never edited here.
 source: https://github.com/n30gn0sis/simlab-build scripts/
-commit: f66d71bbe2623ece8f67aee6338de647469b6a74
-# Resynced 2026-09-25 from that commit (branch claude/strongswan-pin-and-lab-mirror,
-# simlab-build PR #11). r770-build-bundle.sh, r770-bundle.sh and
-# r770-staging-preflight.sh are that commit byte for byte. r770-offline-fetch.sh
-# is that commit plus the kit's one local divergence, reapplied: the monitoring
-# trim (MONITOR_IMAGES = mkdocs-material only), seed() never reusing a prior
-# monitoring tarball, and stage 4 relabelled — see its header and docs/kit-sync.md.
-80dd5bcb4ecbfb9c270f2f9509124cf437f7db774016d4b498e568ae03d50d60  r770-build-bundle.sh
-d0d7cdec334b7a64630b109e1d240a30e7b4888f1308e3be8b2dfcb6dec35a29  r770-bundle.sh
-d2080e95aaaf2321ea5eac51f54e1b06dd4c134086d049748a393383022d47fd  r770-offline-fetch.sh
+commit: 6ee96d23ae3ce0919aed69cf8e69be851ccaa8be
+# Resynced 2026-09-27 from that commit (simlab-build main, the merge of PR #11).
+# r770-build-bundle.sh, r770-bundle.sh and r770-staging-preflight.sh are that
+# commit byte for byte. r770-offline-fetch.sh is that commit plus the kit's one
+# local divergence, reapplied: the monitoring trim (MONITOR_IMAGES =
+# mkdocs-material only), seed() never reusing a prior monitoring tarball, and
+# stage 4 relabelled — see its header and docs/kit-sync.md. Since this commit
+# the fetch has a "site" stage that ships simlab-build's own tree, so it must
+# run with SITE_SRC_ROOT at a simlab-build checkout (docs/kit-sync.md).
+92176858852854028f2e6e6a04f0bd3f9ff62a789ad5d66a0a3abde592bec77b  r770-build-bundle.sh
+f4196afb2a7a640d31ac9a9030b15766d23066ca4d2a8298d1f7d57e28390780  r770-bundle.sh
+e7a03bfc7762c4e416f53f658645d732ffcb27ad215cc18fc088acc51d0997b9  r770-offline-fetch.sh
 6667ba671bfea53783801e3a9457ff84bbf1686f541b6349fdcdaa59617d1b08  r770-staging-preflight.sh
