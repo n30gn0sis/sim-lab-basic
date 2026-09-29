@@ -225,7 +225,7 @@ ip link set dev eth0 up
 ```sh
 # ns: a small authoritative responder on br-lab through tap-b. The bundle has
 # no DNS server image, so a python3 stdlib program answers A records under
-# lab.scenario with 10.206.0.99 and everything else with NXDOMAIN: enough for
+# scenario.lab with 10.206.0.99 and everything else with NXDOMAIN: enough for
 # Zeek's dns.log and Arkime's DNS parser to see both outcomes. Fully
 # detached, so docker exec returns.
 set -e
@@ -268,7 +268,7 @@ PY
 #!/bin/sh
 # traffic.sh <node> <seconds> — runs inside one node (docker exec -i ... sh -s).
 # cl resolves a rotating set of names for the window: names under
-# lab.scenario (answered) and names outside it (NXDOMAIN).
+# scenario.lab (answered) and names outside it (NXDOMAIN).
 node=$1 secs=$2
 case "$node" in
     cl)

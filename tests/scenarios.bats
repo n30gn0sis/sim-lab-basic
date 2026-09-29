@@ -10,8 +10,8 @@ setup() { cd "$BATS_TEST_DIRNAME/.."; }
 lint() { run python3 tests/helpers/lint_scenarios.py "$1"; echo "$output"; [ "$status" -eq 0 ]; }
 
 @test "the pack holds the scenarios the kit documents" {
-    for s in client-server ipsec-esp ipsec-ike ospf bgp dns tls; do [ -f "scenarios/$s/scenario.conf" ] || { echo "missing $s"; false; }; done
-    [ "$(find scenarios -mindepth 2 -maxdepth 2 -name scenario.conf | wc -l)" -eq 7 ]
+    for s in client-server ipsec-esp ipsec-ike ospf bgp dns tls ssh; do [ -f "scenarios/$s/scenario.conf" ] || { echo "missing $s"; false; }; done
+    [ "$(find scenarios -mindepth 2 -maxdepth 2 -name scenario.conf | wc -l)" -eq 8 ]
 }
 
 @test "the dns scenario's responder answers A under scenario.lab and NXDOMAIN otherwise" {
