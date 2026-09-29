@@ -28,11 +28,11 @@ It builds on `docs/superpowers/specs/2026-09-24-scenario-pack-design.md` and `do
 | Scenario | Range | Nodes | What Malcolm should see |
 |---|---|---|---|
 | `dns` | 10.206.0.0/16 | `cl` 10.206.0.10, `ns` 10.206.0.53 | DNS queries and answers, NOERROR and NXDOMAIN (Zeek `dns.log`, Arkime DNS) |
-| `tls` | 10.207.0.0/16 | `cl` 10.207.0.10, `srv` 10.207.0.20 | A TLS handshake with SNI `tls.lab.scenario` and a self-signed certificate (Zeek `ssl.log` / `x509.log`) |
+| `tls` | 10.207.0.0/16 | `cl` 10.207.0.10, `srv` 10.207.0.20 | A TLS handshake with SNI `tls.scenario.lab` and a self-signed certificate (Zeek `ssl.log` / `x509.log`) |
 | `ssh` | 10.208.0.0/16 | `cl` 10.208.0.10, `srv` 10.208.0.20 | SSH handshakes that fail authentication (Zeek `ssh.log`, `auth_success=F`): a password-guessing shape |
 
 **Servers:**
-- **`ns`:** a python3 stdlib DNS responder. `A` records under `lab.scenario` answer `10.206.0.99`; anything else is NXDOMAIN.
+- **`ns`:** a python3 stdlib DNS responder. `A` records under `scenario.lab` answer `10.206.0.99`; anything else is NXDOMAIN.
 - **`srv` (tls):** `openssl s_server -www`, with a certificate generated at `up`.
 - **`srv` (ssh):** `sshd`, key-only, with host keys generated at `up`.
 
@@ -160,7 +160,7 @@ Expected: a path for every tool, and a non-zero `-z` count.
 Add, after it:
 
 ```bash
-@test "the dns scenario's responder answers A under lab.scenario and NXDOMAIN otherwise" {
+@test "the dns scenario's responder answers A under scenario.lab and NXDOMAIN otherwise" {
     prog="$BATS_TEST_TMPDIR/lab-dns.py"
     sed -n "/^cat > \/tmp\/lab-dns.py <<'PY'$/,/^PY$/p" scenarios/dns/nodes/ns.sh | sed '1d;$d' > "$prog"
     [ -s "$prog" ]
@@ -174,7 +174,7 @@ def ask(name, qtype=1):
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(2)
     s.sendto(q, ("127.0.0.1", 53053)); r, _ = s.recvfrom(512)
     return r
-r = ask("www.lab.scenario")
+r = ask("www.scenario.lab")
 print("id", r[:2].hex(), "rcode", r[3] & 0x0f, "an", struct.unpack(">H", r[6:8])[0], "ip", socket.inet_ntoa(r[-4:]))
 r = ask("nothere.example")
 print("id", r[:2].hex(), "rcode", r[3] & 0x0f, "an", struct.unpack(">H", r[6:8])[0])
@@ -201,7 +201,7 @@ description=netshoot client resolving names against a netshoot DNS responder acr
 range=10.206.0.0/16
 images=netshoot
 traffic_secs=60
-ready=cl|dig +short +time=1 +tries=1 @10.206.0.53 www.lab.scenario | grep -qx 10.206.0.99
+ready=cl|dig +short +time=1 +tries=1 @10.206.0.53 www.scenario.lab | grep -qx 10.206.0.99
 traffic_nodes=cl
 ```
 
@@ -251,7 +251,7 @@ while True:
     qtype = struct.unpack(">H", q[i + 1:i + 3])[0]
     question = q[12:i + 5]
     name = ".".join(labels)
-    if (name == "lab.scenario" or name.endswith(".lab.scenario")) and qtype == 1:
+    if (name == "scenario.lab" or name.endswith(".scenario.lab")) and qtype == 1:
         head = q[:2] + b"\x81\x80" + struct.pack(">HHHH", 1, 1, 0, 0)
         answer = b"\xc0\x0c" + struct.pack(">HHIH", 1, 1, 60, 4) + socket.inet_aton("10.206.0.99")
     else:
@@ -272,10 +272,10 @@ PY
 node=$1 secs=$2
 case "$node" in
     cl)
-        dig +short +time=1 +tries=1 @10.206.0.53 www.lab.scenario | grep -qx 10.206.0.99 || exit 1
+        dig +short +time=1 +tries=1 @10.206.0.53 www.scenario.lab | grep -qx 10.206.0.99 || exit 1
         end=$(( $(date +%s) + secs ))
         while [ "$(date +%s)" -lt "$end" ]; do
-            for n in www.lab.scenario mail.lab.scenario files.lab.scenario nothere.example; do
+            for n in www.scenario.lab mail.scenario.lab files.scenario.lab nothere.example; do
                 dig +time=1 +tries=1 @10.206.0.53 "$n" >/dev/null 2>&1 || true
             done
             sleep 1
@@ -363,11 +363,11 @@ Expected: FAIL, "missing tls".
 
 ```
 name=tls
-description=netshoot client fetching over TLS (SNI tls.lab.scenario, self-signed) from a netshoot openssl server across br-lab
+description=netshoot client fetching over TLS (SNI tls.scenario.lab, self-signed) from a netshoot openssl server across br-lab
 range=10.207.0.0/16
 images=netshoot
 traffic_secs=60
-ready=cl|curl -skf -m 2 -o /dev/null --resolve tls.lab.scenario:443:10.207.0.20 https://tls.lab.scenario/
+ready=cl|curl -skf -m 2 -o /dev/null --resolve tls.scenario.lab:443:10.207.0.20 https://tls.scenario.lab/
 traffic_nodes=cl
 ```
 
@@ -390,14 +390,14 @@ ip link set dev eth0 up
 
 ```sh
 # srv: a TLS server on br-lab through tap-b. A self-signed certificate for
-# tls.lab.scenario is generated here at up (lab traffic only, not a secret),
+# tls.scenario.lab is generated here at up (lab traffic only, not a secret),
 # so Zeek's ssl.log/x509.log and Arkime see a real handshake with SNI and a
 # certificate subject. openssl s_server -www answers every request; fully
 # detached, so docker exec returns.
 set -e
 ip addr replace 10.207.0.20/24 dev eth0
 ip link set dev eth0 up
-openssl req -x509 -newkey rsa:2048 -nodes -days 30 -subj "/CN=tls.lab.scenario" \
+openssl req -x509 -newkey rsa:2048 -nodes -days 30 -subj "/CN=tls.scenario.lab" \
     -keyout /tmp/lab-tls.key -out /tmp/lab-tls.crt >/dev/null 2>&1
 (openssl s_server -accept 443 -cert /tmp/lab-tls.crt -key /tmp/lab-tls.key -www -quiet) </dev/null >/dev/null 2>&1 &
 ```
@@ -413,7 +413,7 @@ case "$node" in
     cl)
         end=$(( $(date +%s) + secs ))
         while [ "$(date +%s)" -lt "$end" ]; do
-            curl -skf -m 2 -o /dev/null --resolve tls.lab.scenario:443:10.207.0.20 https://tls.lab.scenario/ || exit 1
+            curl -skf -m 2 -o /dev/null --resolve tls.scenario.lab:443:10.207.0.20 https://tls.scenario.lab/ || exit 1
             sleep 0.5
         done ;;
     *) echo "traffic.sh: no traffic role for node $node" >&2; exit 1 ;;
@@ -1075,7 +1075,7 @@ Expected:
 
 Any FAIL is a finding. Handle it one change at a time (CLAUDE.md rule 7): read that child's log under the report's directory, and for a `check` FAIL, start with the tcpdump filter it prints.
 
-- [ ] **Step 2: Confirm the analysers fired,** beyond session counts. In Zeek's live logs, the new scenarios must appear in `dns.log` (both NOERROR and NXDOMAIN), `ssl.log` (`server_name` `tls.lab.scenario`) and `ssh.log` (`auth_success` F):
+- [ ] **Step 2: Confirm the analysers fired,** beyond session counts. In Zeek's live logs, the new scenarios must appear in `dns.log` (both NOERROR and NXDOMAIN), `ssl.log` (`server_name` `tls.scenario.lab`) and `ssh.log` (`auth_success` F):
 
 ```bash
 ssh ubuntu@192.168.4.78 'cd /opt/malcolm/malcolm/zeek-logs/live/spool/logger-1 && for f in dns ssl ssh; do echo "== $f.log"; sudo grep -h -E "10\.20(6|7|8)\." $f.log | tail -2; done'

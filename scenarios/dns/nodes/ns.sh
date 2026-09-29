@@ -1,6 +1,6 @@
 # ns: a small authoritative responder on br-lab through tap-b. The bundle has
 # no DNS server image, so a python3 stdlib program answers A records under
-# lab.scenario with 10.206.0.99 and everything else with NXDOMAIN: enough for
+# scenario.lab with 10.206.0.99 and everything else with NXDOMAIN: enough for
 # Zeek's dns.log and Arkime's DNS parser to see both outcomes. Fully
 # detached, so docker exec returns.
 set -e
@@ -26,7 +26,7 @@ while True:
     qtype = struct.unpack(">H", q[i + 1:i + 3])[0]
     question = q[12:i + 5]
     name = ".".join(labels)
-    if (name == "lab.scenario" or name.endswith(".lab.scenario")) and qtype == 1:
+    if (name == "scenario.lab" or name.endswith(".scenario.lab")) and qtype == 1:
         head = q[:2] + b"\x81\x80" + struct.pack(">HHHH", 1, 1, 0, 0)
         answer = b"\xc0\x0c" + struct.pack(">HHIH", 1, 1, 60, 4) + socket.inet_aton("10.206.0.99")
     else:

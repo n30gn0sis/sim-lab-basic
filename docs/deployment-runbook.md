@@ -436,7 +436,7 @@ passes, the nodes are left running for inspection and `down` removes them.
 `scenario-<name>-<host>-<ts>.run` (UTC start/end, range, TAPs) beside the
 transcript. `ipsec-ike` refuses until a bundle carries a strongSwan image.
 Each scenario owns one /16 (`client-server` 10.205, `ipsec-esp` 10.201,
-`ipsec-ike` 10.202, `ospf` 10.203, `bgp` 10.204, `dns` 10.206), so two can share the hub.
+`ipsec-ike` 10.202, `ospf` 10.203, `bgp` 10.204, `dns` 10.206, `tls` 10.207), so two can share the hub.
 
 A scenario's `expect.txt` lists the flows a run's window must show on the
 mirror, and the pack is built so that every window does:

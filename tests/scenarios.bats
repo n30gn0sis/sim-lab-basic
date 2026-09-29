@@ -10,11 +10,11 @@ setup() { cd "$BATS_TEST_DIRNAME/.."; }
 lint() { run python3 tests/helpers/lint_scenarios.py "$1"; echo "$output"; [ "$status" -eq 0 ]; }
 
 @test "the pack holds the scenarios the kit documents" {
-    for s in client-server ipsec-esp ipsec-ike ospf bgp dns; do [ -f "scenarios/$s/scenario.conf" ] || { echo "missing $s"; false; }; done
-    [ "$(find scenarios -mindepth 2 -maxdepth 2 -name scenario.conf | wc -l)" -eq 6 ]
+    for s in client-server ipsec-esp ipsec-ike ospf bgp dns tls; do [ -f "scenarios/$s/scenario.conf" ] || { echo "missing $s"; false; }; done
+    [ "$(find scenarios -mindepth 2 -maxdepth 2 -name scenario.conf | wc -l)" -eq 7 ]
 }
 
-@test "the dns scenario's responder answers A under lab.scenario and NXDOMAIN otherwise" {
+@test "the dns scenario's responder answers A under scenario.lab and NXDOMAIN otherwise" {
     prog="$BATS_TEST_TMPDIR/lab-dns.py"
     sed -n "/^cat > \/tmp\/lab-dns.py <<'PY'$/,/^PY$/p" scenarios/dns/nodes/ns.sh | sed '1d;$d' > "$prog"
     [ -s "$prog" ]
@@ -28,7 +28,7 @@ def ask(name, qtype=1):
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(2)
     s.sendto(q, ("127.0.0.1", 53053)); r, _ = s.recvfrom(512)
     return r
-r = ask("www.lab.scenario")
+r = ask("www.scenario.lab")
 print("id", r[:2].hex(), "rcode", r[3] & 0x0f, "an", struct.unpack(">H", r[6:8])[0], "ip", socket.inet_ntoa(r[-4:]))
 r = ask("nothere.example")
 print("id", r[:2].hex(), "rcode", r[3] & 0x0f, "an", struct.unpack(">H", r[6:8])[0])
