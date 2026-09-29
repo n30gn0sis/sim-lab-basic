@@ -481,6 +481,25 @@ sessions from 10.205.0.10.
 
 ---
 
+## End to end (after Malcolm and GNS3 are up)
+
+```bash
+sudo ./scripts/r770-e2e.sh --bundle /srv/bundles/bundle-YYYYMMDD \
+    --capture-ifs lab_mirror0 --lab-bridge br-lab     # both from discovery, never guessed
+```
+
+One command proves Malcolm working with GNS3. It validates the lab mirror,
+Malcolm's capture and GNS3 (`r770-validate.sh` areas `network`, `capture`,
+`gns3`), runs every scenario the bundle can run (`up`, `traffic`, `down`),
+then judges every run in Malcolm with `r770-scenario.sh check`. All
+traffic runs first, so only the first check waits for Malcolm's PCAP
+rotation. The report is `r770-evidence/e2e-<host>-<ts>.md`, with every
+child's output in the directory beside it; `--scenarios a,b` narrows the
+run, `--skip-validate` skips the first phase. A scenario that fails `up`
+is still taken down, an interrupted run takes down the one that is up,
+and a check that could not judge (Malcolm not answering) is a WARN, not
+a PASS.
+
 ## Docs procedure
 
 Steps D1–D4 (`preflight` `gate` `copy` `apt` `phone-home` `docker` `files`)
