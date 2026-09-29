@@ -436,7 +436,7 @@ passes, the nodes are left running for inspection and `down` removes them.
 `scenario-<name>-<host>-<ts>.run` (UTC start/end, range, TAPs) beside the
 transcript. `ipsec-ike` refuses until a bundle carries a strongSwan image.
 Each scenario owns one /16 (`client-server` 10.205, `ipsec-esp` 10.201,
-`ipsec-ike` 10.202, `ospf` 10.203, `bgp` 10.204), so two can share the hub.
+`ipsec-ike` 10.202, `ospf` 10.203, `bgp` 10.204, `dns` 10.206, `tls` 10.207, `ssh` 10.208), so two can share the hub.
 
 A scenario's `expect.txt` lists the flows a run's window must show on the
 mirror, and the pack is built so that every window does:
@@ -480,6 +480,27 @@ carried each scenario (`http`, `ospf`, BGP on 179, `spicy_ipsec_ike_udp` and
 sessions from 10.205.0.10.
 
 ---
+
+## End to end (after Malcolm and GNS3 are up)
+
+```bash
+sudo ./scripts/r770-e2e.sh --bundle /srv/bundles/bundle-YYYYMMDD \
+    --capture-ifs lab_mirror0 --lab-bridge br-lab     # both from discovery, never guessed
+```
+
+One command proves Malcolm working with GNS3. It validates the lab mirror,
+Malcolm's capture and GNS3 (`r770-validate.sh` areas `network`, `capture`,
+`gns3`), runs every scenario the bundle can run (`up`, `traffic`, `down`),
+then judges every run in Malcolm with `r770-scenario.sh check`. All
+traffic runs first, so only the first check waits for Malcolm's PCAP
+rotation. The report is `r770-evidence/e2e-<host>-<ts>.md`, with every
+child's output in the directory beside it; `--scenarios a,b` narrows the
+run, `--skip-validate` skips the first phase. A scenario that fails `up`
+is still taken down, an interrupted run takes down the one that is up
+(a second Ctrl-C does not stop that), a scenario already up by hand is
+refused rather than taken down, a check that could not judge (Malcolm
+not answering) is a WARN, not a PASS, and a run in which no scenario ran
+is a FAIL.
 
 ## Docs procedure
 

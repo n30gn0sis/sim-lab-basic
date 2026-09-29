@@ -10,8 +10,33 @@ setup() { cd "$BATS_TEST_DIRNAME/.."; }
 lint() { run python3 tests/helpers/lint_scenarios.py "$1"; echo "$output"; [ "$status" -eq 0 ]; }
 
 @test "the pack holds the scenarios the kit documents" {
-    for s in client-server ipsec-esp ipsec-ike ospf bgp; do [ -f "scenarios/$s/scenario.conf" ] || { echo "missing $s"; false; }; done
-    [ "$(find scenarios -mindepth 2 -maxdepth 2 -name scenario.conf | wc -l)" -eq 5 ]
+    for s in client-server ipsec-esp ipsec-ike ospf bgp dns tls ssh; do [ -f "scenarios/$s/scenario.conf" ] || { echo "missing $s"; false; }; done
+    [ "$(find scenarios -mindepth 2 -maxdepth 2 -name scenario.conf | wc -l)" -eq 8 ]
+}
+
+@test "the dns scenario's responder answers A under scenario.lab and NXDOMAIN otherwise" {
+    prog="$BATS_TEST_TMPDIR/lab-dns.py"
+    sed -n "/^cat > \/tmp\/lab-dns.py <<'PY'$/,/^PY$/p" scenarios/dns/nodes/ns.sh | sed '1d;$d' > "$prog"
+    [ -s "$prog" ]
+    DNS_BIND=127.0.0.1 DNS_PORT=53053 python3 "$prog" & pid=$!
+    sleep 1
+    run python3 - <<'PY'
+import socket, struct
+def ask(name, qtype=1):
+    q = b"\x12\x34\x01\x00" + struct.pack(">HHHH", 1, 0, 0, 0)
+    q += b"".join(bytes([len(p)]) + p.encode() for p in name.split(".")) + b"\x00" + struct.pack(">HH", qtype, 1)
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(2)
+    s.sendto(q, ("127.0.0.1", 53053)); r, _ = s.recvfrom(512)
+    return r
+r = ask("www.scenario.lab")
+print("id", r[:2].hex(), "rcode", r[3] & 0x0f, "an", struct.unpack(">H", r[6:8])[0], "ip", socket.inet_ntoa(r[-4:]))
+r = ask("nothere.example")
+print("id", r[:2].hex(), "rcode", r[3] & 0x0f, "an", struct.unpack(">H", r[6:8])[0])
+PY
+    kill "$pid"
+    echo "$output"
+    [ "${lines[0]}" = "id 1234 rcode 0 an 1 ip 10.206.0.99" ]
+    [ "${lines[1]}" = "id 1234 rcode 3 an 0" ]
 }
 
 @test "every scenario has its files and a complete scenario.conf, and ranges are unique" { lint layout; }
