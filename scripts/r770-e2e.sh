@@ -55,7 +55,11 @@ child() {  # child <log-name> <cmd...> — run a child, its output to $LOGDIR/<l
     "$@" > "$log" 2>&1
 }
 teardown() {
+    # a second Ctrl-C here would kill `down` and leave the project running:
+    # ignore further interrupts (the child inherits that) until it is down
+    trap '' INT TERM
     if [ -n "$UP" ]; then
+        printf 'r770-e2e: taking %s down before exiting — wait for it\n' "$UP" > /dev/tty 2>/dev/null || true
         "$SCENARIO" down "$UP" > "$LOGDIR/down-$UP-on-exit.log" 2>&1 || true
         UP=""
     fi
@@ -134,6 +138,15 @@ fi
 
 # ── 2. run every scenario: up → traffic → down ───────────────────────────────
 banner "scenarios — ${SEL[*]}"
+# a scenario already up was brought up by someone else: this run would take
+# it down at the end, deleting a project it did not create
+child status "$SCENARIO" status
+already=" $(awk '$2 == "up" {print $1}' "$LOGDIR/status.log" | tr '\n' ' ') "
+for s in "${SEL[@]}"; do
+    case "$already" in
+        *" $s "*) die "$s is already up (not brought up by this run) — take it down first (r770-scenario.sh down $s), or leave it out with --scenarios" ;;
+    esac
+done
 child list "$SCENARIO" list --bundle "$BUNDLE"
 notrun=" $(awk '/^[a-z0-9]/ {n = $1} /NOT runnable/ {print n}' "$LOGDIR/list.log" | tr '\n' ' ') "
 for s in "${SEL[@]}"; do
@@ -168,6 +181,10 @@ for r in "${RECS[@]}"; do
         row "check $s" "$(verdict_of $rc)" "$(last_verdict_line "$LOGDIR/check-$s.log")"
     fi
 done
+
+if [ "${#RECS[@]}" -eq 0 ]; then
+    row "scenarios" FAIL "no scenario ran and was judged in Malcolm — nothing here proves Malcolm works with GNS3 (see the up rows above)"
+fi
 
 # ── 4. report ────────────────────────────────────────────────────────────────
 write_report

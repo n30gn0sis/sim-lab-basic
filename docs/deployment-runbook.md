@@ -496,9 +496,11 @@ traffic runs first, so only the first check waits for Malcolm's PCAP
 rotation. The report is `r770-evidence/e2e-<host>-<ts>.md`, with every
 child's output in the directory beside it; `--scenarios a,b` narrows the
 run, `--skip-validate` skips the first phase. A scenario that fails `up`
-is still taken down, an interrupted run takes down the one that is up,
-and a check that could not judge (Malcolm not answering) is a WARN, not
-a PASS.
+is still taken down, an interrupted run takes down the one that is up
+(a second Ctrl-C does not stop that), a scenario already up by hand is
+refused rather than taken down, a check that could not judge (Malcolm
+not answering) is a WARN, not a PASS, and a run in which no scenario ran
+is a FAIL.
 
 ## Docs procedure
 

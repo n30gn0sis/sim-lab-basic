@@ -20,6 +20,9 @@ echo "scenario $*" >> "$STUB_LOG"
 sub=$1; s=${2:-}
 case "$sub" in
   list)    cat "$T/list.out" ;;
+  status)  cat "$T/status.out" 2>/dev/null ;;
+  down)    if [ -f "$T/int-down-$s" ]; then rm -f "$T/int-down-$s"; pg=$(cut -d" " -f5 /proc/$$/stat); kill -INT -- "-$pg"; sleep 1; fi
+           echo done >> "$T/down-done-$s" ;;
   traffic) echo "      run record: $T/rec-$s.run"; [ -f "$T/term-traffic-$s" ] && kill -TERM "$PPID" && sleep 5 ;;
   check)   cat "$T/check-$s.out" 2>/dev/null ;;
 esac
@@ -40,15 +43,16 @@ calls() { sed -n 's/^\(validate\|scenario\) //p' "$STUB_LOG"; }
     [ "${lines[0]}" = "--area network --lab-bridge br-lab --capture-ifs lab_mirror0 --out $logdir" ]
     [ "${lines[1]}" = "--area capture --out $logdir" ]
     [ "${lines[2]}" = "--area gns3 --out $logdir" ]
-    [ "${lines[3]}" = "list --bundle $T/bundle" ]
-    [ "${lines[4]}" = "up demo-a --bundle $T/bundle" ]
-    [ "${lines[5]}" = "traffic demo-a" ]
-    [ "${lines[6]}" = "down demo-a" ]
-    [ "${lines[7]}" = "up demo-b --bundle $T/bundle" ]
-    [ "${lines[8]}" = "traffic demo-b" ]
-    [ "${lines[9]}" = "down demo-b" ]
-    [ "${lines[10]}" = "check demo-a --run $T/rec-demo-a.run" ]
-    [ "${lines[11]}" = "check demo-b --run $T/rec-demo-b.run" ]
+    [ "${lines[3]}" = "status" ]
+    [ "${lines[4]}" = "list --bundle $T/bundle" ]
+    [ "${lines[5]}" = "up demo-a --bundle $T/bundle" ]
+    [ "${lines[6]}" = "traffic demo-a" ]
+    [ "${lines[7]}" = "down demo-a" ]
+    [ "${lines[8]}" = "up demo-b --bundle $T/bundle" ]
+    [ "${lines[9]}" = "traffic demo-b" ]
+    [ "${lines[10]}" = "down demo-b" ]
+    [ "${lines[11]}" = "check demo-a --run $T/rec-demo-a.run" ]
+    [ "${lines[12]}" = "check demo-b --run $T/rec-demo-b.run" ]
     report="$logdir.md"
     grep -q '^| check demo-b | PASS |' "$report"
     grep -q '^| validate network | PASS |' "$report"
@@ -131,4 +135,29 @@ calls() { sed -n 's/^\(validate\|scenario\) //p' "$STUB_LOG"; }
     [ "$status" -ne 0 ]
     grep -q '^scenario down demo-a' "$STUB_LOG"
     ! grep -q '^scenario up demo-b' "$STUB_LOG"
+}
+
+@test "a run in which no scenario ran is a FAIL, never READY: nothing was proven" {
+    printf 'demo-a  10.250.0.0/16  a\n      NOT runnable: missing strongswan\ndemo-b  10.251.0.0/16  b\n      NOT runnable: missing strongswan\n' > "$T/list.out"
+    run full
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"FAIL  scenarios: no scenario ran and was judged in Malcolm"* ]]
+}
+
+@test "a scenario that is already up (not brought up by this run) is refused before any scenario is touched" {
+    printf 'demo-a           up         taps lab-tap0,lab-tap1          last run none\ndemo-b           down       taps -                          last run none\n' > "$T/status.out"
+    run full
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"demo-a is already up"* ]]
+    ! grep -qE '^scenario (up|down|traffic) ' "$STUB_LOG"
+}
+
+@test "a second interrupt during teardown does not stop down: the scenario is still taken down" {
+    touch "$T/term-traffic-demo-a" "$T/int-down-demo-a"
+    run setsid -w env PATH="$KIT_PATH" "$SCRIPT" --bundle "$T/bundle" --capture-ifs lab_mirror0 --lab-bridge br-lab
+    echo "$output"
+    [ "$status" -ne 0 ]
+    [ "$(cat "$T/down-done-demo-a" 2>/dev/null)" = "done" ]
 }
