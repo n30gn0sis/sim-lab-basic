@@ -29,7 +29,7 @@ It builds on `docs/superpowers/specs/2026-09-24-scenario-pack-design.md` and `do
 |---|---|---|---|
 | `dns` | 10.206.0.0/16 | `cl` 10.206.0.10, `ns` 10.206.0.53 | DNS queries and answers, NOERROR and NXDOMAIN (Zeek `dns.log`, Arkime DNS) |
 | `tls` | 10.207.0.0/16 | `cl` 10.207.0.10, `srv` 10.207.0.20 | A TLS handshake with SNI `tls.scenario.lab` and a self-signed certificate (Zeek `ssl.log` / `x509.log`) |
-| `ssh` | 10.208.0.0/16 | `cl` 10.208.0.10, `srv` 10.208.0.20 | SSH handshakes that fail authentication (Zeek `ssh.log`, `auth_success=F`): a password-guessing shape |
+| `ssh` | 10.208.0.0/16 | `cl` 10.208.0.10, `srv` 10.208.0.20 | SSH handshakes that fail authentication (Zeek `ssh.log`: one row per session with the client banner; `auth_success` stays unset, measured 2026-09-29): a password-guessing shape |
 
 **Servers:**
 - **`ns`:** a python3 stdlib DNS responder. `A` records under `scenario.lab` answer `10.206.0.99`; anything else is NXDOMAIN.
@@ -521,8 +521,11 @@ ip link set dev eth0 up
 
 ```sh
 # srv: sshd on br-lab through tap-b, key-only with no authorized keys, so
-# every login fails authentication after a full handshake: Zeek's ssh.log
-# records auth_success=F, the shape of password guessing. Host keys are
+# every login fails authentication after a full handshake: repeated SSH
+# sessions from one client, the shape of password guessing. Zeek's ssh.log
+# records each with the client banner; it leaves auth_success unset (-),
+# since a fast public-key refusal gives it nothing to infer from (measured
+# on staging VM 9770, 2026-09-29). Host keys are
 # generated here at up; sshd daemonizes itself, so docker exec returns.
 set -e
 ip addr replace 10.208.0.20/24 dev eth0
@@ -1075,7 +1078,7 @@ Expected:
 
 Any FAIL is a finding. Handle it one change at a time (CLAUDE.md rule 7): read that child's log under the report's directory, and for a `check` FAIL, start with the tcpdump filter it prints.
 
-- [ ] **Step 2: Confirm the analysers fired,** beyond session counts. In Zeek's live logs, the new scenarios must appear in `dns.log` (both NOERROR and NXDOMAIN), `ssl.log` (`server_name` `tls.scenario.lab`) and `ssh.log` (`auth_success` F):
+- [ ] **Step 2: Confirm the analysers fired,** beyond session counts. In Zeek's live logs, the new scenarios must appear in `dns.log` (both NOERROR and NXDOMAIN), `ssl.log` (`server_name` `tls.scenario.lab`) and `ssh.log` (one row per session with the client banner; `auth_success` stays unset):
 
 ```bash
 ssh ubuntu@192.168.4.78 'cd /opt/malcolm/malcolm/zeek-logs/live/spool/logger-1 && for f in dns ssl ssh; do echo "== $f.log"; sudo grep -h -E "10\.20(6|7|8)\." $f.log | tail -2; done'
