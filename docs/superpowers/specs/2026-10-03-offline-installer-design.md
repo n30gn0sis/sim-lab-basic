@@ -44,11 +44,11 @@ pipelines already accept:
 | `CAPTURE_IFS` | Malcolm `--capture-ifs`, validate, e2e | `lab_mirror0`, plus any physical tap ports |
 | `LAB_BRIDGE` | validate, e2e `--lab-bridge` | GNS3's labnet bridge |
 | `MGMT_IF`, `MGMT_CIDR` | validate `--mgmt-if`, `--mgmt-cidr` | `ip -br addr` discovery |
-| `PORTAL_SANS` | portal `--subject-alt-name` | optional; omitted means the portal's own `.lab` defaults |
+| `VALIDATE_AREAS` | validate `--area` (once per area) | optional; empty means every area. Staging sets the areas a VM can prove; the R770 leaves it empty |
 
 The file is parsed, never sourced (no shell evaluation of operator text). FAIL
 on: an unknown key; a required key that is empty; a value matching a
-placeholder pattern (`/dev/sdX`, `eno1`-style examples, `<...>`, `CHANGEME`); a
+placeholder pattern (`/dev/sdX`, `<...>`, `CHANGEME`; an interface name is judged by whether it exists, since `eno1` is a real name on many hosts); a
 `DEVICE` that is not a block device; an interface that does not exist (except
 `lab_mirror0` and `LAB_BRIDGE` before GNS3's `labnet` has run, which are
 checked by the steps that create them).
