@@ -63,8 +63,39 @@ checked by the steps that create them).
 | `run [--yes] [--from <step>] [--to <step>]` | Runs the steps in order, passing `--yes --non-interactive` when given `--yes`. Without `--yes` it stops at the first gate. Stops at the first FAIL. | Yes |
 | `status` | Shows which steps are stamped done (`/srv/bundles/.kit-stamps`). | No |
 
+`install.conf` lives at `/etc/lab/install.conf` (through `p()`), overridable
+with `--conf <file>`. It is on the host, not the media, so it survives the
+hand-off below and a later `run --from`.
+
+### Import and hand-off (added while planning)
+
+The operator starts the installer from the media, but the import script's
+`copy` unmounts `--media` (`scripts/r770-import-bundle.sh:156`). bash holds its
+own script open, so that unmount would fail ("target is busy"), the step would
+WARN and the run could never reach INSTALLED. So `run` begins with an `import`
+step that the installer drives itself:
+
+1. `r770-import-bundle.sh preflight --bundle B`
+2. `r770-import-bundle.sh gate --bundle B --media M --device D`
+3. `r770-import-bundle.sh copy --bundle B` — **without** `--media`, so nothing is unmounted while the installer runs from it.
+4. If the running installer is not the copy's own (`/srv/bundles/<name>/kit/scripts/r770-install.sh`), `exec` that copy: `run --from gns3 --conf <same> [--yes]`. bash marks its script descriptor close-on-exec, so after the `exec` nothing holds the media open.
+
+From the hand-off on, every pipeline gets `--bundle /srv/bundles/<name>` and
+no `--media`/`--device`; their own preflight/gate/copy then report "already
+done" (copy is stamped). The final summary prints `umount <M>` as the
+operator's last action. The installer never unmounts the media itself.
+
+### Name
+
+The build repo has an unmerged `scripts/r770-install.sh` of its own (an
+orchestrator on a local branch). The operator decided on 2026-10-03 that the
+kit governs, so the kit keeps the name `scripts/r770-install.sh`. The two never
+meet on the R770 (`kit/scripts/` vs `site/scripts/`), and the build-repo
+runbook pointer names the kit's path explicitly.
+
 ### Steps (the names `--from`/`--to` accept)
 
+0. `import` — preflight, gate, copy, then the hand-off (above)
 1. `gns3` — `r770-gns3-deploy.sh full`
 2. `malcolm` — `r770-malcolm-deploy.sh full` (after `gns3`: Malcolm's `configure` needs `labnet`)
 3. `docs` — `r770-docs-deploy.sh full`
@@ -156,6 +187,7 @@ either. It reads only `docker info`, `findmnt` and `df`.
   - step order; stop on the first FAIL; `--from`/`--to`;
   - a WARN step makes the verdict WARN;
   - `BUNDLE` defaults from `kit/..` only when `bundle_dir()` accepts it.
+  - `import` calls preflight, gate (with `--media --device`) and copy (without `--media`) in that order; when not running from the local copy it `exec`s `/srv/bundles/<name>/kit/scripts/r770-install.sh run --from gns3`; when already running from it, it continues in-process; the pipelines then get the local `--bundle` and no `--media`/`--device`.
 - `tests/import-bundle.bats`: snapshotter off → PASS; containerd store on its own mount → PASS; on root with room → WARN; on root without room → FAIL, with no `docker load` invoked; the remedy text is printed.
 - Build repo: tests for the `kit/` stage (refuses without `KIT_SRC_ROOT`, tracked files only, refuses symlinks); `--strict` fails without `kit/scripts/r770-install.sh`.
 - Kit side: `tests/staging.bats` proves the resync byte for byte; shellcheck with no exclusions; a `README.md` row; a `.claude/settings.json` allow entry; `tests/references.bats` for every new path in the docs.
@@ -167,7 +199,8 @@ either. It reads only `docker info`, `findmnt` and `df`.
 3. Lift the media onto the VM and turn the air gap on. No kit checkout is on the VM.
 4. Run only the bundle's commands: `r770-bundle.sh verify`, then `kit/scripts/r770-install.sh discover`, `wizard`, `plan`, `run --yes`.
 5. The pass mark is INSTALLED, with all 8 scenarios READY in e2e.
-6. Re-entry proof: kill the run during `malcolm`, then `run --yes --from malcolm` → INSTALLED.
+6. Re-entry proof: kill the run during `malcolm`, then `/srv/bundles/<name>/kit/scripts/r770-install.sh run --yes --from malcolm` → INSTALLED.
+7. The media unmounts cleanly afterwards (`umount <M>` as printed), proving nothing holds it.
 
 **Staging stand-in:** the VM's containerd store is on its root disk, so
 section 3 WARNs or FAILs there, as designed. For the rehearsal, one printed
