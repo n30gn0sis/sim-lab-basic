@@ -194,6 +194,69 @@ import() { kit_run "$SCRIPT" "$@"; }
     [[ "$output" == *"registry mirrors configured"* ]]
 }
 
+# ── storage — where `docker load` really writes ─────────────────────────────
+# A docker stub whose DriverStatus says the containerd snapshotter is on, and a
+# findmnt that puts /var/lib/containerd wherever $CTRD_MP says.
+snapshotter_host() {
+    stub docker 'echo "docker $*" >> "$STUB_LOG"
+case "$*" in
+  *DriverStatus*) echo "[[\"driver-type\",\"io.containerd.snapshotter.v1\"]]" ;;
+  *DockerRootDir*) echo /var/lib/docker ;; *Mirrors*) echo "[]" ;; *Proxy*) echo ;; *) echo 0.0.0-fixture ;;
+esac'
+    stub findmnt 'case "$*" in *-T\ /var/lib/containerd) echo "$CTRD_MP" ;; *-T\ *) echo "${@: -1}" ;; *) exit 1 ;; esac'
+}
+
+@test "storage: no containerd snapshotter means images live under the data root — PASS, nothing else read" {
+    run import storage --bundle "$BUNDLE"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"PASS  image store is the data root"* ]]
+}
+
+@test "storage: the containerd store on its own mount, or on the docker LV, is a PASS" {
+    snapshotter_host
+    CTRD_MP=/var/lib/containerd run import storage --bundle "$BUNDLE"
+    echo "$output"; [ "$status" -eq 0 ]
+    [[ "$output" == *"PASS  image store /var/lib/containerd is on its own mount"* ]]
+    CTRD_MP=/var/lib/docker run import storage --bundle "$BUNDLE"
+    echo "$output"; [ "$status" -eq 0 ]
+    [[ "$output" == *"on the docker volume"* ]]
+}
+
+@test "storage: on the root disk with room is a WARN that prints both remedies" {
+    snapshotter_host
+    stub df 'printf "Filesystem 1024-blocks Used Available Capacity Mounted\n/dev/sda1 400000000 1 300000000 1%% /\n"'
+    CTRD_MP=/ run import storage --bundle "$BUNDLE"
+    echo "$output"
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"WARN  image store /var/lib/containerd is on / "* ]]
+    [[ "$output" == *"mount a volume at /var/lib/containerd"* ]]
+    [[ "$output" == *"containerd-snapshotter"* ]]
+}
+
+@test "storage: on the root disk without room is a FAIL, and the docker step stops before any load" {
+    snapshotter_host
+    # the fixture archives are tiny: make one big enough that 1 KiB free is not enough
+    truncate -s 10M "$BUNDLE/malcolm/malcolm-images-0.0.0-fixture.tar.gz"
+    stub df 'printf "Filesystem 1024-blocks Used Available Capacity Mounted\n/dev/sda1 400 399 1 99%% /\n"'
+    CTRD_MP=/ run import storage --bundle "$BUNDLE"
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"FAIL  image store /var/lib/containerd is on / "* ]]
+    CTRD_MP=/ run import docker --bundle "$BUNDLE"
+    echo "$output"
+    [ "$status" -eq 1 ]
+    ! grep -q '^docker load' "$STUB_LOG"
+}
+
+@test "storage: docker not answering yet is a SKIP, not a pass and not a failure" {
+    stub docker 'exit 1'
+    run import storage --bundle "$BUNDLE"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"SKIP  image store: docker is not answering"* ]]
+}
+
 # ── files ───────────────────────────────────────────────────────────────────
 
 @test "files routes payload into place: README skipped, signatures to checksums/, definitions without images WARN" {

@@ -11,6 +11,7 @@
 #   apt          local flat repo at /srv/repo/apt, sources rewritten   (GATED)
 #   phone-home   unattended-upgrades, snapd, motd-news neutralised      (GATED)
 #   docker       docker-ce from the local repo, daemon asserted         (GATED)
+#   storage      read-only: where `docker load` will write, and whether it fits
 #   files        VM images, GNS3 definitions/appliances, enrichment, docs
 #   status       what has landed so far
 #
@@ -281,6 +282,50 @@ cmd_phone_home() {
 }
 
 # ── docker ───────────────────────────────────────────────────────────────────
+# image_store_check <bundle-dir> — where `docker load` will actually write.
+# With the containerd image store (the default on a fresh Docker 29 install)
+# image content lands in /var/lib/containerd, NOT under the data root asserted
+# by the docker step — so a guarded /var/lib/docker LV can pass while the root
+# filesystem fills (staging VM 9770, 2026-09-29). Reads `docker info`, findmnt
+# and df only; it never moves, prunes or reconfigures anything. The remedy is
+# a storage-layout decision, so it is printed, never applied.
+# CONTAINERD_EXPANSION_PCT: on-disk bytes per archive byte, measured on VM
+# 9770 2026-10-03 — /var/lib/containerd 24291046646 B after loading
+# bundle-20260929's archives (7669955661 B in all) = 317%.
+CONTAINERD_EXPANSION_PCT=317
+image_store_check() {
+    local b=$1 status mp avail_kb need bytes=0 f
+    status=$(docker info --format '{{json .DriverStatus}}' 2>/dev/null || true)
+    case "$status" in
+        "") skip "image store: docker is not answering — the docker step checks this again once the engine is installed"; return 0 ;;
+        *io.containerd.snapshotter*) ;;
+        *) pass "image store is the data root (no containerd snapshotter) — covered by the data-root check"; return 0 ;;
+    esac
+    mp=$(findmnt -n -o TARGET -T /var/lib/containerd 2>/dev/null || true)
+    if [ "$mp" = /var/lib/containerd ]; then pass "image store /var/lib/containerd is on its own mount"; return 0; fi
+    if [ "$mp" = /var/lib/docker ]; then pass "image store /var/lib/containerd is on the docker volume (/var/lib/docker)"; return 0; fi
+    for f in "$b"/*/*images*.tar.gz "$b"/*/*/*images*.tar.gz; do
+        [ -f "$f" ] && bytes=$(( bytes + $(stat -c %s "$f") ))
+    done
+    need=$(( bytes * CONTAINERD_EXPANSION_PCT * 120 / 10000 ))   # x317% x120% headroom
+    avail_kb=$(df -Pk "${mp:-/}" 2>/dev/null | awk 'NR == 2 {print $4}')
+    avail_kb=${avail_kb:-0}
+    if [ $(( avail_kb * 1024 )) -ge "$need" ]; then
+        warn "image store /var/lib/containerd is on ${mp:-?} (not its own volume, not the docker LV): needs ~$(( need / 1073741824 )) GiB, $(( avail_kb / 1048576 )) GiB free — it fits, but the images live outside the guarded volume"
+    else
+        fail "image store /var/lib/containerd is on ${mp:-?} (not its own volume, not the docker LV): needs ~$(( need / 1073741824 )) GiB, only $(( avail_kb / 1048576 )) GiB free — loading would fill it"
+    fi
+    note "remedy (a storage-layout decision — choose one, then rerun this step):"
+    note "  1. mount a volume at /var/lib/containerd (stop docker and containerd first), then: findmnt /var/lib/containerd"
+    note "  2. or turn the containerd image store off — /etc/docker/daemon.json: {\"features\": {\"containerd-snapshotter\": false}} — restart docker, then: docker info --format '{{json .DriverStatus}}'"
+}
+
+cmd_storage() {
+    banner "storage — where docker load will write, and whether it fits"
+    image_store_check "$(bundle_dir "$BUNDLE")"
+    footer "storage"
+}
+
 dk_current() {
     printf '    docker-ce: %s\n' "$(dpkg -s docker-ce 2>/dev/null | awk '/^Version:/{print $2}' || true)"
     echo "    candidate from the local repo:"
@@ -318,6 +363,7 @@ cmd_docker() {
     proxy=$(docker info --format '{{.HTTPProxy}}{{.HTTPSProxy}}' 2>/dev/null || true)
     if [ -z "$proxy" ]; then pass "no proxy configured in the daemon"; else fail "daemon proxy configured: $proxy — remove the drop-in; nothing should try to leave"; fi
     pass "docker $(docker info --format '{{.ServerVersion}}' 2>/dev/null || echo '?') responding"
+    image_store_check "$(bundle_dir "$BUNDLE")"
     footer "docker"
 }
 
@@ -457,6 +503,7 @@ case "$SUB" in
     apt)        cmd_apt ;;
     phone-home) cmd_phone_home ;;
     docker)     cmd_docker ;;
+    storage)    cmd_storage ;;
     files)      cmd_files ;;
     status)     cmd_status ;;
     -h|--help|help|"") usage ;;
