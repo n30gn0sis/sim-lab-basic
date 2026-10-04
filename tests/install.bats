@@ -124,3 +124,47 @@ EOF
     [ "$status" -eq 0 ]
     grep -qx "gns3 full --bundle $BUNDLE" "$STUB_LOG"
 }
+
+@test "wizard writes exactly the values picked from what discovery found, and nothing else" {
+    mkdir -p "$BUNDLE/kit"; cp -r "$BATS_TEST_DIRNAME/../scripts" "$BUNDLE/kit/"
+    # media 2 (/media/usb) · device 4 (/dev/sdb1) · mgmt 1 (eno1) · extra capture ports: none · bridge 1 (br-lab)
+    run bash -c "printf '2\n4\n1\n\n1\n' | PATH='$KIT_PATH' '$BUNDLE/kit/scripts/r770-install.sh' wizard --conf '$CONF'"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    grep -qx "BUNDLE=$BUNDLE" "$CONF"
+    grep -qx "MEDIA=/media/usb" "$CONF"
+    grep -qx "DEVICE=/dev/sdb1" "$CONF"
+    grep -qx "MGMT_IF=eno1" "$CONF"
+    grep -qx "MGMT_CIDR=192.168.4.0/24" "$CONF"
+    grep -qx "CAPTURE_IFS=lab_mirror0" "$CONF"
+    grep -qx "LAB_BRIDGE=br-lab" "$CONF"
+    [ ! -s "$STUB_LOG" ]
+}
+
+@test "wizard: extra capture ports are picked by number; an out-of-range answer is asked again" {
+    mkdir -p "$BUNDLE/kit"; cp -r "$BATS_TEST_DIRNAME/../scripts" "$BUNDLE/kit/"
+    # device answer 9 is out of range, then 4; extra capture port 1 (ens2f0)
+    run bash -c "printf '2\n9\n4\n1\n1\n1\n' | PATH='$KIT_PATH' '$BUNDLE/kit/scripts/r770-install.sh' wizard --conf '$CONF'"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"not one of"* ]]
+    grep -qx "CAPTURE_IFS=lab_mirror0 ens2f0" "$CONF"
+}
+
+@test "wizard refuses a management interface with no address" {
+    mkdir -p "$BUNDLE/kit"; cp -r "$BATS_TEST_DIRNAME/../scripts" "$BUNDLE/kit/"
+    run bash -c "printf '2\n4\n2\n' | PATH='$KIT_PATH' '$BUNDLE/kit/scripts/r770-install.sh' wizard --conf '$CONF'"
+    [ "$status" -eq 1 ]; [[ "$output" == *"has no IPv4 address"* ]]
+    [ ! -e "$CONF" ]
+}
+
+@test "wizard never overwrites an existing install.conf without --force, and dies on end of input" {
+    good_conf
+    run bash -c "printf '' | PATH='$KIT_PATH' '$SCRIPT' wizard --conf '$CONF'"
+    [ "$status" -eq 1 ]; [[ "$output" == *"--force"* ]]
+    rm -f "$CONF"
+    mkdir -p "$BUNDLE/kit"; cp -r "$BATS_TEST_DIRNAME/../scripts" "$BUNDLE/kit/"
+    run bash -c "printf '2\n' | PATH='$KIT_PATH' '$BUNDLE/kit/scripts/r770-install.sh' wizard --conf '$CONF'"
+    [ "$status" -eq 1 ]
+    [ ! -e "$CONF" ]
+}

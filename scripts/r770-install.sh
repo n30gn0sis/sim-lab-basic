@@ -177,6 +177,73 @@ EOF
     footer "discover"
 }
 
+# ── wizard ───────────────────────────────────────────────────────────────────
+# pick <prompt> <option...> — a numbered menu on stderr; echoes the choice.
+# End of input is a refusal, never a default.
+pick() {
+    local prompt=$1; shift
+    local opts=("$@") i a
+    [ "${#opts[@]}" -gt 0 ] || die "nothing discovered for: $prompt — write install.conf by hand from 'discover'"
+    { echo; echo "$prompt"; for i in "${!opts[@]}"; do printf '  %d) %s\n' $((i + 1)) "${opts[$i]}"; done; } >&2
+    while :; do
+        read -r -p "choice [1-${#opts[@]}]: " a || die "no answer for: $prompt — nothing written"
+        if [[ "$a" =~ ^[0-9]+$ ]] && [ "$a" -ge 1 ] && [ "$a" -le "${#opts[@]}" ]; then printf '%s' "${opts[$((a - 1))]}"; return 0; fi
+        echo "  not one of 1-${#opts[@]}" >&2
+    done
+}
+# pick_many <prompt> <option...> — space-separated numbers, empty for none.
+pick_many() {
+    local prompt=$1; shift
+    local opts=("$@") i a n out ok
+    [ "${#opts[@]}" -gt 0 ] || return 0
+    { echo; echo "$prompt"; for i in "${!opts[@]}"; do printf '  %d) %s\n' $((i + 1)) "${opts[$i]}"; done; } >&2
+    while :; do
+        read -r -p "numbers, space separated (empty for none): " a || die "no answer for: $prompt — nothing written"
+        out=""; ok=1
+        for n in $a; do
+            if [[ "$n" =~ ^[0-9]+$ ]] && [ "$n" -ge 1 ] && [ "$n" -le "${#opts[@]}" ]; then out="$out ${opts[$((n - 1))]}"; else ok=0; fi
+        done
+        [ "$ok" = 1 ] && { printf '%s' "${out# }"; return 0; }
+        echo "  each must be one of 1-${#opts[@]}" >&2
+    done
+}
+
+cmd_wizard() {
+    banner "wizard — pick each value from what this host has"
+    [ ! -e "$CONF_PATH" ] || [ "$FORCE" = "1" ] || die "$CONF_PATH exists — edit it, or rerun with --force to replace it"
+    local bundle media device mgmt addr cidr extras bridge
+    local -a mounts devs mgmts others bridges
+    bundle=$(self_bundle)
+    [ -n "$bundle" ] || die "this installer is not inside a bundle — run the one in <media>/<bundle>/kit/scripts/, or write install.conf by hand"
+    mapfile -t mounts  < <(findmnt -lno TARGET,SOURCE 2>/dev/null | awk '{print $1}')
+    mapfile -t devs    < <(host_devices)
+    mapfile -t mgmts   < <(ip -br addr 2>/dev/null | awk '$1 != "lo" {print $1}' | sed 's/@.*//')
+    media=$(pick "MEDIA — where the transfer media is mounted:" "${mounts[@]}") || exit 1
+    device=$(pick "DEVICE — the media's block device:" "${devs[@]}") || exit 1
+    mgmt=$(pick "MGMT_IF — the management interface:" "${mgmts[@]}") || exit 1
+    addr=$(ip -br addr 2>/dev/null | awk -v i="$mgmt" '$1 == i {print $3}')
+    [ -n "$addr" ] || die "MGMT_IF $mgmt has no IPv4 address — pick the interface the box is managed through"
+    cidr=$(python3 -c 'import ipaddress, sys; print(ipaddress.ip_interface(sys.argv[1]).network)' "$addr") || die "cannot read a network from $addr"
+    mapfile -t others  < <(printf '%s\n' "${mgmts[@]}" | grep -vxF -- "$mgmt")
+    extras=$(pick_many "CAPTURE_IFS — physical tap ports to capture beside lab_mirror0:" "${others[@]}") || exit 1
+    mapfile -t bridges < <({ ip -br link show type bridge 2>/dev/null | awk '{print $1}'; echo br-lab; } | awk '!seen[$0]++')
+    bridge=$(pick "LAB_BRIDGE — the lab bridge (br-lab is the one the gns3 step's labnet creates):" "${bridges[@]}") || exit 1
+    mkdir -p "$(dirname "$CONF_PATH")" || die "cannot create $(dirname "$CONF_PATH")"
+    cat > "$CONF_PATH" <<EOF
+# install.conf — written by r770-install.sh wizard on $(hostname -s 2>/dev/null || echo host), $(date -Is)
+BUNDLE=$bundle
+MEDIA=$media
+DEVICE=$device
+CAPTURE_IFS=lab_mirror0${extras:+ $extras}
+LAB_BRIDGE=$bridge
+MGMT_IF=$mgmt
+MGMT_CIDR=$cidr
+VALIDATE_AREAS=
+EOF
+    pass "written: $CONF_PATH — next: r770-install.sh plan"
+    footer "wizard"
+}
+
 # ── arguments ────────────────────────────────────────────────────────────────
 [ $# -gt 0 ] || usage
 SUB=$1; shift
@@ -195,6 +262,7 @@ CONF_PATH="${CONF_PATH:-$(p /etc/lab/install.conf)}"
 kit_init "r770-install"
 case "$SUB" in
     discover) cmd_discover ;;
+    wizard)   cmd_wizard ;;
     run)      need_root; conf_ready; die "run: not implemented yet" ;;
     -h|--help|help) usage ;;
     *)        die "unknown subcommand: $SUB (try --help)" ;;
