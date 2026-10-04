@@ -2,16 +2,18 @@
 # build repo. tests/staging.bats fails if a file here no longer matches its hash: a change
 # is made in the build repo, then resynced (docs/kit-sync.md), never edited here.
 source: https://github.com/n30gn0sis/simlab-build scripts/
-commit: 6ee96d23ae3ce0919aed69cf8e69be851ccaa8be
-# Resynced 2026-09-27 from that commit (simlab-build main, the merge of PR #11).
-# r770-build-bundle.sh, r770-bundle.sh and r770-staging-preflight.sh are that
-# commit byte for byte. r770-offline-fetch.sh is that commit plus the kit's one
-# local divergence, reapplied: the monitoring trim (MONITOR_IMAGES =
-# mkdocs-material only), seed() never reusing a prior monitoring tarball, and
-# stage 4 relabelled — see its header and docs/kit-sync.md. Since this commit
-# the fetch has a "site" stage that ships simlab-build's own tree, so it must
-# run with SITE_SRC_ROOT at a simlab-build checkout (docs/kit-sync.md).
-92176858852854028f2e6e6a04f0bd3f9ff62a789ad5d66a0a3abde592bec77b  r770-build-bundle.sh
-f4196afb2a7a640d31ac9a9030b15766d23066ca4d2a8298d1f7d57e28390780  r770-bundle.sh
-e7a03bfc7762c4e416f53f658645d732ffcb27ad215cc18fc088acc51d0997b9  r770-offline-fetch.sh
+commit: 4e13d82a891de3fcd8c50b72c0600a30b933f2e5
+# Resynced 2026-10-03 from that commit (simlab-build branch claude/kit-in-bundle,
+# PR pending; it also carries main's #16). r770-build-bundle.sh, r770-bundle.sh
+# and r770-staging-preflight.sh are that commit byte for byte.
+# r770-offline-fetch.sh is that commit plus the kit's one local divergence,
+# reapplied: the monitoring trim (MONITOR_IMAGES = mkdocs-material only), seed()
+# never reusing a prior monitoring tarball, and stage 4 relabelled — see its
+# header and docs/kit-sync.md. The fetch has a "site" stage that ships
+# simlab-build's own tree (SITE_SRC_ROOT at a simlab-build checkout) and, since
+# this commit, a "kit" stage that ships THIS repo as bundle-*/kit/ — a real
+# run needs KIT_SRC_ROOT at a checkout of this kit (docs/kit-sync.md).
+2835d0e362e1e7d1c120e1589950f9ec8f1d6ec67ab39ca8534f54aa614fc121  r770-build-bundle.sh
+312b41cc9c0cd0d3d3f07124adb049a4cd11a365742f4e23fdca37e5ef9339a4  r770-bundle.sh
+ffe7d2a8a9ef4143a37f37dfd95bef8d4ee351e9147b2786b8f05da2eca96e55  r770-offline-fetch.sh
 6667ba671bfea53783801e3a9457ff84bbf1686f541b6349fdcdaa59617d1b08  r770-staging-preflight.sh

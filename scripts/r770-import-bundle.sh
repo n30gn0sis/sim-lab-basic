@@ -11,6 +11,7 @@
 #   apt          local flat repo at /srv/repo/apt, sources rewritten   (GATED)
 #   phone-home   unattended-upgrades, snapd, motd-news neutralised      (GATED)
 #   docker       docker-ce from the local repo, daemon asserted         (GATED)
+#   storage      read-only: where `docker load` will write, and whether it fits
 #   files        VM images, GNS3 definitions/appliances, enrichment, docs
 #   status       what has landed so far
 #
@@ -36,6 +37,10 @@ set -uo pipefail
 LVS="/var/lib/docker /data/pcap /data/index /data/staging /srv/vms /srv/gns3 /srv/work /srv/backup"
 PHONE_HOME_UNITS="unattended-upgrades.service apt-daily.timer apt-daily-upgrade.timer ua-timer.timer motd-news.timer fwupd-refresh.timer"
 DOCKER_PKGS="docker-ce docker-ce-cli containerd.io docker-compose-plugin"
+# Everything the kit's own steps require_pkg, installed by the apt stage from the
+# bundle's repo (they ship in its apt/). Found 2026-10-03: nothing installed them,
+# so a fresh R770 died at gns3's venv; staging had stood them in by hand.
+BASE_PKGS="python3-venv python3-pip-whl python3-ruamel.yaml python3-dotenv easy-rsa nginx ubridge"
 
 BUNDLE=""; MEDIA=""; DEVICE=""
 usage() { usage_from_header 3; exit 0; }
@@ -174,6 +179,8 @@ apt_proposed() {
     echo "sources.list.d/r770-local.list:"
     echo "    deb [trusted=yes] file:/srv/repo/apt ./"
     echo "then: apt-get update — must contact file:/srv/repo/apt and nothing else"
+    echo "then: apt-get install -y, from that repo only, whichever of these are missing:"
+    echo "    $BASE_PKGS"
 }
 cmd_apt() {
     banner "apt — point the box at the local repo"
@@ -233,6 +240,22 @@ cmd_apt() {
     else
         pass "apt-get update contacted only file:/srv/repo/apt"
     fi
+
+    local p missing=""
+    for p in $BASE_PKGS; do dpkg -s "$p" >/dev/null 2>&1 || missing="$missing $p"; done
+    missing=${missing# }
+    if [ -z "$missing" ]; then
+        pass "base packages already installed: $BASE_PKGS"
+    elif [ "$DRY" = "1" ]; then
+        note "dry run: would install from the local repo: $missing"
+    else
+        # shellcheck disable=SC2086  # one argument per package, on purpose
+        if run apt-get install -y $missing; then
+            pass "base packages installed from the local repo: $missing"
+        else
+            fail "base packages could not be installed from file:/srv/repo/apt: $missing — check the bundle's apt/ carries them"
+        fi
+    fi
     footer "apt"
 }
 
@@ -281,6 +304,68 @@ cmd_phone_home() {
 }
 
 # ── docker ───────────────────────────────────────────────────────────────────
+# image_store_check <bundle-dir> — where `docker load` will actually write.
+# With the containerd image store (the default on a fresh Docker 29 install)
+# image content lands in /var/lib/containerd, NOT under the data root asserted
+# by the docker step — so a guarded /var/lib/docker LV can pass while the root
+# filesystem fills (staging VM 9770, 2026-09-29). Reads `docker info`, findmnt
+# and df only; it never moves, prunes or reconfigures anything. The remedy is
+# a storage-layout decision, so it is printed, never applied.
+# CONTAINERD_EXPANSION_PCT: on-disk bytes per archive byte, measured on VM
+# 9770 2026-10-03 — /var/lib/containerd 24291046646 B after loading
+# bundle-20260929's archives (7669955661 B in all) = 317%.
+CONTAINERD_EXPANSION_PCT=317
+# archive_loaded <archive> <loaded-tags> — true when the image list beside the
+# archive names at least one tag and every one of them is already loaded.
+archive_loaded() {
+    local list t n=0
+    list=$(find "$(dirname "$1")" -maxdepth 1 -name '*image-list.txt' | head -1)
+    [ -s "$list" ] || return 1
+    while IFS= read -r t; do
+        n=$((n + 1))
+        printf '%s\n' "$2" | grep -qxF -- "$(image_norm "$t")" || return 1
+    done < <(grep -vE '^[[:space:]]*(#|$)' "$list")
+    [ "$n" -gt 0 ]
+}
+image_store_check() {
+    local b=$1 status mp avail_kb need bytes=0 f loaded
+    status=$(docker info --format '{{json .DriverStatus}}' 2>/dev/null || true)
+    case "$status" in
+        "") skip "image store: docker is not answering — the docker step checks this again once the engine is installed"; return 0 ;;
+        *io.containerd.snapshotter*) ;;
+        *) pass "image store is the data root (no containerd snapshotter) — covered by the data-root check"; return 0 ;;
+    esac
+    mp=$(findmnt -n -o TARGET -T /var/lib/containerd 2>/dev/null || true)
+    if [ "$mp" = /var/lib/containerd ]; then pass "image store /var/lib/containerd is on its own mount"; return 0; fi
+    if [ "$mp" = /var/lib/docker ]; then pass "image store /var/lib/containerd is on the docker volume (/var/lib/docker)"; return 0; fi
+    # An archive counts unless every tag its own image list names is already in
+    # docker (a re-entry, or an earlier pipeline loaded it). Nothing else held by
+    # containerd lowers the need: other images may not overlap this bundle's.
+    loaded=$(docker_loaded_images)
+    for f in "$b"/*/*images*.tar.gz "$b"/*/*/*images*.tar.gz; do
+        [ -f "$f" ] || continue
+        if archive_loaded "$f" "$loaded"; then note "already loaded, not counted: ${f#"$b"/}"; continue; fi
+        bytes=$(( bytes + $(stat -c %s "$f") ))
+    done
+    need=$(( bytes * CONTAINERD_EXPANSION_PCT * 120 / 10000 ))   # x317% x120% headroom
+    avail_kb=$(df -Pk "${mp:-/}" 2>/dev/null | awk 'NR == 2 {print $4}')
+    avail_kb=${avail_kb:-0}
+    if [ $(( avail_kb * 1024 )) -ge "$need" ]; then
+        warn "image store /var/lib/containerd is on ${mp:-?} (not its own volume, not the docker LV): needs ~$(( need / 1073741824 )) GiB, $(( avail_kb / 1048576 )) GiB free — it fits, but the images live outside the guarded volume"
+    else
+        fail "image store /var/lib/containerd is on ${mp:-?} (not its own volume, not the docker LV): needs ~$(( need / 1073741824 )) GiB, only $(( avail_kb / 1048576 )) GiB free — loading would fill it"
+    fi
+    note "remedy (a storage-layout decision — choose one, then rerun this step):"
+    note "  1. mount a volume at /var/lib/containerd (stop docker and containerd first), then: findmnt /var/lib/containerd"
+    note "  2. or turn the containerd image store off — /etc/docker/daemon.json: {\"features\": {\"containerd-snapshotter\": false}} — restart docker, then: docker info --format '{{json .DriverStatus}}'"
+}
+
+cmd_storage() {
+    banner "storage — where docker load will write, and whether it fits"
+    image_store_check "$(bundle_dir "$BUNDLE")"
+    footer "storage"
+}
+
 dk_current() {
     printf '    docker-ce: %s\n' "$(dpkg -s docker-ce 2>/dev/null | awk '/^Version:/{print $2}' || true)"
     echo "    candidate from the local repo:"
@@ -318,6 +403,7 @@ cmd_docker() {
     proxy=$(docker info --format '{{.HTTPProxy}}{{.HTTPSProxy}}' 2>/dev/null || true)
     if [ -z "$proxy" ]; then pass "no proxy configured in the daemon"; else fail "daemon proxy configured: $proxy — remove the drop-in; nothing should try to leave"; fi
     pass "docker $(docker info --format '{{.ServerVersion}}' 2>/dev/null || echo '?') responding"
+    image_store_check "$(bundle_dir "$BUNDLE")"
     footer "docker"
 }
 
@@ -457,6 +543,7 @@ case "$SUB" in
     apt)        cmd_apt ;;
     phone-home) cmd_phone_home ;;
     docker)     cmd_docker ;;
+    storage)    cmd_storage ;;
     files)      cmd_files ;;
     status)     cmd_status ;;
     -h|--help|help|"") usage ;;
