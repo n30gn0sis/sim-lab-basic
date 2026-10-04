@@ -273,3 +273,50 @@ EOF
     [[ "$output" == *"gns3"*"done"* ]]
     [[ "$output" == *"docs"*"not yet"* ]]
 }
+
+# the import stub's copy lands a local bundle whose kit/ installer only records how it was called
+copy_lands_kit() {
+    stub import-stub 'echo "import $*" >> "$STUB_LOG"
+if [ "$1" = copy ]; then
+  d="$KIT_ROOT/srv/bundles/bundle-fixture/kit/scripts"; mkdir -p "$d"
+  printf "#!/usr/bin/env bash\necho \"handoff \$* logdir=\$INSTALL_LOGDIR\" >> \"%s\"\n" "$STUB_LOG" > "$d/r770-install.sh"; chmod +x "$d/r770-install.sh"
+fi'
+}
+
+@test "import from the media: preflight, gate with media and device, copy WITHOUT media, then exec the local copy from gns3" {
+    good_conf; copy_lands_kit
+    run inst run --conf "$CONF" --yes
+    echo "$output"
+    [ "$status" -eq 0 ]
+    run cat "$STUB_LOG"
+    [ "${lines[0]}" = "import preflight --bundle $BUNDLE" ]
+    [ "${lines[1]}" = "import gate --bundle $BUNDLE --media /media/usb --device /dev/sdb1" ]
+    [ "${lines[2]}" = "import copy --bundle $BUNDLE" ]
+    [[ "${lines[3]}" == "handoff run --from gns3 --conf $CONF --yes --non-interactive logdir=$KIT_EVIDENCE_DIR/install-"* ]]
+    [ "${#lines[@]}" -eq 4 ]
+}
+
+@test "--to import stops after the copy: no hand-off" {
+    good_conf; copy_lands_kit
+    run inst run --conf "$CONF" --yes --to import
+    [ "$status" -eq 0 ]
+    ! grep -q '^handoff' "$STUB_LOG"
+}
+
+@test "a copied bundle with no kit/ installer is a FAIL that says how the bundle was cut" {
+    good_conf
+    run inst run --conf "$CONF" --yes
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"KIT_SRC_ROOT"* ]]
+}
+
+@test "already running from the local copy: import continues in-process, no exec" {
+    good_conf
+    local kit="$ROOT/srv/bundles/bundle-fixture/kit"
+    mkdir -p "$kit"; cp -r "$BATS_TEST_DIRNAME/../scripts" "$kit/"
+    run kit_run "$kit/scripts/r770-install.sh" run --conf "$CONF" --yes --to gns3
+    echo "$output"
+    [ "$status" -eq 0 ]
+    grep -qx "gns3 full --bundle $ROOT/srv/bundles/bundle-fixture" "$STUB_LOG"
+}

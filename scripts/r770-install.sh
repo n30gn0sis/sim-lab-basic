@@ -283,6 +283,11 @@ step_body() {  # step_body <step> — the children of one step
     local lb s a; lb=$(local_bundle)
     local -a args
     case "$1" in
+        import)
+                 run_step import logged import-preflight "$IMPORT" preflight --bundle "$CONF_BUNDLE"
+                 run_step import logged import-gate "$IMPORT" gate --bundle "$CONF_BUNDLE" --media "$CONF_MEDIA" --device "$CONF_DEVICE"
+                 # no --media: copy would unmount it, and this script is running from it
+                 run_step import logged import-copy "$IMPORT" copy --bundle "$CONF_BUNDLE" ;;
         gns3)    run_step gns3 logged gns3 "$GNS3" full --bundle "$lb" ;;
         malcolm) run_step malcolm logged malcolm "$MALCOLM" full --bundle "$lb" --capture-ifs "$CONF_CAPTURE_IFS" ;;
         docs)    run_step docs logged docs "$DOCS" full --bundle "$lb" ;;
@@ -296,6 +301,24 @@ step_body() {  # step_body <step> — the children of one step
                  run_step validate logged validate "$VALIDATE" "${args[@]}" --out "$LOGDIR" ;;
         e2e)     run_step e2e logged e2e "$E2E" --bundle "$lb" --capture-ifs "$CONF_CAPTURE_IFS" --lab-bridge "$CONF_LAB_BRIDGE" --skip-validate --out "$LOGDIR" ;;
     esac
+}
+# handoff <next-step> — carry on in the local copy's own installer, so
+# nothing holds the media (bash marks its script descriptor close-on-exec).
+handoff() {
+    local next=$1 me there
+    local -a args
+    there="$(p /srv/bundles)/$(basename "$CONF_BUNDLE")/kit/scripts/r770-install.sh"
+    me="$(cd "$KIT_DIR/scripts" && pwd -P)/r770-install.sh"
+    [ -x "$there" ] || die "the copied bundle has no kit/scripts/r770-install.sh — it was cut without the kit (set KIT_SRC_ROOT at cut time); cut again, or run the pipelines by hand"
+    [ "$(cd "$(dirname "$there")" && pwd -P)/r770-install.sh" = "$me" ] && return 0
+    args=(run --from "$next" --conf "$CONF_PATH")
+    [ -n "$TO" ] && args+=(--to "$TO")
+    [ "${KIT_YES:-0}" = "1" ] && args+=(--yes)
+    [ "${KIT_NON_INTERACTIVE:-0}" = "1" ] && args+=(--non-interactive)
+    note "handing off to the local copy: $there ${args[*]}"
+    export INSTALL_LOGDIR="$LOGDIR"
+    trap - EXIT
+    exec "$there" "${args[@]}"
 }
 cmd_run() {
     need_root
@@ -322,6 +345,7 @@ cmd_run() {
         esac
         stamp "install.$step"
         CUR=""
+        if [ "$step" = import ] && [ "$i" -lt "$last" ]; then handoff "${STEPS[$((i + 1))]}"; fi
     done
     on_exit   # a no-op here (no step is running); the EXIT trap does the same for a run cut short
     # shellcheck disable=SC2086  # word-split the space-separated step list on purpose
