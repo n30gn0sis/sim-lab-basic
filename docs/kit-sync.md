@@ -128,3 +128,14 @@ is asserted against those tools' `--help` before use.
   `r770-lab-ca.sh`, `r770-malcolm-deploy.sh`), a second R770 deploy path
   beside this kit's `scripts/`. Whether to port them depends on which path
   is canonical; until that is decided they are recorded here, not copied.
+
+## Cutting a bundle that carries this kit (since 2026-10)
+
+The build repo's fetch has a `kit` stage: it copies this repo's tracked,
+committed `scripts/ config/ scenarios/ docs/` at `HEAD` into `bundle-*/kit/`
+and records the commit in `kit/KIT_COMMIT`. It has no default source. Order:
+
+1. Merge and push this kit; note the commit.
+2. On the staging host: `KIT_SRC_ROOT=<a checkout of this kit at that commit> SITE_SRC_ROOT=<simlab-build checkout> ./staging/r770-build-bundle.sh`.
+   A packed builder carries the kit when `KIT_SRC_ROOT` is set at `--pack` time.
+3. The build's strict gate fails a bundle without `kit/scripts/r770-install.sh`.

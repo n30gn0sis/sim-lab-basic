@@ -64,6 +64,30 @@ lsblk -o NAME,SIZE,FSTYPE,LABEL,MOUNTPOINT      # identify the media — never a
 
 ---
 
+## The installer: one run, from the media to a proven lab
+
+Every bundle cut since 2026-10 carries this kit at `kit/` (manifest-covered,
+so step 0's verify proves it). With Ubuntu 24.04 installed and the media
+mounted:
+
+```bash
+sudo <media>/<bundle>/kit/scripts/r770-install.sh discover   # what this host has; writes /etc/lab/install.conf.template
+sudo <media>/<bundle>/kit/scripts/r770-install.sh wizard     # or fill the template by hand and save it as /etc/lab/install.conf
+sudo <media>/<bundle>/kit/scripts/r770-install.sh plan       # every gated change under --dry-run, in one review
+sudo <media>/<bundle>/kit/scripts/r770-install.sh run --yes  # import, gns3, malcolm, docs, portal, dashboards, validate, e2e
+```
+
+`run` imports the bundle, then carries on in the local copy
+(`/srv/bundles/<bundle>/kit/scripts/r770-install.sh`). After a failure,
+rerun **that** copy with `run --yes --from <step>`. INSTALLED means every
+step was clean and `scripts/r770-e2e.sh` proved every scenario in Malcolm;
+anything less is NOT INSTALLED with the step to look at. The summary lands
+in `r770-evidence/install-<host>-<ts>.md`. The last action is
+`umount <media>`, as the summary prints.
+
+The per-pipeline procedures below stay as the reference for what each step
+does, and for running one by hand.
+
 ## The short path: one command per pipeline
 
 ```bash
