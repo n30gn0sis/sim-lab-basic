@@ -53,8 +53,10 @@ checking that category. `seed()` also never reuses a prior bundle's
 monitoring tarball (it may predate the trim), and stage 4 is labelled "Docs
 build image".
 
-**How a resync handles it** (last done 2026-09-27, from `simlab-build`
-`6ee96d2`, the merge of PR #11 — the stage-4 relabel now reads `[4/11]`): copy all four scripts from the build repo's commit, then reapply
+**How a resync handles it** (last done 2026-10-03, from `simlab-build`
+`4e13d82` on branch `claude/kit-in-bundle` — the kit stage, PR pending; before
+that 2026-09-27 from `6ee96d2` — the stage-4 relabel reads `[4/11]`; the diff
+is taken against the previously recorded commit and `patch`ed onto the new one): copy all four scripts from the build repo's commit, then reapply
 exactly this divergence to `r770-offline-fetch.sh` — its header says so, and
 `diff` against the upstream file shows only these hunks. Record the commit in
 `staging/PROVENANCE.txt` and regenerate the four hashes; the other three

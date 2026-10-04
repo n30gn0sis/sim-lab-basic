@@ -74,6 +74,11 @@ fake_build_repo() {
         mkdir -p "$B/site/$(dirname "$sc")"; echo '#!/bin/sh' > "$B/site/$sc"
     done
     [ -s "$B/site/scripts/r770-bundle.sh" ]
+    # and what its kit stage ships: this kit, which the verifier also requires
+    for f in $(sed -n 's/^KIT_REQUIRED_FILES=(\(.*\))$/\1/p' staging/r770-bundle.sh); do
+        mkdir -p "$B/kit/$(dirname "$f")"; echo '#!/bin/sh' > "$B/kit/$f"
+    done
+    [ -s "$B/kit/scripts/r770-install.sh" ]
     run ./staging/r770-bundle.sh manifest "$B"
     echo "$output"
     [ "$status" -eq 0 ]
