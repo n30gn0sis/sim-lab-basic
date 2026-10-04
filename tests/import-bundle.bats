@@ -146,6 +146,35 @@ import() { kit_run "$SCRIPT" "$@"; }
     [ -f "$ROOT/etc/apt/sources.list.d/ubuntu.list" ]
 }
 
+@test "apt installs the kit's missing base packages from the local repo only, and names them in the gate" {
+    stub apt-get 'echo "apt-get $*" >> "$STUB_LOG"; echo "Get:2 file:/srv/repo/apt ./ Packages [1 kB]"'
+    stub dpkg 'case "$*" in "-s snapd"|"-s python3-venv"|"-s ubridge") exit 1;; *) exit 0;; esac'
+    run import apt --bundle "$BUNDLE"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"-- proposed --"*"python3-venv"*"ubridge"* ]]
+    grep -qx "apt-get install -y python3-venv ubridge" "$STUB_LOG"
+    [[ "$output" == *"PASS  base packages installed from the local repo: python3-venv ubridge"* ]]
+}
+
+@test "apt: base packages already present are a PASS and nothing is installed" {
+    stub apt-get 'echo "apt-get $*" >> "$STUB_LOG"; echo "Get:2 file:/srv/repo/apt ./ Packages [1 kB]"'
+    run import apt --bundle "$BUNDLE"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    ! grep -q '^apt-get install' "$STUB_LOG"
+    [[ "$output" == *"PASS  base packages already installed"* ]]
+}
+
+@test "apt: a base package the local repo cannot supply is a FAIL naming it" {
+    stub apt-get 'echo "apt-get $*" >> "$STUB_LOG"; case "$1" in install) echo "E: Unable to locate package ubridge"; exit 100;; *) echo "Get:2 file:/srv/repo/apt ./ Packages [1 kB]";; esac'
+    stub dpkg 'case "$*" in "-s snapd"|"-s ubridge") exit 1;; *) exit 0;; esac'
+    run import apt --bundle "$BUNDLE"
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"FAIL  base packages"*"ubridge"* ]]
+}
+
 @test "apt refuses a bundle whose flat-repo index is missing" {
     rm "$BUNDLE/apt/Packages.gz"
     run import apt --bundle "$BUNDLE"

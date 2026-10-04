@@ -37,6 +37,10 @@ set -uo pipefail
 LVS="/var/lib/docker /data/pcap /data/index /data/staging /srv/vms /srv/gns3 /srv/work /srv/backup"
 PHONE_HOME_UNITS="unattended-upgrades.service apt-daily.timer apt-daily-upgrade.timer ua-timer.timer motd-news.timer fwupd-refresh.timer"
 DOCKER_PKGS="docker-ce docker-ce-cli containerd.io docker-compose-plugin"
+# Everything the kit's own steps require_pkg, installed by the apt stage from the
+# bundle's repo (they ship in its apt/). Found 2026-10-03: nothing installed them,
+# so a fresh R770 died at gns3's venv; staging had stood them in by hand.
+BASE_PKGS="python3-venv python3-pip-whl python3-ruamel.yaml python3-dotenv easy-rsa nginx ubridge"
 
 BUNDLE=""; MEDIA=""; DEVICE=""
 usage() { usage_from_header 3; exit 0; }
@@ -175,6 +179,8 @@ apt_proposed() {
     echo "sources.list.d/r770-local.list:"
     echo "    deb [trusted=yes] file:/srv/repo/apt ./"
     echo "then: apt-get update — must contact file:/srv/repo/apt and nothing else"
+    echo "then: apt-get install -y, from that repo only, whichever of these are missing:"
+    echo "    $BASE_PKGS"
 }
 cmd_apt() {
     banner "apt — point the box at the local repo"
@@ -233,6 +239,22 @@ cmd_apt() {
         footer "apt"
     else
         pass "apt-get update contacted only file:/srv/repo/apt"
+    fi
+
+    local p missing=""
+    for p in $BASE_PKGS; do dpkg -s "$p" >/dev/null 2>&1 || missing="$missing $p"; done
+    missing=${missing# }
+    if [ -z "$missing" ]; then
+        pass "base packages already installed: $BASE_PKGS"
+    elif [ "$DRY" = "1" ]; then
+        note "dry run: would install from the local repo: $missing"
+    else
+        # shellcheck disable=SC2086  # one argument per package, on purpose
+        if run apt-get install -y $missing; then
+            pass "base packages installed from the local repo: $missing"
+        else
+            fail "base packages could not be installed from file:/srv/repo/apt: $missing — check the bundle's apt/ carries them"
+        fi
     fi
     footer "apt"
 }
