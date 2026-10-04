@@ -320,3 +320,41 @@ fi'
     [ "$status" -eq 0 ]
     grep -qx "gns3 full --bundle $ROOT/srv/bundles/bundle-fixture" "$STUB_LOG"
 }
+
+@test "plan: the storage check, then every gated step under --dry-run; read-only steps are listed, not run" {
+    good_conf
+    unset KIT_YES
+    stub gns3-stub 'echo "gns3 $* yes=${KIT_YES:-} dry=${KIT_DRY_RUN:-}" >> "$STUB_LOG"'
+    run inst plan --conf "$CONF"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    plan_out=$output
+    run cat "$STUB_LOG"
+    [ "${lines[0]}" = "import storage --bundle $BUNDLE" ]
+    [ "${lines[1]}" = "import gate --bundle $BUNDLE --media /media/usb --device /dev/sdb1 --dry-run" ]
+    [ "${lines[2]}" = "import copy --bundle $BUNDLE --dry-run" ]
+    [ "${lines[3]}" = "gns3 full --bundle $BUNDLE --dry-run yes=1 dry=1" ]
+    [ "${lines[4]}" = "malcolm full --bundle $BUNDLE --capture-ifs lab_mirror0 --dry-run" ]
+    [ "${lines[5]}" = "docs full --bundle $BUNDLE --dry-run" ]
+    [ "${lines[6]}" = "portal ca --dry-run" ]
+    [ "${lines[9]}" = "portal nginx --dry-run" ]
+    [ "${#lines[@]}" -eq 10 ]
+    [[ "$plan_out" == *"dashboards"*"after Malcolm is up"* ]]
+    [[ "$plan_out" == *"e2e"*"read-only"* ]]
+}
+
+@test "plan reports a child's refusal as FAIL, never PASS (e.g. Malcolm before labnet exists)" {
+    good_conf; echo 1 > "$T/rc-malcolm"
+    run inst plan --conf "$CONF"
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"FAIL  malcolm"* ]]
+    grep -q '^docs ' "$STUB_LOG"     # plan reviews everything; it does not stop at the first refusal
+}
+
+@test "plan refuses a bad install.conf before any child runs" {
+    good_conf; sed -i 's#^DEVICE=.*#DEVICE=/dev/sdX#' "$CONF"
+    run inst plan --conf "$CONF"
+    [ "$status" -eq 1 ]
+    [ ! -s "$STUB_LOG" ]
+}

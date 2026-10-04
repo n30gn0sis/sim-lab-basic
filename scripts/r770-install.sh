@@ -369,6 +369,36 @@ cmd_status() {
     footer "status"
 }
 
+# ── plan ─────────────────────────────────────────────────────────────────────
+# Every gated change, once, under --dry-run. The children get KIT_YES so each
+# gate prints current/proposed/rollback and goes on to print what it would do
+# — nothing executes under dry-run. A refusal is a FAIL row and the review
+# carries on, so the operator sees everything in one pass.
+plan_child() {  # plan_child <label> <cmd...>
+    local label=$1 rc=0; shift
+    KIT_YES=1 KIT_NON_INTERACTIVE=1 KIT_DRY_RUN=1 "$@" || rc=$?
+    case "$rc" in
+        0) pass "$label: would apply cleanly" ;;
+        2) warn "$label: would apply with warnings (above)" ;;
+        *) fail "$label: refused under --dry-run (above) — fix before run" ;;
+    esac
+}
+cmd_plan() {
+    banner "plan — every change this install would make; nothing is applied"
+    conf_ready
+    local b=$CONF_BUNDLE s
+    plan_child "storage" "$IMPORT" storage --bundle "$b"
+    plan_child "import gate" "$IMPORT" gate --bundle "$b" --media "$CONF_MEDIA" --device "$CONF_DEVICE" --dry-run
+    plan_child "import copy" "$IMPORT" copy --bundle "$b" --dry-run
+    plan_child "gns3" "$GNS3" full --bundle "$b" --dry-run
+    plan_child "malcolm" "$MALCOLM" full --bundle "$b" --capture-ifs "$CONF_CAPTURE_IFS" --dry-run
+    plan_child "docs" "$DOCS" full --bundle "$b" --dry-run
+    for s in ca cert htpasswd nginx; do plan_child "portal $s" "$PORTAL" "$s" --dry-run; done
+    note "dashboards: installs saved objects and Arkime views after Malcolm is up — idempotent, not gated"
+    note "validate, e2e: read-only checks and the scenario run — nothing to review; they prove the result"
+    footer "plan"
+}
+
 # ── arguments ────────────────────────────────────────────────────────────────
 [ $# -gt 0 ] || usage
 SUB=$1; shift
@@ -388,6 +418,7 @@ kit_init "r770-install"
 case "$SUB" in
     discover) cmd_discover ;;
     wizard)   cmd_wizard ;;
+    plan)     cmd_plan ;;
     run)      cmd_run ;;
     status)   cmd_status ;;
     -h|--help|help) usage ;;
