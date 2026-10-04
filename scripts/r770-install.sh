@@ -244,6 +244,107 @@ EOF
     footer "wizard"
 }
 
+# ── run ──────────────────────────────────────────────────────────────────────
+LOGDIR=""; CUR=""
+local_bundle() {  # after import's copy, the bundle lives under /srv/bundles
+    local l; l="$(p /srv/bundles)/$(basename "$CONF_BUNDLE")"
+    if [ -d "$l" ]; then printf '%s' "$l"; else printf '%s' "$CONF_BUNDLE"; fi
+}
+summary_row() {  # summary_row <step> <PASS|WARN|FAIL> <detail>
+    printf '| %s | %s | %s |\n' "$1" "$2" "$3" >> "$LOGDIR.md"
+}
+summary_open() {
+    [ -s "$LOGDIR.md" ] && return 0
+    {
+        echo "# Install — $(hostname -s 2>/dev/null || echo host) — $(date -Is)"
+        echo
+        echo "Bundle: \`$CONF_BUNDLE\` · answers: \`$CONF_PATH\` · each step's output: \`$LOGDIR/\`"
+        echo
+        echo "| Step | Verdict | Detail |"
+        echo "|---|---|---|"
+    } > "$LOGDIR.md"
+}
+# logged <name> <cmd...> — a child's output to the terminal and to $LOGDIR/<name>.log
+# shellcheck disable=SC2317  # reached only through run_step "$@", which shellcheck cannot follow
+logged() {
+    local name=$1; shift
+    "$@" 2>&1 | tee -a "$LOGDIR/$name.log"
+    return "${PIPESTATUS[0]}"
+}
+on_exit() {
+    local rc=$? why
+    [ -n "$CUR" ] || return 0
+    why="see $LOGDIR/$CUR*.log"
+    [ "$rc" = 130 ] && why="interrupted"
+    summary_row "$CUR" FAIL "$why — fix it, then: r770-install.sh run --yes --from $CUR"
+    printf '\nNOT INSTALLED — %s at %s; rerun with --from %s\n' "$why" "$CUR" "$CUR" >> "$LOGDIR.md"
+}
+step_body() {  # step_body <step> — the children of one step
+    local lb s a; lb=$(local_bundle)
+    local -a args
+    case "$1" in
+        gns3)    run_step gns3 logged gns3 "$GNS3" full --bundle "$lb" ;;
+        malcolm) run_step malcolm logged malcolm "$MALCOLM" full --bundle "$lb" --capture-ifs "$CONF_CAPTURE_IFS" ;;
+        docs)    run_step docs logged docs "$DOCS" full --bundle "$lb" ;;
+        portal)  for s in ca cert htpasswd nginx; do run_step portal logged "portal-$s" "$PORTAL" "$s"; done ;;
+        dashboards)
+                 run_step dashboards logged dashboards "$MALCOLM" dashboards
+                 run_step dashboards logged arkime-views "$MALCOLM" arkime-views ;;
+        validate)
+                 args=(--capture-ifs "$CONF_CAPTURE_IFS" --lab-bridge "$CONF_LAB_BRIDGE" --mgmt-if "$CONF_MGMT_IF" --mgmt-cidr "$CONF_MGMT_CIDR")
+                 for a in $CONF_VALIDATE_AREAS; do args+=(--area "$a"); done
+                 run_step validate logged validate "$VALIDATE" "${args[@]}" --out "$LOGDIR" ;;
+        e2e)     run_step e2e logged e2e "$E2E" --bundle "$lb" --capture-ifs "$CONF_CAPTURE_IFS" --lab-bridge "$CONF_LAB_BRIDGE" --skip-validate --out "$LOGDIR" ;;
+    esac
+}
+cmd_run() {
+    need_root
+    conf_ready
+    local first=0 last=$(( ${#STEPS[@]} - 1 )) i step verdict rc=0 warned
+    [ -z "$FROM" ] || first=$(step_index STEPS "$FROM") || die "unknown step: $FROM (steps: ${STEPS[*]})"
+    [ -z "$TO" ]   || last=$(step_index STEPS "$TO")    || die "unknown step: $TO (steps: ${STEPS[*]})"
+    [ "$first" -le "$last" ] || die "--from $FROM comes after --to $TO"
+    if [ "${KIT_YES:-0}" = "1" ]; then KIT_NON_INTERACTIVE=1; export KIT_NON_INTERACTIVE; fi
+    LOGDIR="${INSTALL_LOGDIR:-${KIT_EVIDENCE_DIR:-$PWD/r770-evidence}/install-$(hostname -s 2>/dev/null || echo host)-$(date +%Y%m%d-%H%M%S)}"
+    mkdir -p "$LOGDIR" || die "cannot create $LOGDIR"
+    summary_open
+    trap on_exit EXIT
+    trap 'exit 130' INT TERM
+    WARNED_STEPS=""
+    for i in $(seq "$first" "$last"); do
+        step=${STEPS[$i]}
+        banner "$(( i + 1 ))/${#STEPS[@]}  $step"
+        CUR=$step
+        step_body "$step"
+        case " $WARNED_STEPS " in
+            *" $step "*) summary_row "$step" WARN "warnings accepted via --yes — disposition each ($LOGDIR/$step*.log)" ;;
+            *)           summary_row "$step" PASS "clean" ;;
+        esac
+        stamp "install.$step"
+        CUR=""
+    done
+    on_exit   # a no-op here (no step is running); the EXIT trap does the same for a run cut short
+    # shellcheck disable=SC2086  # word-split the space-separated step list on purpose
+    warned=$(printf '%s\n' $WARNED_STEPS | awk 'NF && !seen[$0]++' | tr '\n' ' ')
+    if [ -n "$warned" ]; then verdict="NOT INSTALLED — finished with warnings from: ${warned% }; disposition each, then rerun with --from <step>"; rc=2
+    elif [ "$last" -lt $(( ${#STEPS[@]} - 1 )) ]; then verdict="steps ${STEPS[$first]}..${STEPS[$last]} clean — not INSTALLED until e2e has run"
+    else verdict="INSTALLED — every step clean and the lab proven end to end"; fi
+    { echo; echo "$verdict"; echo; echo "Last step for the operator: remove the media — umount ${CONF_MEDIA}"; } >> "$LOGDIR.md"
+    echo; echo "$verdict"; note "summary: $LOGDIR.md"; note "remove the media: umount ${CONF_MEDIA}"
+    exit "$rc"
+}
+
+# ── status ───────────────────────────────────────────────────────────────────
+cmd_status() {
+    banner "status — the installer's steps on this host"
+    local s
+    for s in "${STEPS[@]}"; do
+        if stamped "install.$s"; then printf '  %-11s done (%s)\n' "$s" "$(cat "$STAMP_DIR/install.$s")"
+        else printf '  %-11s not yet\n' "$s"; fi
+    done
+    footer "status"
+}
+
 # ── arguments ────────────────────────────────────────────────────────────────
 [ $# -gt 0 ] || usage
 SUB=$1; shift
@@ -263,7 +364,8 @@ kit_init "r770-install"
 case "$SUB" in
     discover) cmd_discover ;;
     wizard)   cmd_wizard ;;
-    run)      need_root; conf_ready; die "run: not implemented yet" ;;
+    run)      cmd_run ;;
+    status)   cmd_status ;;
     -h|--help|help) usage ;;
     *)        die "unknown subcommand: $SUB (try --help)" ;;
 esac

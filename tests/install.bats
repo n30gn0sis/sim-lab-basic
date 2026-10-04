@@ -168,3 +168,108 @@ EOF
     [ "$status" -eq 1 ]
     [ ! -e "$CONF" ]
 }
+
+@test "run --from gns3: every step calls its entry point with install.conf's values, in order, and ends INSTALLED" {
+    good_conf
+    run inst run --conf "$CONF" --yes --from gns3
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"INSTALLED"* ]]; [[ "$output" != *"NOT INSTALLED"* ]]
+    logdir=$(ls -d "$KIT_EVIDENCE_DIR"/install-*/ | head -1); logdir=${logdir%/}
+    run cat "$STUB_LOG"
+    [ "${lines[0]}" = "gns3 full --bundle $BUNDLE" ]
+    [ "${lines[1]}" = "malcolm full --bundle $BUNDLE --capture-ifs lab_mirror0" ]
+    [ "${lines[2]}" = "docs full --bundle $BUNDLE" ]
+    [ "${lines[3]}" = "portal ca" ]
+    [ "${lines[4]}" = "portal cert" ]
+    [ "${lines[5]}" = "portal htpasswd" ]
+    [ "${lines[6]}" = "portal nginx" ]
+    [ "${lines[7]}" = "malcolm dashboards" ]
+    [ "${lines[8]}" = "malcolm arkime-views" ]
+    [ "${lines[9]}" = "validate --capture-ifs lab_mirror0 --lab-bridge br-lab --mgmt-if eno1 --mgmt-cidr 192.168.4.0/24 --out $logdir" ]
+    [ "${lines[10]}" = "e2e --bundle $BUNDLE --capture-ifs lab_mirror0 --lab-bridge br-lab --skip-validate --out $logdir" ]
+    grep -q '^| e2e | PASS |' "$logdir.md"
+    grep -q '^INSTALLED' "$logdir.md"
+    grep -q 'umount /media/usb' "$logdir.md"
+}
+
+@test "run passes VALIDATE_AREAS as one --area per area, and the local bundle copy once it exists" {
+    good_conf; echo 'VALIDATE_AREAS=network gns3' >> "$CONF"
+    mkdir -p "$ROOT/srv/bundles/bundle-fixture"
+    run inst run --conf "$CONF" --yes --from validate
+    echo "$output"
+    [ "$status" -eq 0 ]
+    grep -q -- '--area network --area gns3' "$STUB_LOG"
+    grep -q "^e2e --bundle $ROOT/srv/bundles/bundle-fixture " "$STUB_LOG"
+}
+
+@test "the first FAIL stops the run, names the step to rerun with --from, and lands in the summary" {
+    good_conf; echo 1 > "$T/rc-malcolm"
+    run inst run --conf "$CONF" --yes --from gns3
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"--from malcolm"* ]]
+    ! grep -q '^docs ' "$STUB_LOG"
+    logdir=$(ls -d "$KIT_EVIDENCE_DIR"/install-*/ | head -1); logdir=${logdir%/}
+    grep -q '^| malcolm | FAIL |' "$logdir.md"
+    grep -q '^NOT INSTALLED' "$logdir.md"
+}
+
+@test "a step that warns makes the verdict NOT INSTALLED (exit 2), never INSTALLED" {
+    good_conf; echo 2 > "$T/rc-e2e"
+    run inst run --conf "$CONF" --yes --from gns3
+    echo "$output"
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"NOT INSTALLED — finished with warnings from: e2e"* ]]
+}
+
+@test "run without --yes adds no answer: the child sees no KIT_YES and its gate decides" {
+    good_conf
+    unset KIT_YES
+    stub gns3-stub 'echo "gns3 $* yes=${KIT_YES:-}" >> "$STUB_LOG"; exit 1'
+    run inst run --conf "$CONF" --non-interactive --from gns3
+    echo "$output"
+    [ "$status" -eq 1 ]
+    grep -qx "gns3 full --bundle $BUNDLE yes=" "$STUB_LOG"
+}
+
+@test "--from/--to: a slice runs alone; a typo names the valid steps and runs nothing" {
+    good_conf
+    run inst run --conf "$CONF" --yes --from docs --to portal
+    [ "$status" -eq 0 ]
+    run cut -d' ' -f1 "$STUB_LOG"; [ "${lines[0]}" = docs ]; [ "${#lines[@]}" -eq 5 ]
+    : > "$STUB_LOG"
+    run inst run --conf "$CONF" --yes --from malcom
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"import gns3 malcolm docs portal dashboards validate e2e"* ]]
+    [ ! -s "$STUB_LOG" ]
+}
+
+@test "Ctrl-C mid-run: the summary says interrupted and names the step to rerun" {
+    good_conf
+    stub docs-stub 'echo "docs $*" >> "$STUB_LOG"; pg=$(cut -d" " -f5 /proc/$$/stat); kill -INT -- "-$pg"; sleep 2'
+    # its own session, so the stub's process-group signal reaches the installer and never bats
+    run setsid -w env PATH="$KIT_PATH" "$SCRIPT" run --conf "$CONF" --yes --from gns3
+    echo "$output"
+    [ "$status" -ne 0 ]
+    logdir=$(ls -d "$KIT_EVIDENCE_DIR"/install-*/ | head -1); logdir=${logdir%/}
+    grep -q '^| docs | FAIL | interrupted' "$logdir.md"
+    grep -q -- '--from docs' "$logdir.md"
+}
+
+@test "run again after INSTALLED: not refused, INSTALLED again (the children are idempotent)" {
+    good_conf
+    run inst run --conf "$CONF" --yes --from gns3; [ "$status" -eq 0 ]
+    run inst run --conf "$CONF" --yes --from gns3; [ "$status" -eq 0 ]
+    [[ "$output" == *"INSTALLED"* ]]
+}
+
+@test "status lists each step as done or not, from the installer's own stamps" {
+    good_conf
+    run inst run --conf "$CONF" --yes --from gns3 --to malcolm
+    run inst status
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"gns3"*"done"* ]]
+    [[ "$output" == *"docs"*"not yet"* ]]
+}
