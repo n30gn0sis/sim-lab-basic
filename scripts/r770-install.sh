@@ -39,7 +39,7 @@ set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
 
 STEPS=(import gns3 malcolm docs portal dashboards validate e2e)
-CONF_KEYS="BUNDLE MEDIA DEVICE CAPTURE_IFS LAB_BRIDGE MGMT_IF MGMT_CIDR VALIDATE_AREAS"
+CONF_KEYS="BUNDLE MEDIA DEVICE CAPTURE_IFS LAB_BRIDGE MGMT_IF MGMT_CIDR VALIDATE_AREAS INDEX_PATTERN"
 REQUIRED_KEYS="MEDIA DEVICE CAPTURE_IFS LAB_BRIDGE MGMT_IF MGMT_CIDR"
 LATE_IFS="lab_mirror0"        # created by the gns3 step's labnet, so it may not exist yet
 IMPORT="${INSTALL_IMPORT_CMD:-$KIT_DIR/scripts/r770-import-bundle.sh}"
@@ -177,6 +177,11 @@ MGMT_IF=
 MGMT_CIDR=
 # VALIDATE_AREAS: optional, space separated; empty means every area (r770-validate.sh --list)
 VALIDATE_AREAS=
+# INDEX_PATTERN: the Dashboards index pattern the kit's saved objects attach to.
+# It exists only once Malcolm is up, so it can't be discovered here: left empty,
+# the dashboards step lists the patterns and stops; fill this in, then
+# run --from dashboards. (r770-malcolm-deploy.sh inventory lists them.)
+INDEX_PATTERN=
 EOF
     pass "template written: $tpl — fill it in and save it as $CONF_PATH"
     footer "discover"
@@ -244,6 +249,7 @@ LAB_BRIDGE=$bridge
 MGMT_IF=$mgmt
 MGMT_CIDR=$cidr
 VALIDATE_AREAS=
+INDEX_PATTERN=
 EOF
     pass "written: $CONF_PATH — next: r770-install.sh plan"
     footer "wizard"
@@ -314,7 +320,8 @@ step_body() {  # step_body <step> — the children of one step
         docs)    run_step docs logged docs "$DOCS" full "${after_import[@]}" --bundle "$lb" ;;
         portal)  for s in ca cert htpasswd nginx; do run_step portal logged "portal-$s" "$PORTAL" "$s"; done ;;
         dashboards)
-                 run_step dashboards logged dashboards "$MALCOLM" dashboards
+                 args=(); [ -n "$CONF_INDEX_PATTERN" ] && args=(--index-pattern "$CONF_INDEX_PATTERN")
+                 run_step dashboards logged dashboards "$MALCOLM" dashboards "${args[@]}"
                  run_step dashboards logged arkime-views "$MALCOLM" arkime-views ;;
         validate)
                  args=(--capture-ifs "$CONF_CAPTURE_IFS" --lab-bridge "$CONF_LAB_BRIDGE" --mgmt-if "$CONF_MGMT_IF" --mgmt-cidr "$CONF_MGMT_CIDR")

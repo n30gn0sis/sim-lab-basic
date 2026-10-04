@@ -428,3 +428,15 @@ exit 0'
     grep -qx "malcolm full --bundle $BUNDLE --to unpack --dry-run" "$STUB_LOG"
     [[ "$output" == *"SKIP  malcolm configure"*"labnet"* ]]
 }
+
+@test "INDEX_PATTERN reaches the dashboards step as --index-pattern; left empty, the child decides (and refuses)" {
+    good_conf; echo 'INDEX_PATTERN=arkime_sessions3-*' >> "$CONF"
+    run inst run --conf "$CONF" --yes --from dashboards --to dashboards
+    echo "$output"
+    [ "$status" -eq 0 ]
+    grep -qx 'malcolm dashboards --index-pattern arkime_sessions3-\*' "$STUB_LOG"
+    grep -qx 'malcolm arkime-views' "$STUB_LOG"
+    : > "$STUB_LOG"; good_conf
+    run inst run --conf "$CONF" --yes --from dashboards --to dashboards
+    grep -qx 'malcolm dashboards' "$STUB_LOG"
+}
