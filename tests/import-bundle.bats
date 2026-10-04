@@ -146,6 +146,35 @@ import() { kit_run "$SCRIPT" "$@"; }
     [ -f "$ROOT/etc/apt/sources.list.d/ubuntu.list" ]
 }
 
+@test "apt installs the kit's missing base packages from the local repo only, and names them in the gate" {
+    stub apt-get 'echo "apt-get $*" >> "$STUB_LOG"; echo "Get:2 file:/srv/repo/apt ./ Packages [1 kB]"'
+    stub dpkg 'case "$*" in "-s snapd"|"-s python3-venv"|"-s ubridge") exit 1;; *) exit 0;; esac'
+    run import apt --bundle "$BUNDLE"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"-- proposed --"*"python3-venv"*"ubridge"* ]]
+    grep -qx "apt-get install -y python3-venv ubridge" "$STUB_LOG"
+    [[ "$output" == *"PASS  base packages installed from the local repo: python3-venv ubridge"* ]]
+}
+
+@test "apt: base packages already present are a PASS and nothing is installed" {
+    stub apt-get 'echo "apt-get $*" >> "$STUB_LOG"; echo "Get:2 file:/srv/repo/apt ./ Packages [1 kB]"'
+    run import apt --bundle "$BUNDLE"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    ! grep -q '^apt-get install' "$STUB_LOG"
+    [[ "$output" == *"PASS  base packages already installed"* ]]
+}
+
+@test "apt: a base package the local repo cannot supply is a FAIL naming it" {
+    stub apt-get 'echo "apt-get $*" >> "$STUB_LOG"; case "$1" in install) echo "E: Unable to locate package ubridge"; exit 100;; *) echo "Get:2 file:/srv/repo/apt ./ Packages [1 kB]";; esac'
+    stub dpkg 'case "$*" in "-s snapd"|"-s ubridge") exit 1;; *) exit 0;; esac'
+    run import apt --bundle "$BUNDLE"
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"FAIL  base packages"*"ubridge"* ]]
+}
+
 @test "apt refuses a bundle whose flat-repo index is missing" {
     rm "$BUNDLE/apt/Packages.gz"
     run import apt --bundle "$BUNDLE"
@@ -192,6 +221,80 @@ import() { kit_run "$SCRIPT" "$@"; }
     echo "$output"
     [ "$status" -eq 1 ]
     [[ "$output" == *"registry mirrors configured"* ]]
+}
+
+# ── storage — where `docker load` really writes ─────────────────────────────
+# A docker stub whose DriverStatus says the containerd snapshotter is on, and a
+# findmnt that puts /var/lib/containerd wherever $CTRD_MP says.
+snapshotter_host() {
+    stub docker 'echo "docker $*" >> "$STUB_LOG"
+case "$*" in
+  *DriverStatus*) echo "[[\"driver-type\",\"io.containerd.snapshotter.v1\"]]" ;;
+  *DockerRootDir*) echo /var/lib/docker ;; *Mirrors*) echo "[]" ;; *Proxy*) echo ;; *) echo 0.0.0-fixture ;;
+esac'
+    stub findmnt 'case "$*" in *-T\ /var/lib/containerd) echo "$CTRD_MP" ;; *-T\ *) echo "${@: -1}" ;; *) exit 1 ;; esac'
+}
+
+@test "storage: no containerd snapshotter means images live under the data root — PASS, nothing else read" {
+    run import storage --bundle "$BUNDLE"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"PASS  image store is the data root"* ]]
+}
+
+@test "storage: the containerd store on its own mount, or on the docker LV, is a PASS" {
+    snapshotter_host
+    CTRD_MP=/var/lib/containerd run import storage --bundle "$BUNDLE"
+    echo "$output"; [ "$status" -eq 0 ]
+    [[ "$output" == *"PASS  image store /var/lib/containerd is on its own mount"* ]]
+    CTRD_MP=/var/lib/docker run import storage --bundle "$BUNDLE"
+    echo "$output"; [ "$status" -eq 0 ]
+    [[ "$output" == *"on the docker volume"* ]]
+}
+
+@test "storage: on the root disk with room is a WARN that prints both remedies" {
+    snapshotter_host
+    stub df 'printf "Filesystem 1024-blocks Used Available Capacity Mounted\n/dev/sda1 400000000 1 300000000 1%% /\n"'
+    CTRD_MP=/ run import storage --bundle "$BUNDLE"
+    echo "$output"
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"WARN  image store /var/lib/containerd is on / "* ]]
+    [[ "$output" == *"mount a volume at /var/lib/containerd"* ]]
+    [[ "$output" == *"containerd-snapshotter"* ]]
+}
+
+@test "storage: on the root disk without room is a FAIL, and the docker step stops before any load" {
+    snapshotter_host
+    # the fixture archives are tiny: make one big enough that 1 KiB free is not enough
+    truncate -s 10M "$BUNDLE/malcolm/malcolm-images-0.0.0-fixture.tar.gz"
+    stub df 'printf "Filesystem 1024-blocks Used Available Capacity Mounted\n/dev/sda1 400 399 1 99%% /\n"'
+    CTRD_MP=/ run import storage --bundle "$BUNDLE"
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"FAIL  image store /var/lib/containerd is on / "* ]]
+    CTRD_MP=/ run import docker --bundle "$BUNDLE"
+    echo "$output"
+    [ "$status" -eq 1 ]
+    ! grep -q '^docker load' "$STUB_LOG"
+}
+
+@test "I4: storage counts what containerd already holds — a re-entry after the load is not a false FAIL" {
+    snapshotter_host
+    truncate -s 10M "$BUNDLE/malcolm/malcolm-images-0.0.0-fixture.tar.gz"
+    stub df 'printf "Filesystem 1024-blocks Used Available Capacity Mounted\n/dev/sda1 400 399 1 99%% /\n"'
+    stub du 'printf "40000\t/var/lib/containerd\n"'
+    CTRD_MP=/ run import storage --bundle "$BUNDLE"
+    echo "$output"
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"WARN  image store /var/lib/containerd is on / "* ]]
+}
+
+@test "storage: docker not answering yet is a SKIP, not a pass and not a failure" {
+    stub docker 'exit 1'
+    run import storage --bundle "$BUNDLE"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"SKIP  image store: docker is not answering"* ]]
 }
 
 # ── files ───────────────────────────────────────────────────────────────────

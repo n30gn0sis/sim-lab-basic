@@ -53,8 +53,10 @@ checking that category. `seed()` also never reuses a prior bundle's
 monitoring tarball (it may predate the trim), and stage 4 is labelled "Docs
 build image".
 
-**How a resync handles it** (last done 2026-09-27, from `simlab-build`
-`6ee96d2`, the merge of PR #11 — the stage-4 relabel now reads `[4/11]`): copy all four scripts from the build repo's commit, then reapply
+**How a resync handles it** (last done 2026-10-03, from `simlab-build`
+`4e13d82` on branch `claude/kit-in-bundle` — the kit stage, PR pending; before
+that 2026-09-27 from `6ee96d2` — the stage-4 relabel reads `[4/11]`; the diff
+is taken against the previously recorded commit and `patch`ed onto the new one): copy all four scripts from the build repo's commit, then reapply
 exactly this divergence to `r770-offline-fetch.sh` — its header says so, and
 `diff` against the upstream file shows only these hunks. Record the commit in
 `staging/PROVENANCE.txt` and regenerate the four hashes; the other three
@@ -128,3 +130,14 @@ is asserted against those tools' `--help` before use.
   `r770-lab-ca.sh`, `r770-malcolm-deploy.sh`), a second R770 deploy path
   beside this kit's `scripts/`. Whether to port them depends on which path
   is canonical; until that is decided they are recorded here, not copied.
+
+## Cutting a bundle that carries this kit (since 2026-10)
+
+The build repo's fetch has a `kit` stage: it copies this repo's tracked,
+committed `scripts/ config/ scenarios/ docs/` at `HEAD` into `bundle-*/kit/`
+and records the commit in `kit/KIT_COMMIT`. It has no default source. Order:
+
+1. Merge and push this kit; note the commit.
+2. On the staging host: `KIT_SRC_ROOT=<a checkout of this kit at that commit> SITE_SRC_ROOT=<simlab-build checkout> ./staging/r770-build-bundle.sh`.
+   A packed builder carries the kit when `KIT_SRC_ROOT` is set at `--pack` time.
+3. The build's strict gate fails a bundle without `kit/scripts/r770-install.sh`.
