@@ -315,8 +315,20 @@ cmd_phone_home() {
 # 9770 2026-10-03 — /var/lib/containerd 24291046646 B after loading
 # bundle-20260929's archives (7669955661 B in all) = 317%.
 CONTAINERD_EXPANSION_PCT=317
+# archive_loaded <archive> <loaded-tags> — true when the image list beside the
+# archive names at least one tag and every one of them is already loaded.
+archive_loaded() {
+    local list t n=0
+    list=$(find "$(dirname "$1")" -maxdepth 1 -name '*image-list.txt' | head -1)
+    [ -s "$list" ] || return 1
+    while IFS= read -r t; do
+        n=$((n + 1))
+        printf '%s\n' "$2" | grep -qxF -- "$(image_norm "$t")" || return 1
+    done < <(grep -vE '^[[:space:]]*(#|$)' "$list")
+    [ "$n" -gt 0 ]
+}
 image_store_check() {
-    local b=$1 status mp avail_kb used_kb need bytes=0 f
+    local b=$1 status mp avail_kb need bytes=0 f loaded
     status=$(docker info --format '{{json .DriverStatus}}' 2>/dev/null || true)
     case "$status" in
         "") skip "image store: docker is not answering — the docker step checks this again once the engine is installed"; return 0 ;;
@@ -326,14 +338,16 @@ image_store_check() {
     mp=$(findmnt -n -o TARGET -T /var/lib/containerd 2>/dev/null || true)
     if [ "$mp" = /var/lib/containerd ]; then pass "image store /var/lib/containerd is on its own mount"; return 0; fi
     if [ "$mp" = /var/lib/docker ]; then pass "image store /var/lib/containerd is on the docker volume (/var/lib/docker)"; return 0; fi
+    # An archive counts unless every tag its own image list names is already in
+    # docker (a re-entry, or an earlier pipeline loaded it). Nothing else held by
+    # containerd lowers the need: other images may not overlap this bundle's.
+    loaded=$(docker_loaded_images)
     for f in "$b"/*/*images*.tar.gz "$b"/*/*/*images*.tar.gz; do
-        [ -f "$f" ] && bytes=$(( bytes + $(stat -c %s "$f") ))
+        [ -f "$f" ] || continue
+        if archive_loaded "$f" "$loaded"; then note "already loaded, not counted: ${f#"$b"/}"; continue; fi
+        bytes=$(( bytes + $(stat -c %s "$f") ))
     done
     need=$(( bytes * CONTAINERD_EXPANSION_PCT * 120 / 10000 ))   # x317% x120% headroom
-    # what containerd already holds counts against the need: on a re-entry, or
-    # after an earlier pipeline loaded its share, those images are not loaded again
-    used_kb=$(du -sk /var/lib/containerd 2>/dev/null | awk 'NR == 1 {print $1}')
-    need=$(( need - ${used_kb:-0} * 1024 )); [ "$need" -gt 0 ] || need=0
     avail_kb=$(df -Pk "${mp:-/}" 2>/dev/null | awk 'NR == 2 {print $4}')
     avail_kb=${avail_kb:-0}
     if [ $(( avail_kb * 1024 )) -ge "$need" ]; then

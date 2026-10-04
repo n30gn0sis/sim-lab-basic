@@ -278,15 +278,30 @@ esac'
     ! grep -q '^docker load' "$STUB_LOG"
 }
 
-@test "I4: storage counts what containerd already holds — a re-entry after the load is not a false FAIL" {
+@test "I4: an archive whose every tag is already loaded is not counted again — a re-entry is not a false FAIL" {
     snapshotter_host
+    stub docker 'case "$*" in
+  *DriverStatus*) echo "[[\"driver-type\",\"io.containerd.snapshotter.v1\"]]" ;;
+  "image ls"*) printf "ghcr.io/idaholab/malcolm/arkime:0.0.0-fixture\nghcr.io/idaholab/malcolm/nginx-proxy:0.0.0-fixture\n" ;;
+  *DockerRootDir*) echo /var/lib/docker ;; *Mirrors*) echo "[]" ;; *Proxy*) echo ;; *) echo 0.0.0-fixture ;;
+esac'
     truncate -s 10M "$BUNDLE/malcolm/malcolm-images-0.0.0-fixture.tar.gz"
-    stub df 'printf "Filesystem 1024-blocks Used Available Capacity Mounted\n/dev/sda1 400 399 1 99%% /\n"'
-    stub du 'printf "40000\t/var/lib/containerd\n"'
+    stub df 'printf "Filesystem 1024-blocks Used Available Capacity Mounted\n/dev/sda1 400 300 100 75%% /\n"'
     CTRD_MP=/ run import storage --bundle "$BUNDLE"
     echo "$output"
     [ "$status" -eq 2 ]
     [[ "$output" == *"WARN  image store /var/lib/containerd is on / "* ]]
+}
+
+@test "storage: unrelated containerd usage never lowers the need (only this bundle's loaded tags do)" {
+    snapshotter_host
+    truncate -s 10M "$BUNDLE/malcolm/malcolm-images-0.0.0-fixture.tar.gz"
+    stub df 'printf "Filesystem 1024-blocks Used Available Capacity Mounted\n/dev/sda1 400 399 1 99%% /\n"'
+    stub du 'printf "99999999\t/var/lib/containerd\n"'
+    CTRD_MP=/ run import storage --bundle "$BUNDLE"
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"FAIL  image store /var/lib/containerd is on / "* ]]
 }
 
 @test "storage: docker not answering yet is a SKIP, not a pass and not a failure" {
