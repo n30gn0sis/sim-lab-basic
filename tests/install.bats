@@ -318,7 +318,7 @@ fi'
     run kit_run "$kit/scripts/r770-install.sh" run --conf "$CONF" --yes --to gns3
     echo "$output"
     [ "$status" -eq 0 ]
-    grep -qx "gns3 full --bundle $ROOT/srv/bundles/bundle-fixture" "$STUB_LOG"
+    grep -qx "gns3 full --from apt --bundle $ROOT/srv/bundles/bundle-fixture" "$STUB_LOG"
 }
 
 @test "plan: the storage check, then every gated step under --dry-run; read-only steps are listed, not run" {
@@ -357,4 +357,74 @@ fi'
     run inst plan --conf "$CONF"
     [ "$status" -eq 1 ]
     [ ! -s "$STUB_LOG" ]
+}
+
+# ── final-review fixes ─────────────────────────────────────────────────────
+# the import stub's copy lands a local bundle carrying the REAL kit scripts, so the exec'd run is real
+copy_lands_real_kit() {
+    stub import-stub 'echo "import $*" >> "$STUB_LOG"
+case "$1" in
+  preflight) [ -f "$T/preflight.out" ] && cat "$T/preflight.out"; [ -f "$T/rc-preflight" ] && exit "$(cat "$T/rc-preflight")" ;;
+  copy) mkdir -p "$KIT_ROOT/srv/bundles/bundle-fixture/kit"; cp -r "'"$BATS_TEST_DIRNAME"'/../scripts" "$KIT_ROOT/srv/bundles/bundle-fixture/kit/" ;;
+esac
+exit 0'
+}
+
+@test "I1: a warning from import survives the hand-off — NOT INSTALLED, exit 2" {
+    good_conf; copy_lands_real_kit
+    printf 'WARN  something nobody expected\n' > "$T/preflight.out"; echo 2 > "$T/rc-preflight"
+    run inst run --conf "$CONF" --yes
+    echo "$output"
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"NOT INSTALLED — finished with warnings from: import"* ]]
+}
+
+@test "I1: preflight's first-install warnings alone are a note, not a disposition — INSTALLED" {
+    good_conf; copy_lands_real_kit
+    printf 'WARN  tool not yet present: docker — it is installed later\nWARN  tool not yet present: unzip — x\nWARN  no previous bundle under /srv/bundles — first cycle?\n' > "$T/preflight.out"; echo 2 > "$T/rc-preflight"
+    run inst run --conf "$CONF" --yes
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"expected first-install"* ]]
+    [[ "$output" == *"INSTALLED — every step clean"* ]]
+}
+
+@test "I2: re-entry past import works with the media gone — the local copy stands in for BUNDLE" {
+    good_conf
+    make_bundle "$ROOT/srv/bundles/bundle-fixture"
+    mv "$BUNDLE" "$T/stick-removed"
+    stub lsblk 'printf "/dev/sda 400G disk \n/dev/sda1 400G part /\n"'
+    run inst run --conf "$CONF" --yes --from validate
+    echo "$output"
+    [ "$status" -eq 0 ]
+    grep -q "^e2e --bundle $ROOT/srv/bundles/bundle-fixture " "$STUB_LOG"
+}
+
+@test "I2: a run that includes import still requires the media and its device" {
+    good_conf
+    stub lsblk 'printf "/dev/sda 400G disk \n"'
+    run inst run --conf "$CONF" --yes
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"DEVICE /dev/sdb1 is not a block device"* ]]
+}
+
+@test "I3: once import is done, each pipeline starts at apt — no second preflight/gate/copy" {
+    good_conf
+    mkdir -p "$ROOT/srv/bundles/.kit-stamps"; date -Is > "$ROOT/srv/bundles/.kit-stamps/install.import"
+    run inst run --conf "$CONF" --yes --from gns3 --to docs
+    echo "$output"
+    [ "$status" -eq 0 ]
+    grep -qx "gns3 full --from apt --bundle $BUNDLE" "$STUB_LOG"
+    grep -qx "malcolm full --from apt --bundle $BUNDLE --capture-ifs lab_mirror0" "$STUB_LOG"
+    grep -qx "docs full --from apt --bundle $BUNDLE" "$STUB_LOG"
+}
+
+@test "I5: plan before labnet reviews Malcolm up to unpack and SKIPs the rest, naming labnet — not a FAIL" {
+    good_conf
+    stub ip 'case "$*" in "-br link"*) printf "lo UNKNOWN\neno1 UP\nens2f0 UP\n" ;; esac'
+    run inst plan --conf "$CONF"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    grep -qx "malcolm full --bundle $BUNDLE --to unpack --dry-run" "$STUB_LOG"
+    [[ "$output" == *"SKIP  malcolm configure"*"labnet"* ]]
 }

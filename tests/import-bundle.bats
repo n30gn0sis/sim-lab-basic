@@ -249,6 +249,17 @@ esac'
     ! grep -q '^docker load' "$STUB_LOG"
 }
 
+@test "I4: storage counts what containerd already holds — a re-entry after the load is not a false FAIL" {
+    snapshotter_host
+    truncate -s 10M "$BUNDLE/malcolm/malcolm-images-0.0.0-fixture.tar.gz"
+    stub df 'printf "Filesystem 1024-blocks Used Available Capacity Mounted\n/dev/sda1 400 399 1 99%% /\n"'
+    stub du 'printf "40000\t/var/lib/containerd\n"'
+    CTRD_MP=/ run import storage --bundle "$BUNDLE"
+    echo "$output"
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"WARN  image store /var/lib/containerd is on / "* ]]
+}
+
 @test "storage: docker not answering yet is a SKIP, not a pass and not a failure" {
     stub docker 'exit 1'
     run import storage --bundle "$BUNDLE"

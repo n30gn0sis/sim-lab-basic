@@ -50,6 +50,7 @@ PORTAL="${INSTALL_PORTAL_CMD:-$KIT_DIR/scripts/r770-portal-deploy.sh}"
 VALIDATE="${INSTALL_VALIDATE_CMD:-$KIT_DIR/scripts/r770-validate.sh}"
 E2E="${INSTALL_E2E_CMD:-$KIT_DIR/scripts/r770-e2e.sh}"
 SUB=""; CONF_PATH=""; FROM=""; TO=""
+MEDIA_NEEDED=1   # 0 once a run starts past import: the media may be gone, the local copy stands in
 usage() { usage_from_header 3; exit 0; }
 
 # ── install.conf ─────────────────────────────────────────────────────────────
@@ -101,7 +102,7 @@ conf_check() {
     done
     ifs=$(host_ifs); devs=$(host_devices)
     v=$CONF_DEVICE
-    if [ -n "$v" ] && ! is_placeholder "$v" && ! has_line "$v" "$devs"; then
+    if [ "$MEDIA_NEEDED" = 1 ] && [ -n "$v" ] && ! is_placeholder "$v" && ! has_line "$v" "$devs"; then
         fail "install.conf: DEVICE $v is not a block device on this host (lsblk)"; bad=1
     fi
     v=$CONF_MGMT_IF
@@ -126,6 +127,10 @@ conf_check() {
         CONF_BUNDLE=$(self_bundle)
         if [ -n "$CONF_BUNDLE" ]; then note "BUNDLE: the bundle this installer came in — $CONF_BUNDLE"
         else fail "install.conf: BUNDLE is empty and this installer is not inside a bundle — set BUNDLE=<the bundle directory on the media>"; bad=1; fi
+    elif ! ( bundle_dir "$CONF_BUNDLE" ) >/dev/null 2>&1 && [ "$MEDIA_NEEDED" = 0 ] \
+         && ( bundle_dir "$(p /srv/bundles)/$(basename "$CONF_BUNDLE")" ) >/dev/null 2>&1; then
+        CONF_BUNDLE="$(p /srv/bundles)/$(basename "$CONF_BUNDLE")"
+        note "BUNDLE: the media copy is not here (removed after import?) — using the local copy $CONF_BUNDLE"
     elif ! ( bundle_dir "$CONF_BUNDLE" ) >/dev/null 2>&1; then
         fail "install.conf: BUNDLE $CONF_BUNDLE is not a bundle (r770-bundle.sh, BUNDLE_NOTES.md, MANIFEST.sha256 at its root)"; bad=1
     else
@@ -279,18 +284,34 @@ on_exit() {
     summary_row "$CUR" FAIL "$why — fix it, then: r770-install.sh run --yes --from $CUR"
     printf '\nNOT INSTALLED — %s at %s; rerun with --from %s\n' "$why" "$CUR" "$CUR" >> "$LOGDIR.md"
 }
+# import_preflight — preflight, but its first-install warnings are a note: on
+# a fresh host docker and unzip arrive later from the bundle, and there is no
+# earlier bundle to roll back to. Any other warning still counts.
+FIRST_INSTALL_WARNS='tool not yet present: (docker|unzip)|no previous bundle under /srv/bundles'
+# shellcheck disable=SC2317  # reached only through run_step "$@", which shellcheck cannot follow
+import_preflight() {
+    local rc=0
+    logged import-preflight "$IMPORT" preflight --bundle "$CONF_BUNDLE" || rc=$?
+    if [ "$rc" = 2 ] && ! grep '^WARN  ' "$LOGDIR/import-preflight.log" | grep -vqE "$FIRST_INSTALL_WARNS"; then
+        note "preflight's warnings above are the expected first-install ones (docker/unzip come from the bundle; no earlier bundle to roll back to) — recorded, nothing to disposition"
+        return 0
+    fi
+    return "$rc"
+}
 step_body() {  # step_body <step> — the children of one step
     local lb s a; lb=$(local_bundle)
-    local -a args
+    local -a args after_import=()
+    # import already ran preflight, gate and copy once: the pipelines start at apt
+    stamped install.import && after_import=(--from apt)
     case "$1" in
         import)
-                 run_step import logged import-preflight "$IMPORT" preflight --bundle "$CONF_BUNDLE"
+                 run_step import import_preflight
                  run_step import logged import-gate "$IMPORT" gate --bundle "$CONF_BUNDLE" --media "$CONF_MEDIA" --device "$CONF_DEVICE"
                  # no --media: copy would unmount it, and this script is running from it
                  run_step import logged import-copy "$IMPORT" copy --bundle "$CONF_BUNDLE" ;;
-        gns3)    run_step gns3 logged gns3 "$GNS3" full --bundle "$lb" ;;
-        malcolm) run_step malcolm logged malcolm "$MALCOLM" full --bundle "$lb" --capture-ifs "$CONF_CAPTURE_IFS" ;;
-        docs)    run_step docs logged docs "$DOCS" full --bundle "$lb" ;;
+        gns3)    run_step gns3 logged gns3 "$GNS3" full "${after_import[@]}" --bundle "$lb" ;;
+        malcolm) run_step malcolm logged malcolm "$MALCOLM" full "${after_import[@]}" --bundle "$lb" --capture-ifs "$CONF_CAPTURE_IFS" ;;
+        docs)    run_step docs logged docs "$DOCS" full "${after_import[@]}" --bundle "$lb" ;;
         portal)  for s in ca cert htpasswd nginx; do run_step portal logged "portal-$s" "$PORTAL" "$s"; done ;;
         dashboards)
                  run_step dashboards logged dashboards "$MALCOLM" dashboards
@@ -316,24 +337,25 @@ handoff() {
     [ "${KIT_YES:-0}" = "1" ] && args+=(--yes)
     [ "${KIT_NON_INTERACTIVE:-0}" = "1" ] && args+=(--non-interactive)
     note "handing off to the local copy: $there ${args[*]}"
-    export INSTALL_LOGDIR="$LOGDIR"
+    export INSTALL_LOGDIR="$LOGDIR" INSTALL_WARNED="$WARNED_STEPS"
     trap - EXIT
     exec "$there" "${args[@]}"
 }
 cmd_run() {
     need_root
-    conf_ready
     local first=0 last=$(( ${#STEPS[@]} - 1 )) i step verdict rc=0 warned
     [ -z "$FROM" ] || first=$(step_index STEPS "$FROM") || die "unknown step: $FROM (steps: ${STEPS[*]})"
     [ -z "$TO" ]   || last=$(step_index STEPS "$TO")    || die "unknown step: $TO (steps: ${STEPS[*]})"
     [ "$first" -le "$last" ] || die "--from $FROM comes after --to $TO"
+    [ "$first" -gt 0 ] && MEDIA_NEEDED=0
+    conf_ready
     if [ "${KIT_YES:-0}" = "1" ]; then KIT_NON_INTERACTIVE=1; export KIT_NON_INTERACTIVE; fi
     LOGDIR="${INSTALL_LOGDIR:-${KIT_EVIDENCE_DIR:-$PWD/r770-evidence}/install-$(hostname -s 2>/dev/null || echo host)-$(date +%Y%m%d-%H%M%S)}"
     mkdir -p "$LOGDIR" || die "cannot create $LOGDIR"
     summary_open
     trap on_exit EXIT
     trap 'exit 130' INT TERM
-    WARNED_STEPS=""
+    WARNED_STEPS="${INSTALL_WARNED:-}"   # warnings from before a hand-off travel with it
     for i in $(seq "$first" "$last"); do
         step=${STEPS[$i]}
         banner "$(( i + 1 ))/${#STEPS[@]}  $step"
@@ -391,7 +413,14 @@ cmd_plan() {
     plan_child "import gate" "$IMPORT" gate --bundle "$b" --media "$CONF_MEDIA" --device "$CONF_DEVICE" --dry-run
     plan_child "import copy" "$IMPORT" copy --bundle "$b" --dry-run
     plan_child "gns3" "$GNS3" full --bundle "$b" --dry-run
-    plan_child "malcolm" "$MALCOLM" full --bundle "$b" --capture-ifs "$CONF_CAPTURE_IFS" --dry-run
+    local i late=""
+    for i in $CONF_CAPTURE_IFS; do case " $LATE_IFS " in *" $i "*) has_line "$i" "$(host_ifs)" || late="$late $i" ;; esac; done
+    if [ -n "$late" ]; then
+        plan_child "malcolm (to unpack)" "$MALCOLM" full --bundle "$b" --to unpack --dry-run
+        skip "malcolm configure, secrets, auth, rebind, start: need${late} — created by the gns3 step's labnet; run reviews them at their own gates"
+    else
+        plan_child "malcolm" "$MALCOLM" full --bundle "$b" --capture-ifs "$CONF_CAPTURE_IFS" --dry-run
+    fi
     plan_child "docs" "$DOCS" full --bundle "$b" --dry-run
     for s in ca cert htpasswd nginx; do plan_child "portal $s" "$PORTAL" "$s" --dry-run; done
     note "dashboards: installs saved objects and Arkime views after Malcolm is up — idempotent, not gated"

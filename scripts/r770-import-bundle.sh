@@ -294,7 +294,7 @@ cmd_phone_home() {
 # bundle-20260929's archives (7669955661 B in all) = 317%.
 CONTAINERD_EXPANSION_PCT=317
 image_store_check() {
-    local b=$1 status mp avail_kb need bytes=0 f
+    local b=$1 status mp avail_kb used_kb need bytes=0 f
     status=$(docker info --format '{{json .DriverStatus}}' 2>/dev/null || true)
     case "$status" in
         "") skip "image store: docker is not answering — the docker step checks this again once the engine is installed"; return 0 ;;
@@ -308,6 +308,10 @@ image_store_check() {
         [ -f "$f" ] && bytes=$(( bytes + $(stat -c %s "$f") ))
     done
     need=$(( bytes * CONTAINERD_EXPANSION_PCT * 120 / 10000 ))   # x317% x120% headroom
+    # what containerd already holds counts against the need: on a re-entry, or
+    # after an earlier pipeline loaded its share, those images are not loaded again
+    used_kb=$(du -sk /var/lib/containerd 2>/dev/null | awk 'NR == 1 {print $1}')
+    need=$(( need - ${used_kb:-0} * 1024 )); [ "$need" -gt 0 ] || need=0
     avail_kb=$(df -Pk "${mp:-/}" 2>/dev/null | awk 'NR == 2 {print $4}')
     avail_kb=${avail_kb:-0}
     if [ $(( avail_kb * 1024 )) -ge "$need" ]; then
