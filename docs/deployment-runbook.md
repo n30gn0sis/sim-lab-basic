@@ -612,6 +612,7 @@ reused. `--force` redoes a stamped or generated step.
 | a `load` step names a MISSING tag | The tarball is incomplete. Re-cut; do not patch by hand |
 | `venv` dies naming `python3-venv` | The apt step did not run, or the curated set lacks it |
 | `configure` dies naming a flag | The bundled installer's interface moved; read `BUNDLE_NOTES.md`, update the kit, then rerun |
+| `auth`, `start` or `stop` refuses: `<user> is not in the docker group` | Malcolm's scripts run as the `PUID` user and drive docker. `usermod -aG docker <user>`, then rerun `--from auth`. A fresh box's operator account is not in `docker` |
 | `start` FAILs on unready services | Rerun `start` to keep waiting; then `docker compose logs` in the stack directory |
 | `service` FAILs on `0.0.0.0:3080` | The rendered config's host is not loopback; rerun `config` |
 | `nginx -t` rejects | Nothing was reloaded; the previous config is live. Fix the vhost, rerun |
