@@ -349,6 +349,9 @@ cmd_auth() {
         echo "DRY-RUN: (cd $(stack) && ./scripts/auth_setup ${AUTH_FLAGS[*]} ...)"
         footer "auth"
     fi
+    # auth_setup drives docker as this user; outside the docker group it dies
+    # with "requires docker, please run install.py", which names the wrong fix.
+    user=$(owner_for_docker) || exit 1
     h_ssl=$(openssl passwd -1 "$pw") || die "openssl passwd failed"
     # bcrypt from the bundled nginx-proxy image: the only htpasswd guaranteed
     # on the box, and the tag comes from the bundle's list, never from here.
@@ -356,7 +359,6 @@ cmd_auth() {
     h_ht=$(docker run --rm --network none -e PW="$pw" --entrypoint sh "$img" \
              -c 'htpasswd -bnBC 10 "" "$PW"' | tr -d ':\n') || die "htpasswd via $img failed — are the Malcolm images loaded?"
     [ -n "$h_ht" ] || die "empty bcrypt hash from $img"
-    user=$(malcolm_owner) || exit 1; user=${user%% *}
     echo "+ (cd $(stack) && runuser -u $user -- ./scripts/auth_setup --auth-noninteractive --auth-method basic --auth-admin-username $ADMIN_USER --auth-admin-password-openssl <hash> --auth-admin-password-htpasswd <hash> --auth-generate-...)"
     ( cd "$(stack)" && runuser -u "$user" -- ./scripts/auth_setup --auth-noninteractive --auth-method basic \
         --auth-admin-username "$ADMIN_USER" \

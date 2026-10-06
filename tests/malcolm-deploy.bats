@@ -1076,6 +1076,23 @@ pack_view_names() {  # every view name arkime-views should generate from $SCENAR
     grep -q '^runuser -u labop -- ./scripts/auth_setup --auth-noninteractive' "$STUB_LOG"
 }
 
+@test "auth refuses an owner outside the docker group before generating anything, and never invokes auth_setup" {
+    # The 2026-10-06 EC2 rehearsal: a fresh box's PUID user is not in docker,
+    # and auth_setup then dies with Malcolm's own "requires docker, please run
+    # install.py" -- which points at the installer, not at the group.
+    make_malcolm_tree "$ROOT"
+    mkdir -p "$ROOT/etc/lab/secrets"; echo fixture-pw > "$ROOT/etc/lab/secrets/malcolm-admin.pw"
+    rm -f "$ROOT/opt/malcolm/malcolm/nginx/htpasswd"
+    stub getent 'case "$1 $2" in "passwd 1000") echo "labop:x:1000:1000::/home/labop:/bin/bash";; "group docker") echo "docker:x:988:";; *) exit 2;; esac'
+    run malcolm auth --bundle "$BUNDLE"
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"labop is not in the docker group"* ]]
+    [[ "$output" == *"usermod -aG docker labop"* ]]
+    ! grep -q 'auth_setup --auth-noninteractive' "$STUB_LOG"
+    ! grep -q '^docker run' "$STUB_LOG"
+}
+
 @test "start and stop run Malcolm's scripts as the stack's owner, and refuse an owner outside the docker group" {
     make_malcolm_tree "$ROOT"
     echo "analyst:hash" > "$ROOT/opt/malcolm/malcolm/nginx/htpasswd"

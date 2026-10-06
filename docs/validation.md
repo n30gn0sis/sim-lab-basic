@@ -16,7 +16,7 @@ FAIL. SKIPPED checks never change the exit code, and are never omitted.
 
 | Area | Checks | Needs | Opt-in | Touches the host? |
 |---|---|---|---|---|
-| `host` | sshd active · chrony leap status Normal · the three `.lab` names resolve · APT sources are `file:` only | chrony and dnsmasq installed (else SKIP: Phase 5) | — | no |
+| `host` | sshd active, or `ssh.socket` listening (Ubuntu 24.04 starts sshd on the first connection) · chrony leap status Normal · the three `.lab` names resolve · APT sources are `file:` only | chrony and dnsmasq installed (else SKIP: Phase 5) | — | no |
 | `cpu-ram` | `kvm-ok` · thread count · memory · EDAC error counters zero | `--expect-threads N --expect-ram-gb N` (else SKIP: expectations are arguments, never hard-coded) | — | no |
 | `storage` | every layout volume is its own mount point, with its size · SMART health per NVMe · PERC virtual disk optimal | `nvme-cli`, `smartmontools`; `perccli2` from the bundle's `dell/` (else SKIP) | — | no |
 | `network` | management interface up with an address · each capture port: **no address**, no master (never a port of a bridge or bond), PROMISC, gro/lro/tso off · with --lab-bridge: bridge in hub mode (ageing_time 0), no multicast snooping, no physical port (directly or through a VLAN or bond), a --capture-ifs interface fed by a bridge port, and that mirror end address-less (link-local included) | `--mgmt-if IF --capture-ifs "a b c"` (else SKIP: interfaces are never guessed) ; --lab-bridge BR (else SKIP: bridges are never guessed) | — | no |
