@@ -63,6 +63,30 @@ report() { cat "$OUT"/validation-*.md; }
     grep -q '^Summary: ' "$OUT"/validation-*.md
 }
 
+@test "sshd: a listening ssh.socket PASSes while ssh.service waits for its first connection (Ubuntu 24.04)" {
+    # The 2026-10-06 EC2 rehearsal: nobody had SSH'd in since boot, so the
+    # service was inactive behind an active socket. Like the real systemctl,
+    # the stub exits non-zero for a unit that is not active.
+    stub systemctl 'case "$*" in "is-active ssh.socket") echo active;; "is-active ssh"|"is-active sshd") echo inactive; exit 3;; *) echo inactive; exit 3;; esac'
+    run validate --area host
+    echo "$output"
+    [[ "$output" == *"PASS  host/sshd: ssh.socket active"* ]]
+    [[ "$output" != *"FAIL  host/sshd"* ]]
+}
+
+@test "sshd: no service and no socket is a FAIL with one value and a diagnosis" {
+    stub systemctl 'echo inactive; exit 3'
+    run validate --area host
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"FAIL  host/sshd: inactive"* ]]
+    # one systemctl answer, not "inactive" from ssh then another from sshd
+    [ "$(grep -c 'host/sshd' <<<"$output")" -eq 1 ]
+    [[ "$output" != *"FAIL  host/sshd: inactive"$'\n'"inactive"* ]]
+    run report
+    [[ "$output" == *"host/sshd: ssh is not active"* ]]
+}
+
 @test "a FAIL drives exit 1 and carries a diagnosis" {
     stub apt-get 'echo "https://archive.ubuntu.com/ubuntu/dists/noble/InRelease"'
     run validate --area host

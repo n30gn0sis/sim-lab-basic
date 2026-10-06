@@ -56,9 +56,17 @@ diag() { DIAGS+=("$AREA/$1: $2"); }
 # ── host ─────────────────────────────────────────────────────────────────────
 area_host() {
     AREA=host
-    local st
-    st=$(systemctl is-active ssh 2>/dev/null || systemctl is-active sshd 2>/dev/null || echo unknown)
-    if [ "$st" = "active" ]; then row "sshd" "active" "$st" PASS "systemctl is-active ssh"; else row "sshd" "active" "$st" FAIL "systemctl is-active ssh"; diag sshd "ssh is not active; if this session is over SSH something else answers — check 'ss -ltnp | grep :22'"; fi
+    local st sock
+    # is-active prints the state AND exits non-zero when it is not "active", so
+    # each answer is taken whole; chaining them with || concatenates them.
+    st=$(systemctl is-active ssh 2>/dev/null) || st=$(systemctl is-active sshd 2>/dev/null) || true
+    # Ubuntu 24.04 socket-activates sshd: ssh.socket listens and ssh.service
+    # starts on the first connection, so a box nobody has SSH'd into since boot
+    # shows the service inactive behind a listening socket.
+    sock=$(systemctl is-active ssh.socket 2>/dev/null) || true
+    if [ "$st" = "active" ]; then row "sshd" "active" "$st" PASS "systemctl is-active ssh"
+    elif [ "$sock" = "active" ]; then row "sshd" "active" "ssh.socket active (sshd starts on the first connection)" PASS "systemctl is-active ssh.socket"
+    else row "sshd" "active" "${st:-unknown}" FAIL "systemctl is-active ssh ssh.socket"; diag sshd "ssh is not active and ssh.socket is not listening; if this session is over SSH something else answers — check 'ss -ltnp | grep :22'"; fi
     if command -v chronyc >/dev/null 2>&1; then
         local leap; leap=$(chronyc tracking 2>/dev/null | awk -F': *' '/^Leap status/{print $2}')
         if [ "$leap" = "Normal" ]; then row "chrony" "Leap status Normal" "$leap" PASS "chronyc tracking"; else row "chrony" "Leap status Normal" "${leap:-unreadable}" WARN "chronyc tracking"; fi
