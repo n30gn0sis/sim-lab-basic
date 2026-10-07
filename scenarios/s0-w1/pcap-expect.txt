@@ -1,0 +1,3 @@
+outer|count|ip.addr==10.210.0.0/16|>0|B1 site addresses visible in clear on the uplink
+outer|count|esp|0|B2 no ESP on a plaintext baseline
+inner-gw-a|count|tcp.port==5201|>0|B3 iperf3 seen on site A's LAN
