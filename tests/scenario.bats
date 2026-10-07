@@ -1005,6 +1005,40 @@ while True: time.sleep(0.1)
     ! grep -q '^tcpdump' "$STUB_LOG"
 }
 
+@test "record snapshots ground truth at start, after each event and at end, collects /gt, and reports keys=" {
+    record_env; scenario up demo --bundle "$BUNDLE" >/dev/null
+    printf 'gt=a|swanctl --list-sas;b|swanctl --list-sas\ngt_dirs=a:/gt b:/gt\n' >> "$SCENARIO_DIR/demo/scenario.conf"
+    # docker cp <cid>:/gt/. <dst> copies gt-<cid> when the test made one; a node
+    # without it reports keys.state=absent, as the real /gt would
+    mkdir -p "$BATS_TEST_TMPDIR/gt-cid-a/keys"; echo present > "$BATS_TEST_TMPDIR/gt-cid-a/keys.state"; echo k > "$BATS_TEST_TMPDIR/gt-cid-a/keys/esp_sa"
+    sed -i 's|^  exec)|  cp) src=${2%%:*}; if [ -d "$BATS_TEST_TMPDIR/gt-$src" ]; then cp -r "$BATS_TEST_TMPDIR/gt-$src/." "$3"; else echo absent > "$3/keys.state"; fi ;;\n  exec)|' "$BIN/docker"
+    printf '0|note|go\n1|link-down|b\n' > "$BATS_TEST_TMPDIR/ev.txt"; stub ip 'exit 0'
+    run scenario record demo --events "$BATS_TEST_TMPDIR/ev.txt"; echo "$output"; [ "$status" -eq 0 ]
+    d=$(find "$CASES/demo" -mindepth 1 -maxdepth 1 -type d | head -1); [ -n "$d" ]
+    for n in a b; do
+        ls "$d/gt/$n/sa/" | grep -q '^start-'; ls "$d/gt/$n/sa/" | grep -q '^t1-link-down-'; ls "$d/gt/$n/sa/" | grep -q '^end-'
+    done
+    [ "$(ls "$d/gt/a/sa/" | grep -c '^t0-note')" -eq 0 ]
+    grep -q 'docker exec cid-a sh -c swanctl --list-sas' "$STUB_LOG"
+    grep -q 'docker cp cid-a:/gt/. ' "$STUB_LOG"
+    [ -f "$d/gt/a/keys/esp_sa" ]; grep -qx absent "$d/gt/b/keys.state"
+    grep -q '^keys=present$' "$d/run.conf"
+    ! grep -q 'gt/' "$d/sha256sums"
+}
+
+@test "record reports keys=absent when no node has key material, and n/a without gt_dirs" {
+    record_env; scenario up demo --bundle "$BUNDLE" >/dev/null
+    run scenario record demo; echo "$output"; [ "$status" -eq 0 ]
+    d=$(find "$CASES/demo" -mindepth 1 -maxdepth 1 -type d | head -1); [ -n "$d" ]
+    grep -q '^keys=n/a$' "$d/run.conf"; [ ! -d "$d/gt" ]
+    rm -rf "$CASES/demo"
+    printf 'gt_dirs=a:/gt b:/gt\n' >> "$SCENARIO_DIR/demo/scenario.conf"
+    sed -i 's|^  exec)|  cp) echo absent > "$3/keys.state" ;;\n  exec)|' "$BIN/docker"
+    run scenario record demo; echo "$output"; [ "$status" -eq 0 ]
+    d=$(find "$CASES/demo" -mindepth 1 -maxdepth 1 -type d | head -1)
+    grep -q '^keys=absent$' "$d/run.conf"
+}
+
 @test "record --impair refuses a bad spec or an unknown profile before any capture" {
     record_env; scenario up demo --bundle "$BUNDLE" >/dev/null
     for bad in branch-wan@c @a branch-wan no-such@a; do

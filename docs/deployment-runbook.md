@@ -533,7 +533,7 @@ The build repo's IPsec & WAN scenario spec is filed in the kit as
 built carries it out is `docs/superpowers/specs/2026-10-07-ipsec-wan-scenarios-kit-design.md`,
 and the work is sequenced in `docs/superpowers/plans/2026-10-07-ipsec-wan-scenarios.md`.
 `record` exists (its captures, idle tail, run directory, `--impair` and
-`--events`; the ground truth under `gt/` is still to come); the rest of
+`--events`, and the ground truth under `gt/`); the rest of
 this section says what the kit will do so the procedure is reviewed before
 it is built, and is rewritten "as measured" after the staging rehearsal
 (plan Task 11).
@@ -582,10 +582,14 @@ node, so IKE_SA_INIT is in the file. After the traffic window it idles
 `keys=`, load, end), the outer and inner `.pcapng`, `capture-stats.txt`
 (tcpdump's own counts; zero kernel drops is the bar) and `sha256sums` over
 the captures, plus the pack's usual `.run` record in `r770-evidence/` with a
-`case=` line, so `check` works unchanged. `gt/<node>/` (SA snapshots,
-charon log, ESP/IKE keys **only if** the bundled strongSwan turns out to
-carry `save-keys` — discovered at run time, never assumed) joins it in a
-later step. Nothing under `cases/` is ever deleted by the kit.
+`case=` line, so `check` works unchanged. `gt/<node>/` is the ground truth:
+each `gt=` command (e.g. `swanctl --list-sas`) is run in its node at the
+start, after every non-`note` event and at the end, into
+`gt/<node>/sa/<tag>-<UTC>.txt`; after the idle tail each `gt_dirs=` path is
+`docker cp`'d into `gt/<node>/` (charon log, and ESP/IKE keys **only if** the
+bundled strongSwan carries `save-keys`). `run.conf` gets `keys=present|absent|n/a`,
+read from each node's `keys.state` (never assumed; `n/a` with no `gt_dirs`).
+`gt/` is never in `sha256sums` and never ingested. Nothing under `cases/` is ever deleted by the kit.
 An EXIT trap — success, failure or Ctrl-C — stops the event scheduler and
 every capture still running, clears every impairment the run applied (from
 `--impair` or a `wan-apply` event), brings up every TAP an event took down,

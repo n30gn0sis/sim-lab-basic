@@ -375,8 +375,39 @@ MIN_FREE_MB="${SCENARIO_CASES_MIN_FREE_MB:-10240}"
 RUN_DIR=""; RUN_ID=""
 CAP_PIDS=(); CAP_LABELS=()   # running tcpdumps, by label
 IMPAIRED_TAPS=()             # TAPs shaped for this run; the trap clears them
-# hooks the ground-truth and event steps fill in; no-ops until then
-gt_snapshot() { :; }; gt_collect() { :; }; gt_keys_state() { printf 'n/a'; }
+# ground truth: what the nodes themselves say happened, kept beside the
+# captures under gt/ and never checksummed or ingested (keys may live there)
+gt_snapshot() {  # gt_snapshot <scenario> <tag> — each gt= command's output into gt/<node>/sa/<tag>-<UTC>.txt
+    # runs in the parent and in the event scheduler's subshell: files only, and
+    # never die/exit (a die there would end the scheduler silently)
+    local spec entry node cmd cid out
+    local -a entries
+    spec=$(conf "$1" gt); [ -n "$spec" ] || return 0
+    IFS=';' read -ra entries <<< "$spec"
+    for entry in "${entries[@]}"; do
+        node=${entry%%|*}; cmd=${entry#*|}
+        cid=$(container_of "$WORK/nodes.tsv" "$node" 2>/dev/null) || continue
+        out="$RUN_DIR/gt/$node/sa/$2-$(date -u +%Y%m%dT%H%M%SZ).txt"; mkdir -p "${out%/*}"
+        if [ "$DRY" = "1" ]; then echo "DRY-RUN: docker exec $cid sh -c '$cmd' > $out"; continue; fi
+        docker exec "$cid" sh -c "$cmd" > "$out" 2>&1 || warn "ground truth: '$cmd' in $node failed (kept: $out)"
+    done
+    return 0
+}
+gt_collect() {  # gt_collect <scenario> — docker cp each gt_dirs=node:/path into gt/<node>/
+    local pair node path cid
+    for pair in $(conf "$1" gt_dirs); do
+        node=${pair%%:*}; path=${pair#*:}
+        cid=$(container_of "$WORK/nodes.tsv" "$node" 2>/dev/null) || { warn "ground truth: no container for $node — nothing collected from $path"; continue; }
+        mkdir -p "$RUN_DIR/gt/$node"
+        run docker cp "$cid:$path/." "$RUN_DIR/gt/$node/" || warn "ground truth: could not copy $node:$path"
+    done
+    return 0
+}
+gt_keys_state() {  # present if any node's keys.state says so, absent if every node says so, n/a with none
+    local f any=0 present=0
+    for f in "$RUN_DIR"/gt/*/keys.state; do [ -e "$f" ] || continue; any=1; grep -qx present "$f" && present=1; done
+    if [ "$any" -eq 0 ]; then printf 'n/a'; elif [ "$present" -eq 1 ]; then printf 'present'; else printf 'absent'; fi
+}
 # --impair <profile>@a|b and --events <file>: both checked before anything is
 # written, both undone by the trap. a/b are the run's TAP_A/TAP_B, read from the
 # project's Cloud nodes in cmd_record, never typed.
