@@ -950,6 +950,42 @@ pack_view_names() {  # every view name arkime-views should generate from $SCENAR
     [ "$output" = 0 ]
 }
 
+multi_pack() {  # a one-scenario pack whose range is a list of two CIDRs
+    export SCENARIO_DIR="$BATS_TEST_TMPDIR/multi-pack"
+    mkdir -p "$SCENARIO_DIR/multi"
+    printf 'name=multi\nrange=%s\n' "$1" > "$SCENARIO_DIR/multi/scenario.conf"
+    printf 'icmp||198.18.250.1/32|198.18.250.2/32\n' > "$SCENARIO_DIR/multi/expect.txt"
+}
+
+@test "a range list becomes one clause per CIDR in the range search and the range view" {
+    make_malcolm_tree "$ROOT"; malcolm_secret; multi_pack '198.18.250.0/24 10.250.0.0/16'
+    stub_curl_osd $(ipsec_ids) lab-scenario-multi lab-scenario-multi-row-1 lab-scenarios-overview
+    run malcolm dashboards
+    echo "$output"
+    [ "$status" -eq 0 ]
+    run search_of "$ROOT/opt/malcolm/scenarios.ndjson" lab-scenario-multi
+    [ "${lines[1]}" = 'source.ip:"198.18.250.0/24" or destination.ip:"198.18.250.0/24" or source.ip:"10.250.0.0/16" or destination.ip:"10.250.0.0/16"' ]
+    stub_curl_osd
+    run malcolm arkime-views
+    echo "$output"
+    [ "$status" -eq 0 ]
+    grep -qF '"name":"Scenario multi - all traffic","expression":"ip == 198.18.250.0/24 || ip == 10.250.0.0/16"' "$STUB_LOG"
+}
+
+@test "a range list holding a malformed CIDR is refused naming it, with nothing imported" {
+    make_malcolm_tree "$ROOT"; malcolm_secret; multi_pack '10.250.0.0/16 nope'
+    stub_curl_osd
+    run malcolm dashboards
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"'nope' is not an IPv4 CIDR"* ]]
+    run malcolm arkime-views
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"'nope' is not an IPv4 CIDR"* ]]
+    run grep -c -- '-X POST' "$STUB_LOG"
+    [ "$output" = 0 ]
+}
+
 # ── full ─────────────────────────────────────────────────────────────────────
 
 @test "full runs preflight through start in order: r770-import-bundle.sh for the shared steps, this script's own subcommands after" {
