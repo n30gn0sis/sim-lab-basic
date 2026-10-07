@@ -606,8 +606,14 @@ node's container). Every event must fall inside `traffic_secs` +
 `idle_secs`; the run waits for the last one. The file is copied into the run
 directory as `events.txt`, named in `run.conf` as `events=<file>`, and every
 executed event is a line of `events.log`:
-`<YYYY-MM-DDTHH:MM:SS.mmmZ>|<t>|<action>|<arg>|<rc>` (UTC, milliseconds; a
-non-zero `rc` is logged, never fatal). An unknown profile, a malformed spec
+`<YYYY-MM-DDTHH:MM:SS.mmmZ>|<t>|<action>|<arg>|<rc>` (UTC, milliseconds).
+Read `t` and `action` as the first fields after the stamp and `rc` as the
+**last** one: an `exec` or `note` argument may itself contain `|`. Timing is
+±1 s — the scheduler ticks on whole seconds; the millisecond stamp records
+when the event really ran. A non-zero `rc` does not stop the schedule, but
+each one is a WARN naming the event, so the run exits 2. An interrupted run
+that had `--impair` or `--events` kills the scheduler and everything it
+started, then clears and brings up both of its TAPs whatever was recorded. An unknown profile, a malformed spec
 or any bad line of the events file is refused before any capture starts, and
 `tests/helpers/lint_scenarios.py events` holds the pack's own
 `scenarios/<name>/events/*.txt` (`s1-w1-ss` ships `baseline.txt` and

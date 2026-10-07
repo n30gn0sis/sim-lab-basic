@@ -443,6 +443,18 @@ events_start() {  # events_start — the scheduler, in the background, t counted
         done < "$RUN_DIR/events.txt"
     ) & EV_PID=$!
 }
+tree_of() {  # tree_of <pid> — the pid and every descendant, one per line, children first
+    local c
+    for c in $(pgrep -P "$1" 2>/dev/null); do tree_of "$c"; done
+    printf '%s\n' "$1"
+}
+events_warn() {  # events_warn — one WARN per events.log line whose rc (the LAST field: an arg may hold |) is not 0
+    local et ea eg erc
+    [ -f "$RUN_DIR/events.log" ] || return 0
+    while IFS=$'\t' read -r et ea eg erc; do
+        warn "event t=$et $ea $eg exited $erc"
+    done < <(awk -F'|' '$NF != "0" { a = $4; for (i = 5; i < NF; i++) a = a "|" $i; print $2 "\t" $3 "\t" a "\t" $NF }' "$RUN_DIR/events.log")
+}
 # events_stop — wait for the scheduler to reach its last event (the idle tail
 # covers it on the box); idempotent, since the trap calls it again
 events_stop() { if [ -n "$EV_PID" ]; then wait "$EV_PID" 2>/dev/null || true; EV_PID=""; fi; }
@@ -489,9 +501,15 @@ capture_stop_all() {  # capture_stop_all — SIGINT each tcpdump (it then flushe
     CAP_PIDS=(); CAP_LABELS=()
 }
 record_cleanup() {  # the EXIT trap: nothing left running, nothing left shaped, the manifest closed
-    local t r cleared=" "
-    # interrupted mid-events: stop the scheduler rather than wait out its schedule
-    if [ -n "$EV_PID" ]; then kill "$EV_PID" 2>/dev/null || true; fi
+    local t r cleared=" " tree
+    # interrupted mid-events: stop the scheduler and everything it started (an
+    # r770-wan.sh apply, an ip link, a docker exec ignore the terminal's SIGINT
+    # as background children) rather than wait out its schedule. The tree is
+    # read before any kill, since a killed parent's children are reparented.
+    if [ -n "$EV_PID" ]; then
+        mapfile -t tree < <(tree_of "$EV_PID")
+        kill "${tree[@]}" 2>/dev/null || true
+    fi
     events_stop
     capture_stop_all
     # the scheduler's wan-apply ran in a subshell and could not grow IMPAIRED_TAPS:
@@ -503,6 +521,17 @@ record_cleanup() {  # the EXIT trap: nothing left running, nothing left shaped, 
         case "$cleared" in *" $t "*) continue ;; esac; cleared="$cleared$t "
         "$KIT_DIR/scripts/r770-wan.sh" clear "$t" >/dev/null 2>&1 || true
     done
+    # a run that could shape or take down a TAP leaves both of its TAPs clean
+    # and up, whatever run.conf and events.log managed to record before the
+    # interrupt (both idempotent, both TAPs this project's); a run with neither
+    # --impair nor --events touches neither
+    if [ -n "$EVENTS_FILE" ] || [ "${#IMPAIR[@]}" -gt 0 ]; then
+        for t in "$TAP_A_RUN" "$TAP_B_RUN"; do
+            [ -n "$t" ] || continue
+            case "$cleared" in *" $t "*) ;; *) cleared="$cleared$t "; "$KIT_DIR/scripts/r770-wan.sh" clear "$t" >/dev/null 2>&1 || true ;; esac
+            ip link set dev "$t" up 2>/dev/null || true
+        done
+    fi
     # a link-down event never outlives the run, even when its link-up never came
     if [ -n "$RUN_DIR" ] && [ -f "$RUN_DIR/events.log" ]; then
         while IFS= read -r r; do
@@ -593,6 +622,7 @@ cmd_record() {
     istart=$(date -u +%s); echo "idle_start=$istart" >> "$RUN_DIR/run.conf"
     if [ "$idle" -gt 0 ]; then note "idle tail: ${idle}s (DPD, keepalives)"; sleep "$idle"; fi
     events_stop
+    events_warn   # an event that failed is a run that did not happen as written
     gt_snapshot "$NAME" end
     capture_stop_all
     gt_collect "$NAME"; keys=$(gt_keys_state)

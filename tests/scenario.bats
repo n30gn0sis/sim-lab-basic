@@ -1066,12 +1066,26 @@ while True: time.sleep(0.1)
     PATH="$KIT_PATH" "$SCRIPT" record demo --events "$BATS_TEST_TMPDIR/ev.txt" > "$BATS_TEST_TMPDIR/out" 2>&1 &
     rpid=$!
     for _ in $(seq 100); do grep -qs '|link-down|' "$CASES"/demo/*/events.log && break; command sleep 0.1; done
-    t0=$(date +%s); kill -TERM "$rpid"; wait "$rpid" || true; cat "$BATS_TEST_TMPDIR/out"
+    # SIGTERM, not SIGINT: a background job of this non-interactive shell starts
+    # with SIGINT ignored. bash runs the EXIT trap, then dies of the signal: 143
+    t0=$(date +%s); kill -TERM "$rpid"; rc=0; wait "$rpid" || rc=$?; cat "$BATS_TEST_TMPDIR/out"
+    echo "exit: $rc"; [ "$rc" -eq 143 ]
     [ $(( $(date +%s) - t0 )) -lt 6 ]
     d=$(find "$CASES/demo" -mindepth 1 -maxdepth 1 -type d | head -1)
     ! grep -q 'never reached' "$d/events.log"
     grep -q '^impair=branch-wan@b:lab-tap1$' "$d/run.conf"; grep -q 'tc qdisc del dev lab-tap1 root' "$STUB_LOG"
     grep -q 'ip link set dev lab-tap1 up' "$STUB_LOG"
     grep -q '^end=interrupted ' "$d/run.conf"
-    command sleep 0.3; ! pgrep -f "$CASES" >/dev/null
+    # both TAPs of a run with --events are cleared and brought up, logged or not
+    grep -q 'ip link set dev lab-tap0 up' "$STUB_LOG"   # (lab-tap0 was never shaped: r770-wan.sh clear finds it clean, no tc)
+    command sleep 0.3; ! pgrep -f "$CASES" >/dev/null; ! pgrep -f "$BATS_TEST_TMPDIR/ev.txt" >/dev/null
+}
+
+@test "record --events: a failed event is a WARN naming it, and the run exits 2" {
+    record_env; scenario up demo --bundle "$BUNDLE" >/dev/null
+    sed -i '1a case "$*" in *"sh -c boom"*) echo "docker $*" >> "$STUB_LOG"; exit 1 ;; esac' "$BIN/docker"
+    printf '0|note|go\n1|exec|a|boom | x\n' > "$BATS_TEST_TMPDIR/ev.txt"
+    run scenario record demo --events "$BATS_TEST_TMPDIR/ev.txt"; echo "$output"; [ "$status" -eq 2 ]
+    [[ "$output" == *"WARN  event t=1 exec a|boom | x exited 1"* ]]
+    [ "$(grep -c '^WARN  event' <<< "$output")" -eq 1 ]
 }
