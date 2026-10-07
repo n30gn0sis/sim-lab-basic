@@ -278,7 +278,7 @@ cmd_list() {
     for c in "$SCEN_DIR"/*/scenario.conf; do
         [ -e "$c" ] || continue
         n=$(basename "$(dirname "$c")")
-        printf '%-16s %-16s %s\n' "$n" "$(conf "$n" range)" "$(conf "$n" description)"
+        printf '%-16s %-36s %s\n' "$n" "$(conf "$n" range)" "$(conf "$n" description)"
         if [ -z "$b" ]; then note "images: $(conf "$n" images) (pass --bundle to check them)"; continue; fi
         miss=$(missing_images "$b" "$n")
         if [ -z "$miss" ]; then note "runnable with this bundle"

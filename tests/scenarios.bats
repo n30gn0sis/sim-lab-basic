@@ -133,3 +133,25 @@ PY
     [ "$status" -eq 1 ]
     [[ "$output" == *"revision"* ]]
 }
+
+@test "the layout lint accepts a range list and rejects a CIDR shared between scenarios" {
+    d="$BATS_TEST_TMPDIR/pack"; mkdir -p "$d"
+    for s in one two; do
+        mkdir -p "$d/$s/project" "$d/$s/nodes"
+        cp scenarios/client-server/project/client-server.gns3 "$d/$s/project/$s.gns3"
+        printf 'name=%s\ndescription=x\nimages=netshoot\ntraffic_secs=10\nready=cl|true\ntraffic_nodes=cl\n' "$s" > "$d/$s/scenario.conf"
+    done
+    echo 'range=198.18.10.0/24 10.210.0.0/16' >> "$d/one/scenario.conf"
+    echo 'range=198.18.11.0/24 10.211.0.0/16' >> "$d/two/scenario.conf"
+    printf '#!/bin/sh\nping -c 1 198.18.10.2\n' > "$d/one/traffic.sh"
+    printf 'icmp||198.18.10.0/30|10.210.1.0/24\n' > "$d/one/expect.txt"
+    printf '#!/bin/sh\nping -c 1 198.18.11.2\n' > "$d/two/traffic.sh"
+    printf 'icmp||198.18.11.0/30|10.211.1.0/24\n' > "$d/two/expect.txt"
+    SCENARIOS_ROOT="$d" run python3 tests/helpers/lint_scenarios.py layout; echo "$output"; [ "$status" -eq 0 ]
+    SCENARIOS_ROOT="$d" run python3 tests/helpers/lint_scenarios.py addresses; echo "$output"; [ "$status" -eq 0 ]
+    SCENARIOS_ROOT="$d" run python3 tests/helpers/lint_scenarios.py expect; echo "$output"; [ "$status" -eq 0 ]
+    # the second scenario claims a slice inside the first's /16
+    sed -i 's|^range=.*|range=198.18.11.0/24 10.210.5.0/24|' "$d/two/scenario.conf"
+    SCENARIOS_ROOT="$d" run python3 tests/helpers/lint_scenarios.py layout; echo "$output"
+    [ "$status" -ne 0 ]; [[ "$output" == *"overlaps"* ]]
+}

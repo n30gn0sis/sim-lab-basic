@@ -17,6 +17,15 @@ PROTOS = {"tcp", "udp", "icmp", "esp", "ospf"}
 NODE_SUFFIXES = (".sh", ".frr.conf", ".swanctl.conf")  # the only kinds r770-scenario.sh applies
 
 
+def ranges_of(c):
+    """range= is a space-separated list of CIDRs; one is the common case."""
+    return [ipaddress.ip_network(r) for r in c["range"].split()]
+
+
+def in_ranges(ip, nets):
+    return any(ip in n for n in nets)
+
+
 def scenarios():
     return sorted(d for d in os.listdir(ROOT) if os.path.isfile(os.path.join(ROOT, d, "scenario.conf")))
 
@@ -150,7 +159,7 @@ def check_images(s, c, errs):
 
 
 def check_addresses(s, c, errs):
-    net = ipaddress.ip_network(c["range"])
+    nets = ranges_of(c)
     files = ["traffic.sh", "expect.txt", "scenario.conf"]
     nd = os.path.join(ROOT, s, "nodes")
     if os.path.isdir(nd):
@@ -160,13 +169,13 @@ def check_addresses(s, c, errs):
             text = fh.read()
         for a in re.findall(r"\b\d{1,3}(?:\.\d{1,3}){3}\b", text):
             ip = ipaddress.ip_address(a)
-            if ip in net or ip.is_multicast or ip == ipaddress.ip_address("0.0.0.0"):
+            if in_ranges(ip, nets) or ip.is_multicast or ip == ipaddress.ip_address("0.0.0.0"):
                 continue
-            errs.append(f"{s}: {f} names {a}, outside {net}")
+            errs.append(f"{s}: {f} names {a}, outside {c['range']}")
 
 
 def check_expect(s, c, errs):
-    net = ipaddress.ip_network(c["range"])
+    nets = ranges_of(c)
     with open(os.path.join(ROOT, s, "expect.txt")) as f:
         lines = [line.strip() for line in f if line.strip() and not line.startswith("#")]
     if not lines:
@@ -183,8 +192,8 @@ def check_expect(s, c, errs):
             errs.append(f"{s}: expect.txt port {port!r} is not a number")
         for r in (src, dst):
             n = ipaddress.ip_network(r)
-            if not (n.subnet_of(net) or n.is_multicast):
-                errs.append(f"{s}: expect.txt range {r} is outside {net}")
+            if not (any(n.subnet_of(net) for net in nets) or n.is_multicast):
+                errs.append(f"{s}: expect.txt range {r} is outside {c['range']}")
 
 
 def main():
@@ -193,17 +202,18 @@ def main():
     names = scenarios()
     if check == "layout" and not names:
         errs.append("no scenarios under scenarios/")
-    ranges = {}
+    owned = []  # (scenario, network)
     for s in names:
         c = conf(s)
         if check == "layout":
             check_layout(s, c, errs)
-            ranges.setdefault(c.get("range"), []).append(s)
+            for n in ranges_of(c) if c.get("range") else []:
+                for (s2, n2) in owned:
+                    if s2 != s and n.overlaps(n2):
+                        errs.append(f"range {n} of {s} overlaps {n2} of {s2}")
+                owned.append((s, n))
         else:
             globals()["check_" + check](s, c, errs)
-    for r, ss in ranges.items():
-        if len(ss) > 1:
-            errs.append(f"range {r} is shared by {ss}")
     for e in errs:
         print(e)
     return 1 if errs else 0

@@ -459,7 +459,7 @@ passes, the nodes are left running for inspection and `down` removes them.
 `traffic` runs only when the scenario is ready and writes
 `scenario-<name>-<host>-<ts>.run` (UTC start/end, range, TAPs) beside the
 transcript. `ipsec-ike` refuses until a bundle carries a strongSwan image.
-Each scenario owns one /16 (`client-server` 10.205, `ipsec-esp` 10.201,
+Each scenario owns one or more ranges, none overlapping another's (`client-server` 10.205, `ipsec-esp` 10.201,
 `ipsec-ike` 10.202, `ospf` 10.203, `bgp` 10.204, `dns` 10.206, `tls` 10.207, `ssh` 10.208), so two can share the hub.
 
 A scenario's `expect.txt` lists the flows a run's window must show on the
