@@ -80,14 +80,16 @@ cmd_apply() {
         die "tc refused — $tap may be partly shaped; run r770-wan.sh clear $tap"
     fi
     if [ "$DRY" != "1" ]; then mkdir -p "$(p "$STATE")"; printf '%s\n' "$prof" > "$(p "$STATE")/$tap"; fi
-    pass "$tap shaped as $prof (frames the host sends into $tap)"
+    # a dry run shaped nothing, so it claims nothing (r770-gns3-deploy.sh's idiom)
+    if [ "$DRY" = "1" ]; then note "DRY-RUN: $tap would be shaped as $prof"
+    else pass "$tap shaped as $prof (frames the host sends into $tap)"; fi
     footer "apply"
 }
 clear_one() {  # clear_one <tap> [sweep] — sweep also deletes a root qdisc nothing here recorded
     if [ -z "${2:-}" ] && [ -z "$(applied "$1")" ] && ! tc qdisc show dev "$1" 2>/dev/null | grep -q netem; then pass "$1 already clean"; return 0; fi
     run tc qdisc del dev "$1" root || note "tc had no root qdisc to delete on $1 (already default)"
     [ "$DRY" = "1" ] || rm -f "$(p "$STATE")/$1"
-    pass "$1 clean"
+    if [ "$DRY" = "1" ]; then note "DRY-RUN: $1 would be cleared"; else pass "$1 clean"; fi
 }
 cmd_clear() {
     need_root

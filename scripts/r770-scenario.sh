@@ -13,16 +13,22 @@
 #                   node's config with docker exec, wait until it is ready
 #   traffic <name>  run the scenario's traffic for its window; write a run
 #                   record (UTC start/end, range, TAPs) under r770-evidence/
-#   record <name>   traffic, captured: outer on the first kit TAP, inner in
-#                   each inner_capture node's netns, an idle tail, and a run
-#                   directory (run.conf, drop stats, sha256sums)
+#   record <name>   traffic, captured: outer on TAP_A (the Cloud named tap-a),
+#                   inner in each inner_capture node's netns, an idle tail, and
+#                   a run directory (run.conf with result=, drop stats,
+#                   sha256sums); a capture that ends early FAILs the run
 #   verify <run-dir> judge a finished run directory with tshark: every row of
 #                   the scenario's pcap-expect.txt, decryption (only with
 #                   discovered keys), zero kernel drops; writes expected.md
+#                   into the run directory (run it as that directory's owner)
+#   ingest <run-dir> copy the run's captures into Malcolm's upload drop-off as
+#                   <run-id>,<view>.pcapng (tags <run-id>, outer, inner-<node>);
+#                   refuses an interrupted run, WARNs on result=FAIL
 #   down <name>     stop and delete the imported project (idempotent)
 #   status          which scenarios are up, their TAPs, their last run record
 #   check <name>    judge the newest traffic run in Malcolm: every expect.txt
 #                   row must show sessions in Arkime within the run's window
+#                   (the live mirror's view; it does not prove an ingest)
 #
 #   --bundle <dir>  the bundle (list, up): image references are read from its
 #                   gns3/docker-nodes/image-list.txt, never typed here
@@ -340,6 +346,7 @@ write_run_record() {  # write_run_record <start> <end> <secs> <ok> <badn> <taps>
         echo "nodes_ok=$4"; echo "nodes_failed=$(printf '%s' "$5" | wc -w)"
         echo "expect=scenarios/$NAME/expect.txt"
         if [ -n "${7:-}" ]; then echo "case=$7"; fi
+        if [ -n "$RUN_RESULT" ]; then echo "result=$RUN_RESULT"; fi
     } > "$rec"
     note "run record: $rec"
 }
@@ -392,9 +399,17 @@ gt_snapshot() {  # gt_snapshot <scenario> <tag> — each gt= command's output in
         cid=$(container_of "$WORK/nodes.tsv" "$node" 2>/dev/null) || continue
         out="$RUN_DIR/gt/$node/sa/$2-$(date -u +%Y%m%dT%H%M%SZ).txt"; mkdir -p "${out%/*}"
         if [ "$DRY" = "1" ]; then echo "DRY-RUN: docker exec $cid sh -c '$cmd' > $out"; continue; fi
-        docker exec "$cid" sh -c "$cmd" > "$out" 2>&1 || warn "ground truth: '$cmd' in $node failed (kept: $out)"
+        # a line in .gt-warnings, not a warn: in the scheduler's subshell a warn
+        # would raise only the subshell's tally, and the run would still exit 0
+        docker exec "$cid" sh -c "$cmd" > "$out" 2>&1 || printf "ground truth: '%s' in %s failed (kept: %s)\n" "$cmd" "$node" "$out" >> "$RUN_DIR/.gt-warnings"
     done
     return 0
+}
+gt_warn() {  # gt_warn — one WARN per .gt-warnings line (snapshots from the parent and the scheduler alike), then the file goes
+    local l
+    [ -f "$RUN_DIR/.gt-warnings" ] || return 0
+    while IFS= read -r l; do warn "$l"; done < "$RUN_DIR/.gt-warnings"
+    rm -f "$RUN_DIR/.gt-warnings"
 }
 gt_collect() {  # gt_collect <scenario> — docker cp each gt_dirs=node:/path into gt/<node>/
     local pair node path cid
@@ -414,7 +429,7 @@ gt_keys_state() {  # present if any node's keys.state says so, absent if every n
 # --impair <profile>@a|b and --events <file>: both checked before anything is
 # written, both undone by the trap. a/b are the run's TAP_A/TAP_B, read from the
 # project's Cloud nodes in cmd_record, never typed.
-IMPAIR=(); EVENTS_FILE=""; EV_PID=""; TAP_A_RUN=""; TAP_B_RUN=""
+IMPAIR=(); EVENTS_FILE=""; EV_PID=""; TAP_A_RUN=""; TAP_B_RUN=""; CAP_EARLY=""; RUN_RESULT=""
 tap_of_role() { case "$1" in a) printf '%s' "$TAP_A_RUN" ;; b) printf '%s' "$TAP_B_RUN" ;; *) return 1 ;; esac; }
 side_check() {  # side_check <a|b> <what> — this project binds a TAP on that side, or die
     [ -n "$(tap_of_role "$1")" ] || die "$2: this project binds no TAP for side $1"
@@ -514,7 +529,12 @@ capture_start() {  # capture_start <label> <iface> [<netns-pid>] — a tcpdump i
     note "capture $1: $2${3:+ inside netns of pid $3} -> $out"
 }
 capture_stop_all() {  # capture_stop_all — SIGINT each tcpdump (it then flushes and prints its counts), wait, keep the counts
-    local i n live
+    local i n live rc
+    local -a early=()
+    # a tcpdump already gone before our SIGINT ended on its own -- libpcap gives
+    # up when its interface goes down, and a link-down event on the capture's own
+    # TAP can do that -- and its partial file must not pass for a whole one
+    for i in "${!CAP_PIDS[@]}"; do kill -0 "${CAP_PIDS[$i]}" 2>/dev/null || early[i]=1; done
     for i in "${!CAP_PIDS[@]}"; do kill -INT "${CAP_PIDS[$i]}" 2>/dev/null || true; done
     # a background job starts with SIGINT ignored until tcpdump installs its own
     # handler, so a SIGINT sent in that first instant (the trap firing right
@@ -528,8 +548,11 @@ capture_stop_all() {  # capture_stop_all — SIGINT each tcpdump (it then flushe
     done
     for i in "${!CAP_PIDS[@]}"; do kill -TERM "${CAP_PIDS[$i]}" 2>/dev/null || true; done
     for i in "${!CAP_PIDS[@]}"; do
-        wait "${CAP_PIDS[$i]}" 2>/dev/null || true
-        printf '%s: %s\n' "${CAP_LABELS[$i]}" "$(grep -E 'dropped by kernel|captured' "$RUN_DIR/.${CAP_LABELS[$i]}.stats" 2>/dev/null | paste -sd';' - | sed 's/;/; /g')" >> "$RUN_DIR/capture-stats.txt"
+        rc=0; wait "${CAP_PIDS[$i]}" 2>/dev/null || rc=$?
+        if [ -n "${early[i]:-}" ]; then
+            printf '%s: exited early (rc %s) — %s\n' "${CAP_LABELS[$i]}" "$rc" "$(head -1 "$RUN_DIR/.${CAP_LABELS[$i]}.stats" 2>/dev/null)" >> "$RUN_DIR/capture-stats.txt"
+            CAP_EARLY="$CAP_EARLY ${CAP_LABELS[$i]}"
+        else printf '%s: %s\n' "${CAP_LABELS[$i]}" "$(grep -E 'dropped by kernel|captured' "$RUN_DIR/.${CAP_LABELS[$i]}.stats" 2>/dev/null | paste -sd';' - | sed 's/;/; /g')" >> "$RUN_DIR/capture-stats.txt"; fi
         rm -f "$RUN_DIR/.${CAP_LABELS[$i]}.stats"
     done
     CAP_PIDS=(); CAP_LABELS=()
@@ -592,8 +615,12 @@ cmd_record() {
     case "$secs" in ''|*[!0-9]*) die "the traffic window must be whole seconds (got '$secs')" ;; esac
     case "$idle" in *[!0-9]*) die "idle_secs must be whole seconds (got '$idle')" ;; esac
     taps=$(awk -F'\t' '$2 == "cloud" && $5 != "" {print $5}' "$WORK/nodes.tsv" | paste -sd, -)
-    IFS=, read -r tap_a tap_b _ <<< "$taps"
-    [ -n "$tap_a" ] || die "no kit TAP bound by this project's Cloud nodes — not a pack scenario?"
+    # sides by Cloud NAME, never by GNS3's node order: every pack project names
+    # its gateway-side Cloud tap-a and its ISP-side Cloud tap-b (lint_scenarios.py
+    # topology enforces it), and the order /nodes returns is GNS3's, not ours
+    tap_a=$(awk -F'\t' '$1 == "tap-a" && $2 == "cloud" {print $5}' "$WORK/nodes.tsv" | head -1)
+    tap_b=$(awk -F'\t' '$1 == "tap-b" && $2 == "cloud" {print $5}' "$WORK/nodes.tsv" | head -1)
+    [ -n "$tap_a" ] || die "no Cloud named tap-a binding a kit TAP in this project — not a pack scenario? (pack projects name their Clouds tap-a and tap-b)"
     TAP_A_RUN=$tap_a; TAP_B_RUN=$tap_b
     # every inner point resolved to a running netns now, so a typo in
     # scenario.conf is refused before anything is written under cases/
@@ -658,14 +685,22 @@ cmd_record() {
     events_stop
     events_warn   # an event that failed is a run that did not happen as written
     gt_snapshot "$NAME" end
+    gt_warn       # every snapshot that failed, the scheduler's included
     capture_stop_all
     gt_collect "$NAME"; keys=$(gt_keys_state)
+    for l in "${labels[@]}"; do [ -s "$RUN_DIR/$l.pcapng" ] || bad_caps="$bad_caps $l"; done
+    # the verdict goes into run.conf before end=, so ingest can refuse a FAIL
+    # without re-deriving it; WARN covers the warns already printed (events, gt)
+    if [ -n "$CAP_EARLY" ] || [ -n "$bad_caps" ] || [ "$T_OK" -eq 0 ]; then RUN_RESULT=FAIL
+    elif [ -n "$T_BADN" ] || [ "$WARNED" -gt 0 ]; then RUN_RESULT=WARN
+    else RUN_RESULT=PASS; fi
     end=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-    { echo "keys=$keys"; echo "load_end=$(cut -d' ' -f1 "$(p /proc/loadavg)")"; echo "end=$end"; } >> "$RUN_DIR/run.conf"
+    { echo "keys=$keys"; echo "load_end=$(cut -d' ' -f1 "$(p /proc/loadavg)")"; echo "result=$RUN_RESULT"; echo "end=$end"; } >> "$RUN_DIR/run.conf"
     ( cd "$RUN_DIR" && find . -maxdepth 1 -name '*.pcapng' -printf '%P\n' | sort | xargs -r sha256sum > sha256sums )
     write_run_record "$start" "$end" "$secs" "$T_OK" "$T_BADN" "$taps" "$RUN_DIR"
-    for l in "${labels[@]}"; do [ -s "$RUN_DIR/$l.pcapng" ] || bad_caps="$bad_caps $l"; done
+    if [ -n "$CAP_EARLY" ]; then fail "recorded $RUN_ID, but capture(s) ended before the run did:$CAP_EARLY (see capture-stats.txt) — $RUN_DIR kept for inspection"; fi
     if [ -n "$bad_caps" ]; then fail "recorded $RUN_ID, but capture(s) missing or empty:$bad_caps — $RUN_DIR kept for inspection"
+    elif [ -n "$CAP_EARLY" ]; then :
     elif [ -z "$T_BADN" ]; then pass "recorded $RUN_ID: traffic ran in every node:$T_OKN"
     elif [ "$T_OK" -gt 0 ]; then warn "recorded $RUN_ID with traffic failed in:$T_BADN"
     else fail "no traffic generator ran (failed in:$T_BADN) — $RUN_DIR kept for inspection"; fi
@@ -920,11 +955,23 @@ decrypt_check() {  # decrypt_check <run-dir> — X7: outer ESP decrypts with the
     else expected_row FAIL "X7 decryption: keys present but no ESP packet decoded — compare esp_sa's SPIs with the outer capture"; fi
 }
 drops_check() {  # drops_check <run-dir> — X8
-    local bad
+    local f l line early="" none="" drops=""
     if [ ! -s "$1/capture-stats.txt" ]; then expected_row FAIL "X8 drops: no capture-stats.txt"; return 0; fi
-    bad=$(grep -v ' 0 packets dropped by kernel' "$1/capture-stats.txt" | cut -d: -f1 | tr '\n' ' ')
-    if [ -z "$bad" ]; then expected_row PASS "X8 drops: 0 packets dropped by kernel on every capture"
-    else expected_row FAIL "X8 drops: kernel drops on: ${bad% }"; fi
+    # judged per capture run.conf names, so a missing line is a finding, not a pass;
+    # a capture that ended on its own is not a drop count and is said apart
+    while IFS= read -r f; do
+        l=${f%.pcapng}; line=$(grep -m1 "^$l: " "$1/capture-stats.txt")
+        case "$line" in
+            *": exited early"*) early="$early $l" ;;
+            ''|"$l: ") none="$none $l" ;;
+            *' 0 packets dropped by kernel'*) ;;
+            *) drops="$drops $l" ;;
+        esac
+    done < <(sed -n 's/^\(outer\|inner\)=\([^:]*\).*/\2/p' "$1/run.conf")
+    [ -z "$early" ] || expected_row FAIL "X8 drops: capture ended abnormally (exited early, see capture-stats.txt) on:$early"
+    [ -z "$none" ] || expected_row FAIL "X8 drops: no stats for:$none"
+    [ -z "$drops" ] || expected_row FAIL "X8 drops: kernel drops on:$drops"
+    if [ -z "$early$none$drops" ]; then expected_row PASS "X8 drops: 0 packets dropped by kernel on every capture"; fi
 }
 cmd_verify() {
     banner "verify — $RUN_DIR_ARG"
@@ -935,7 +982,10 @@ cmd_verify() {
     work
     f="$SCEN_DIR/$s/pcap-expect.txt"
     istart=$(rc_get "$d" idle_start)
-    { echo "# expected observations — $(rc_get "$d" run_id)"; echo; } > "$d/expected.md"
+    # expected.md lands in the run directory, root-owned under /data/pcap/cases:
+    # a verdict that cannot be written down is not given at all
+    { echo "# expected observations — $(rc_get "$d" run_id)"; echo; } 2>/dev/null > "$d/expected.md" \
+        || die "cannot write $d/expected.md — run verify as the user who owns the run directory (normally root)"
     if [ -f "$f" ]; then
         n=0; rows=0
         while IFS= read -r line; do
@@ -951,7 +1001,9 @@ cmd_verify() {
     fi
     decrypt_check "$d"
     drops_check "$d"
-    note "X9 (Malcolm): r770-scenario.sh ingest $d, then r770-scenario.sh check $s"
+    # check counts the live mirror's sessions over the window, so it cannot tell
+    # whether the upload landed: the upload's proof is the run-id tag in Arkime
+    note "X9 (Malcolm): r770-scenario.sh ingest $d, then an Arkime search on tag $(rc_get "$d" run_id) (check $s shows the live view only)"
     footer "verify"
 }
 
@@ -973,6 +1025,9 @@ cmd_ingest() {
     local d=$RUN_DIR_ARG up rid f view n=0
     if ! { [ -n "$d" ] && [ -f "$d/run.conf" ]; }; then die "${d:-ingest} has no run.conf — not a run directory"; fi
     rid=$(rc_get "$d" run_id); [ -n "$rid" ] || die "$d/run.conf has no run_id"
+    # record closes run.conf with end=<UTC> only on a run it finished; its trap
+    # writes end=interrupted, and a half-run is no reference set for Malcolm
+    grep -q '^end=20' "$d/run.conf" || die "$d is an interrupted run — not a reference set (run.conf has no clean end=); nothing was copied"
     up="$(p "${MALCOLM_HOME:-/opt/malcolm}")/malcolm/pcap/upload"
     [ -d "$up" ] || die "no Malcolm drop-off at $up — Malcolm is not set up here (r770-malcolm-deploy.sh full)"
     # first pass: every capture must exist and be non-empty before any copy
@@ -986,7 +1041,9 @@ cmd_ingest() {
         run chown 1000:1000 "$up/$rid,$view.pcapng" || warn "could not chown $rid,$view.pcapng to 1000:1000 — Malcolm's upload watcher may ignore it"
     done < <(ingest_views "$d")
     [ "$DRY" = "1" ] || echo "ingest=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$d/run.conf"
-    pass "$n capture(s) handed to Malcolm as $rid,<view>.pcapng (tags: $rid, outer, inner-<node>); gt/ stayed in $d"
+    [ "$(rc_get "$d" result)" != FAIL ] || warn "$rid recorded result=FAIL — handed over anyway; read its transcript before trusting what Malcolm shows"
+    if [ "$DRY" = "1" ]; then note "DRY-RUN: $n capture(s) would be handed to Malcolm as $rid,<view>.pcapng"
+    else pass "$n capture(s) handed to Malcolm as $rid,<view>.pcapng (tags: $rid, outer, inner-<node>); gt/ stayed in $d"; fi
     note "then: r770-scenario.sh check $(rc_get "$d" scenario)   (record wrote the run record)"
     footer "ingest"
 }

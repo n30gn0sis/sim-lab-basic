@@ -194,3 +194,15 @@ PY
     run env SCENARIOS_ROOT="$d" python3 tests/helpers/lint_scenarios.py pcap-expect; echo "$output"
     [ "$status" -ne 0 ]; [ "$(grep -c 'pcap-expect.txt line' <<< "$output")" -eq 5 ]
 }
+
+@test "the topology lint rejects Clouds not named tap-a/tap-b, and tap-a carrying __TAP_B__" {
+    d="$BATS_TEST_TMPDIR/pack"; mkdir -p "$d"; cp -r scenarios/client-server "$d/"
+    f="$d/client-server/project/client-server.gns3"; cp "$f" "$BATS_TEST_TMPDIR/orig"
+    python3 -c 'import json, sys; f = sys.argv[1]; p = json.load(open(f)); [n.update(name={"tap-a": "tap-b", "tap-b": "tap-a"}[n["name"]]) for n in p["topology"]["nodes"] if n["name"] in ("tap-a", "tap-b")]; json.dump(p, open(f, "w"))' "$f"
+    SCENARIOS_ROOT="$d" run python3 tests/helpers/lint_scenarios.py topology; echo "$output"
+    [ "$status" -eq 1 ]; [[ "$output" == *"Cloud tap-a must carry __TAP_A__"* ]]
+    cp "$BATS_TEST_TMPDIR/orig" "$f"
+    python3 -c 'import json, sys; f = sys.argv[1]; p = json.load(open(f)); [n.update(name="edge") for n in p["topology"]["nodes"] if n["name"] == "tap-a"]; json.dump(p, open(f, "w"))' "$f"
+    SCENARIOS_ROOT="$d" run python3 tests/helpers/lint_scenarios.py topology; echo "$output"
+    [ "$status" -eq 1 ]; [[ "$output" == *"Clouds must be named exactly tap-a and tap-b"* ]]
+}

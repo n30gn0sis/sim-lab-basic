@@ -613,7 +613,7 @@ udp|500|198.18.11.2/32|198.18.11.6/32
 esp||198.18.11.2/32|198.18.11.6/32
 esp||198.18.11.6/32|198.18.11.2/32
 ```
-`pcap-expect.txt` (spec X1–X6, X8; X7 and X9 are `verify`'s built-ins):
+`pcap-expect.txt` (spec X1–X6, X8; X7 and X8 are `verify`'s built-ins; X9 is Malcolm's: `check` proves the run's flows are in Malcolm over the run's window — the live mirror's view, which saw the outer traffic during `record`, so it passes whether or not the upload was ingested — and the proof that the upload was ingested is an Arkime tag search for `<run-id>` (and `outer` / `inner-<node>`), done on staging in Task 11):
 ```text
 outer|count|isakmp && udp.port==500 && ip.addr==198.18.11.2 && ip.addr==198.18.11.6|>0|X1 IKE_SA_INIT/IKE_AUTH on udp/500 between the public addresses
 outer|count|udp.port==4500|0|X2 no NAT, MOBIKE off: nothing on udp/4500
@@ -1200,7 +1200,7 @@ cmd_verify() {
     fi
     decrypt_check "$d"
     drops_check "$d"
-    note "X9 (Malcolm): r770-scenario.sh ingest $d, then r770-scenario.sh check $s"
+    note "X9 (Malcolm): r770-scenario.sh ingest $d, then an Arkime search on tag $(rc_get "$d" run_id) (check $s shows the live view only)"
     footer "verify"
 }
 ```
@@ -1316,7 +1316,8 @@ This task runs on the staging host (VM 9770, air gap blocked, a bundle cut from 
 - [ ] **S1 — `up s1-w1-ss`**; inside `gw-a`: `swanctl --list-sas` shows `s1-net` INSTALLED; `cat /gt/keys.state` → the O3 answer (present/absent) — **write it into `docs/kit-sync.md`**. `ip xfrm state` non-empty (spec R2).
 - [ ] **S1 — negative test (spec §11.1):** with the tunnel down (`swanctl --terminate --ike s1` on gw-a, then before any traffic re-triggers it) a ping h-a→h-b fails — the ISP has no route to the sites. Recorded as the expected failure.
 - [ ] **S1 — reference run:** `record s1-w1-ss --events scenarios/s1-w1-ss/events/baseline.txt`, then `verify <run-dir>`: X1–X6, X8 PASS; X7 PASS or SKIP per O3. **If X2 fails (packets on 4500):** MOBIKE is not the whole story — read `gt/gw-a/charon.log` for the float reason; one hypothesis, one change. **If X5 fails:** the 240 s window did not span a rekey (strongSwan randomises `rekey_time` downward by `rand_time`, default 10%); raise `traffic_secs` to 300 — one change.
-- [ ] **S1 — X9:** `ingest`, then `check s1-w1-ss` PASS; Arkime tag query shows IKE/ESP only under `outer`, the clear flows under `inner-gw-a`.
+- [ ] **S1 — X9:** `ingest`, then `check s1-w1-ss` PASS — which proves only the live mirror's view of the run's window, not the upload. The ingest proof: an Arkime search on tag `<run-id>` finds the uploaded sessions, IKE/ESP only under `outer`, the clear flows under `inner-gw-a`. Expect the outer sessions twice (live + upload), told apart by the tag.
+- [ ] **Final-review carry-ins (measure, write the answer into the runbook):** (a) tcpdump on `link-down` of its own TAP — does it exit (libpcap error) or keep running? `record` now FAILs a capture that ends early (`capture-stats.txt`: `exited early`), so a `wan-flap.txt` event on TAP_A may fail the run by design — decide whether link events belong on TAP_B only; (b) `record` under a real Ctrl-C (SIGINT from the terminal — the tests use SIGTERM): the trap runs, captures stop, `end=interrupted`; (c) the Arkime tag search for the ingested files (`<run-id>`, `outer`, `inner-<node>`); (d) whether Malcolm's drop-off watcher picks up a file still being written — if so, `ingest` must copy as a dotfile and then `mv` into place.
 - [ ] **S1 — flap variant:** `record s1-w1-ss --events scenarios/s1-w1-ss/events/wan-flap.txt`; `events.log` complete; `gt/gw-a/sa/t90-link-down-*.txt` vs `t120-link-up-*.txt` show the DPD restart (new IKE SPIs); `verify` X1–X6 PASS.
 - [ ] **Docs.** Runbook section: status "rehearsed <date> on VM 9770, bundle <id>"; measured baseline RTT/throughput; O3's answer; H7's direction; the pass table X1–X9 with the run ids. `docs/kit-sync.md`: the carry-backs as confirmed. `./tests/run.sh` green. **Commit:** `git commit -m "IPsec & WAN scenarios: staging rehearsal — H1–H7, S0 baseline, S1 reference set; docs as measured"`
 

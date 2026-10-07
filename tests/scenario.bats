@@ -1195,3 +1195,77 @@ esac'
     rm "$RD/run.conf"; run scenario ingest "$RD"; [ "$status" -eq 1 ]; [[ "$output" == *"no run.conf"* ]]
     [ "$(find "$up" -type f | wc -l)" -eq 0 ]
 }
+
+# ── final-review fixes: TAP sides by Cloud name, captures that die, result= ─
+@test "record takes TAP_A from the Cloud named tap-a, whatever order GNS3 lists the nodes in; refuses a project without one" {
+    record_env; sed -i '/^inner_capture=/d' "$SCENARIO_DIR/demo/scenario.conf"
+    scenario up demo --bundle "$BUNDLE" >/dev/null
+    python3 -c 'import json, sys; f = sys.argv[1]; p = json.load(open(f)); [x["topology"]["nodes"].reverse() for x in p]; json.dump(p, open(f, "w"))' "$FAKE_GNS3/projects.json"
+    run scenario record demo; echo "$output"; [ "$status" -eq 0 ]
+    d=$(find "$CASES/demo" -mindepth 1 -maxdepth 1 -type d | head -1)
+    grep -q '^tap_a=lab-tap0$' "$d/run.conf"; grep -q '^tap_b=lab-tap1$' "$d/run.conf"
+    python3 -c 'import json, sys; f = sys.argv[1]; p = json.load(open(f)); [n.update(name="edge") for x in p for n in x["topology"]["nodes"] if n["name"] == "tap-a"]; json.dump(p, open(f, "w"))' "$FAKE_GNS3/projects.json"
+    run scenario record demo; echo "$output"; [ "$status" -eq 1 ]; [[ "$output" == *"no Cloud named tap-a"* ]]
+}
+@test "record FAILs a capture that exits mid-run, naming it in capture-stats.txt as exited early" {
+    record_env; scenario up demo --bundle "$BUNDLE" >/dev/null
+    # traffic.sh arms it: the outer tcpdump then writes its bytes and dies, as libpcap does when its TAP goes down
+    sed -i '1a case "$*" in *"exec -i"*) touch "$BATS_TEST_TMPDIR/kill-cap" ;; esac' "$BIN/docker"
+    stub tcpdump 'echo "tcpdump $*" >> "$STUB_LOG"
+exec python3 -c "
+import os, signal, sys, time
+out = sys.argv[sys.argv.index(\"-w\") + 1]; arm = os.environ[\"BATS_TEST_TMPDIR\"] + \"/kill-cap\"
+def stop(*_):
+    sys.stderr.write(\"7 packets captured\n0 packets dropped by kernel\n\"); sys.exit(0)
+signal.signal(signal.SIGINT, stop); signal.signal(signal.SIGTERM, stop)
+open(out, \"w\").write(\"pcap\")
+while True:
+    time.sleep(0.1)
+    if \"outer\" in out and os.path.exists(arm):
+        sys.stderr.write(\"tcpdump: pcap_loop: The interface disappeared\n\"); sys.exit(1)
+" "$@"'
+    run scenario record demo; echo "$output"; [ "$status" -eq 1 ]
+    d=$(find "$CASES/demo" -mindepth 1 -maxdepth 1 -type d | head -1)
+    grep -q '^outer-lab-tap0: exited early (rc 1) — tcpdump: pcap_loop: The interface disappeared$' "$d/capture-stats.txt"
+    [[ "$output" == *"FAIL"*"outer-lab-tap0"* ]]; grep -q '^result=FAIL$' "$d/run.conf"
+}
+@test "record writes result= into run.conf and the .run record, before end=" {
+    record_env; scenario up demo --bundle "$BUNDLE" >/dev/null
+    run scenario record demo; [ "$status" -eq 0 ]
+    d=$(find "$CASES/demo" -mindepth 1 -maxdepth 1 -type d | head -1)
+    [ "$(grep -n '^result=PASS$' "$d/run.conf" | cut -d: -f1)" -lt "$(grep -n '^end=20' "$d/run.conf" | cut -d: -f1)" ]
+    grep -q '^result=PASS$' "$KIT_EVIDENCE_DIR"/scenario-demo-*.run
+}
+@test "record: a ground-truth snapshot that fails inside the event scheduler is a WARN, and the run exits 2" {
+    record_env; scenario up demo --bundle "$BUNDLE" >/dev/null
+    printf 'gt=a|swanctl --list-sas\n' >> "$SCENARIO_DIR/demo/scenario.conf"
+    # only the snapshot after the t=1 event fails: arm sets it, disarm (t=2) clears it before its own snapshot
+    sed -i '1a case "$*" in *"sh -c arm"*) touch "$BATS_TEST_TMPDIR/armed" ;; *"sh -c disarm"*) rm -f "$BATS_TEST_TMPDIR/armed" ;; *list-sas*) [ ! -e "$BATS_TEST_TMPDIR/armed" ] || exit 1 ;; esac' "$BIN/docker"
+    printf '1|exec|a|arm\n2|exec|a|disarm\n' > "$BATS_TEST_TMPDIR/ev.txt"
+    run scenario record demo --events "$BATS_TEST_TMPDIR/ev.txt"; echo "$output"; [ "$status" -eq 2 ]
+    [[ "$output" == *"WARN  ground truth: 'swanctl --list-sas' in a failed"*"t1-exec"* ]]
+    [ "$(grep -c '^WARN  ground truth' <<< "$output")" -eq 1 ]
+    d=$(find "$CASES/demo" -mindepth 1 -maxdepth 1 -type d | head -1); [ ! -e "$d/.gt-warnings" ]
+}
+@test "verify: a capture that exited early is X8 ended abnormally, a capture with no stats line is X8 no stats" {
+    record_env; make_run_dir demo; stub tshark ':'
+    printf 'outer-lab-tap0: exited early (rc 1) — tcpdump: pcap_loop: The interface disappeared\n' > "$RD/capture-stats.txt"
+    run scenario verify "$RD"; echo "$output"; [ "$status" -eq 1 ]
+    [[ "$output" == *"FAIL  X8"*"ended abnormally"*"outer-lab-tap0"* ]]; [[ "$output" == *"FAIL  X8"*"no stats"*"inner-a"* ]]
+    [[ "$output" != *"kernel drops on"* ]]
+}
+@test "verify dies when it cannot write expected.md, never judging a run it cannot record" {
+    record_env; make_run_dir demo; mkdir "$RD/expected.md"
+    run scenario verify "$RD"; echo "$output"; [ "$status" -eq 1 ]; [[ "$output" == *"cannot write"*"expected.md"* ]]
+}
+@test "ingest refuses an interrupted run, copying nothing; WARNs (exit 2) on a result=FAIL run but copies it; --dry-run claims no PASS" {
+    record_env; make_run_dir demo; up="$ROOT/opt/malcolm/malcolm/pcap/upload"; mkdir -p "$up"; stub chown ':'
+    sed -i 's/^end=.*/end=interrupted 2026-10-01T14:03:00Z/' "$RD/run.conf"
+    run scenario ingest "$RD"; echo "$output"; [ "$status" -eq 1 ]; [[ "$output" == *"interrupted run"* ]]
+    [ "$(find "$up" -type f | wc -l)" -eq 0 ]
+    sed -i 's/^end=.*/result=FAIL\nend=2026-10-01T14:05:00Z/' "$RD/run.conf"
+    run scenario ingest "$RD" --dry-run; echo "$output"; [ "$status" -ne 1 ]
+    [[ "$output" != *"PASS"* ]]; [[ "$output" == *"DRY-RUN"* ]]; [ "$(find "$up" -type f | wc -l)" -eq 0 ]
+    run scenario ingest "$RD"; echo "$output"; [ "$status" -eq 2 ]
+    [[ "$output" == *"WARN"*"result=FAIL"* ]]; [ "$(find "$up" -type f | wc -l)" -eq 2 ]
+}

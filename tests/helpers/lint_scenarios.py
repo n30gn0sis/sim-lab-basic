@@ -120,6 +120,18 @@ def check_topology(s, c, errs):
     if tap_ports != ["__TAP_A__", "__TAP_B__"]:
         errs.append(f"{s}: Cloud ports must be exactly __TAP_A__ and __TAP_B__ (got {tap_ports})")
 
+    # The Clouds are told apart by name, never by order: r770-scenario.sh record
+    # takes TAP_A (the gateway side, the outer capture) from the Cloud named
+    # tap-a and TAP_B (the ISP side) from tap-b, whatever order GNS3 lists them in
+    names = sorted(n["name"] for n in clouds)
+    if names != ["tap-a", "tap-b"]:
+        errs.append(f"{s}: Clouds must be named exactly tap-a and tap-b (got {names})")
+    for n in clouds:
+        want = {"tap-a": "__TAP_A__", "tap-b": "__TAP_B__"}.get(n["name"])
+        got = [m.get("interface") for m in n["properties"].get("ports_mapping", [])]
+        if want and got != [want]:
+            errs.append(f"{s}: Cloud {n['name']} must carry {want} (got {got})")
+
     # Verify each Cloud node is an endpoint of exactly one link
     ids = {n["node_id"] for n in nodes}
     cloud_ids = {n["node_id"] for n in clouds}

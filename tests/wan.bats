@@ -89,3 +89,11 @@ wan() { kit_run "$SCRIPT" "$@"; }
     [ "$status" -eq 0 ]
     grep -qE 'netem delay 40ms .*loss 2%' "$STUB_LOG"
 }
+
+@test "--dry-run claims no PASS: apply and clear say what they would do" {
+    run wan apply branch-wan lab-tap0 --dry-run; echo "$output"; [ "$status" -eq 0 ]
+    [[ "$output" != *"PASS"* ]]; [[ "$output" == *"DRY-RUN"*"lab-tap0"* ]]
+    wan apply branch-wan lab-tap0 >/dev/null
+    run wan clear lab-tap0 --dry-run; echo "$output"; [ "$status" -eq 0 ]
+    [[ "$output" != *"PASS"* ]]; [[ "$output" == *"DRY-RUN"*"lab-tap0"* ]]
+}
