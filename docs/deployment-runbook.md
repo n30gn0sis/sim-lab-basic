@@ -638,6 +638,20 @@ without `run.conf`, or a row it cannot read, is refused (exit 1), never
 skipped. `tests/helpers/lint_scenarios.py pcap-expect` holds the pack's rows to
 the same grammar. `tshark` comes from the bundle's apt set.
 
+`r770-scenario.sh ingest <run-dir>` (root; no GNS3 login) hands a finished run's
+captures to Malcolm. It copies only the files `run.conf` names in its `outer=`
+and `inner=` lines, by those explicit names and never a glob over the run
+directory, so `gt/` cannot travel. Each lands in Malcolm's upload drop-off
+(`<MALCOLM_HOME>/malcolm/pcap/upload/`, owned `1000:1000`) as
+`<run-id>,<view>.pcapng` (`<run-id>,outer.pcapng`,
+`<run-id>,inner-<node>.pcapng`); Malcolm tags an upload from the
+comma-separated parts of its name, so the run id and the view become tags.
+Every capture is checked present and non-empty before the first copy, so a bad
+run leaves nothing behind; a `run.conf` that names no capture, a directory
+without `run.conf`, or a host without the drop-off (Malcolm not set up here) is
+refused (exit 1). On success `ingest=<UTC>` is appended to `run.conf`. Then
+`r770-scenario.sh check <name>` finds the run in Malcolm.
+
 Two findings from the design, to be confirmed on staging: the pack's
 `ipsec-ike` rehearsal saw strongSwan float to `udp/4500` with no NAT in the
 path — that is MOBIKE (on by default), not NAT detection, so `s1-w1-ss` sets

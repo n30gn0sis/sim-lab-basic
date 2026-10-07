@@ -1170,3 +1170,28 @@ esac'
     printf '# nothing\n\n' > "$SCENARIO_DIR/demo/pcap-expect.txt"
     run scenario verify "$RD"; echo "$output"; [ "$status" -eq 0 ]; [[ "$output" == *"SKIP"*"no rows"* ]]
 }
+
+# ── ingest — into Malcolm's upload drop-off, never gt/ ──────────────────────
+@test "ingest copies outer and inner captures with the run id as a tag, never anything under gt/" {
+    record_env; make_run_dir demo
+    mkdir -p "$RD/gt/a/keys"; echo k > "$RD/gt/a/keys/esp_sa"
+    up="$ROOT/opt/malcolm/malcolm/pcap/upload"; mkdir -p "$up"
+    stub chown 'echo "chown $*" >> "$STUB_LOG"'
+    run scenario ingest "$RD"; echo "$output"; [ "$status" -eq 0 ]
+    [ -f "$up/demo-20261001T1400Z,outer.pcapng" ]; [ -f "$up/demo-20261001T1400Z,inner-a.pcapng" ]
+    [ "$(find "$up" -type f | wc -l)" -eq 2 ]
+    ! find "$up" -name 'esp_sa' | grep -q .
+    grep -q 'chown 1000:1000' "$STUB_LOG"; grep -q '^ingest=20' "$RD/run.conf"
+}
+@test "ingest refuses an empty capture or a run with no captures, copying nothing; and a host without Malcolm" {
+    record_env; make_run_dir demo; up="$ROOT/opt/malcolm/malcolm/pcap/upload"; mkdir -p "$up"
+    : > "$RD/outer-lab-tap0.pcapng"
+    run scenario ingest "$RD"; [ "$status" -eq 1 ]; [[ "$output" == *"outer-lab-tap0.pcapng"*"empty"* ]]
+    [ "$(find "$up" -type f | wc -l)" -eq 0 ]
+    rm -rf "$up"; printf pcap > "$RD/outer-lab-tap0.pcapng"
+    run scenario ingest "$RD"; [ "$status" -eq 1 ]; [[ "$output" == *"pcap/upload"* ]]
+    mkdir -p "$up"; grep -v '^\(outer\|inner\)=' "$RD/run.conf" > "$RD/rc" && mv "$RD/rc" "$RD/run.conf"
+    run scenario ingest "$RD"; [ "$status" -eq 1 ]; [[ "$output" == *"names no capture"* ]]
+    rm "$RD/run.conf"; run scenario ingest "$RD"; [ "$status" -eq 1 ]; [[ "$output" == *"no run.conf"* ]]
+    [ "$(find "$up" -type f | wc -l)" -eq 0 ]
+}

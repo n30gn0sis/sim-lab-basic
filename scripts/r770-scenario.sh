@@ -955,11 +955,47 @@ cmd_verify() {
     footer "verify"
 }
 
+# ── ingest ───────────────────────────────────────────────────────────────────
+# Copies only the captures run.conf names, by their explicit outer=/inner=
+# lines -- never a glob over the run directory, so gt/ (SA dumps, keys) cannot
+# travel. Malcolm tags an uploaded file from the comma-separated parts of its
+# name: <run-id>,<view>.pcapng shows up under tags <run-id> and <view>.
+ingest_views() {  # ingest_views <run-dir> — "<file> <view>" per capture run.conf names
+    local line f
+    while IFS= read -r line; do
+        f=${line#*=}; f=${f%%:*}
+        case "$line" in outer=*) printf '%s outer\n' "$f" ;; *) printf '%s %s\n' "$f" "${f%.pcapng}" ;; esac
+    done < <(grep -E '^(outer|inner)=' "$1/run.conf")
+}
+cmd_ingest() {
+    banner "ingest — $RUN_DIR_ARG"
+    need_root
+    local d=$RUN_DIR_ARG up rid f view n=0
+    if ! { [ -n "$d" ] && [ -f "$d/run.conf" ]; }; then die "${d:-ingest} has no run.conf — not a run directory"; fi
+    rid=$(rc_get "$d" run_id); [ -n "$rid" ] || die "$d/run.conf has no run_id"
+    up="$(p "${MALCOLM_HOME:-/opt/malcolm}")/malcolm/pcap/upload"
+    [ -d "$up" ] || die "no Malcolm drop-off at $up — Malcolm is not set up here (r770-malcolm-deploy.sh full)"
+    # first pass: every capture must exist and be non-empty before any copy
+    while read -r f _; do
+        [ -s "$d/$f" ] || die "$f is missing or empty in $d — nothing was copied"
+        n=$((n + 1))
+    done < <(ingest_views "$d")
+    [ "$n" -gt 0 ] || die "$d/run.conf names no capture (outer=/inner=) — nothing to ingest"
+    while read -r f view; do
+        run cp "$d/$f" "$up/$rid,$view.pcapng" || die "copy of $f failed — the drop-off may hold a partial $rid,$view.pcapng"
+        run chown 1000:1000 "$up/$rid,$view.pcapng" || warn "could not chown $rid,$view.pcapng to 1000:1000 — Malcolm's upload watcher may ignore it"
+    done < <(ingest_views "$d")
+    [ "$DRY" = "1" ] || echo "ingest=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$d/run.conf"
+    pass "$n capture(s) handed to Malcolm as $rid,<view>.pcapng (tags: $rid, outer, inner-<node>); gt/ stayed in $d"
+    note "then: r770-scenario.sh check $(rc_get "$d" scenario)   (record wrote the run record)"
+    footer "ingest"
+}
+
 # ── dispatch ─────────────────────────────────────────────────────────────────
 SUB="${1:-}"; [ $# -gt 0 ] && shift
 case "$SUB" in
     up|traffic|down|check|record) case "${1:-}" in -*|"") ;; *) NAME=$1; shift ;; esac ;;
-    verify) case "${1:-}" in -*|"") ;; *) RUN_DIR_ARG=$1; shift ;; esac ;;
+    verify|ingest) case "${1:-}" in -*|"") ;; *) RUN_DIR_ARG=$1; shift ;; esac ;;
 esac
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -982,6 +1018,7 @@ case "$SUB" in
         [ -n "$NAME" ] || die "$SUB needs a scenario name (see: r770-scenario.sh list)"
         "cmd_$SUB" ;;
     verify) cmd_verify ;;
+    ingest) cmd_ingest ;;
     status) cmd_status ;;
     -h|--help|help|"") usage ;;
     *) die "unknown subcommand: $SUB (try --help)" ;;
