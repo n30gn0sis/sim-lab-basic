@@ -85,6 +85,12 @@ sudo ./scripts/r770-scenario.sh traffic ipsec-esp     # 60 s of known traffic, a
 sudo ./scripts/r770-scenario.sh down ipsec-esp
 ```
 
+IPsec over simulated WANs (plaintext baseline, then IKEv2/ESP across a
+single-ISP underlay, with outer and inner reference PCAPs, impairment and
+timed events) is planned on top of the pack, not started: see the runbook's
+"IPsec & simulated-WAN scenarios" section and
+`docs/superpowers/plans/2026-10-07-ipsec-wan-scenarios.md`.
+
 Exit **0** every step clean · **2** finished with warnings to disposition ·
 **1** a step refused or failed — fix it, then rerun with `--from <step>`
 (`full` only).

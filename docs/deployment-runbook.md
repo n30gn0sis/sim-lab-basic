@@ -526,6 +526,70 @@ refused rather than taken down, a check that could not judge (Malcolm
 not answering) is a WARN, not a PASS, and a run in which no scenario ran
 is a FAIL.
 
+## IPsec & simulated-WAN scenarios (planned — NOT STARTED)
+
+The build repo's IPsec & WAN scenario spec is filed in the kit as
+`docs/superpowers/specs/2026-09-24-ipsec-scenarios-spec.md`; how the kit as
+built carries it out is `docs/superpowers/specs/2026-10-07-ipsec-wan-scenarios-kit-design.md`,
+and the work is sequenced in `docs/superpowers/plans/2026-10-07-ipsec-wan-scenarios.md`.
+Nothing below exists yet; this section says what the kit will do so the
+procedure is reviewed before it is built, and is rewritten "as measured"
+after the staging rehearsal (plan Task 11).
+
+**What changes against the pack as it stands.** The spec assumes a
+two-bridge fabric (`br-lab-tNN` outer, `br-lab-iNN` inner) and host tools
+(`lab-transit.sh`, `wan-apply`) that live in the build repo's unbuilt phases.
+The kit keeps its one mirrored hub: the **outer** view is a gateway's uplink
+on `br-lab` through two kit TAPs, as every pack scenario already does; the
+**inner** view is the host's `tcpdump` run *inside the gateway container's
+network namespace*, so it never touches the mirrored bridge and live Malcolm
+is not doubled. Impairment is a kit script (`r770-wan.sh apply|show|clear`)
+that shapes **only** `lab-tapN` and refuses any other name; its profiles are
+files under `config/` carrying the wiki's values. Each WAN scenario owns one
+`198.18.<k>.0/24` slice for its simulated public links and one
+`10.2<xx>.0.0/16` for its sites (`range=` becomes a list), so two can still
+share the hub.
+
+**First increment (spec IP0–IP4):** two pack scenarios — `s0-w1`, the
+plaintext baseline over a single FRR ISP, and `s1-w1-ss`, IKEv2 PSK
+site-to-site over the same ISP with strongSwan both ends — and three new
+`r770-scenario.sh` subcommands:
+
+```bash
+sudo ./scripts/r770-scenario.sh up s1-w1-ss --bundle $B
+sudo ./scripts/r770-scenario.sh record s1-w1-ss [--impair branch-wan@b] [--events scenarios/s1-w1-ss/events/wan-flap.txt]
+sudo ./scripts/r770-scenario.sh verify /data/pcap/cases/s1-w1-ss/<run-id>    # X1–X8 with tshark, on the box
+sudo ./scripts/r770-scenario.sh ingest /data/pcap/cases/s1-w1-ss/<run-id>    # PCAPs into Malcolm's drop-off, never gt/
+sudo ./scripts/r770-scenario.sh check  s1-w1-ss                              # X9: the run in Arkime
+sudo ./scripts/r770-scenario.sh down   s1-w1-ss
+```
+
+`record` is `traffic` with evidence: captures start before any generator
+runs (so IKE_SA_INIT is in the file), the scenario idles `idle_secs` at the
+end (so DPD shows), and the run directory under `SCENARIO_CASES_DIR`
+(`/data/pcap/cases`) holds `run.conf`, the outer and inner `.pcapng`,
+`gt/<node>/` (SA snapshots, charon log, ESP/IKE keys **only if** the bundled
+strongSwan turns out to carry `save-keys` — discovered at run time, never
+assumed), `events.log`, `capture-stats.txt` (zero kernel drops is the bar)
+and `sha256sums`. It refuses when free space is under
+`SCENARIO_CASES_MIN_FREE_MB` plus the run's estimate; nothing under `cases/`
+is ever deleted by the kit; Ctrl-C stops every capture and clears every
+impairment the run applied.
+
+Two findings from the design, to be confirmed on staging: the pack's
+`ipsec-ike` rehearsal saw strongSwan float to `udp/4500` with no NAT in the
+path — that is MOBIKE (on by default), not NAT detection, so `s1-w1-ss` sets
+`mobike = no` and the spec's "stays on 500" observation (X2) holds as
+written; and a profile applied to the TAP on the ISP side (`@b`) shapes
+site A → site B, because a frame enters the host through one TAP and leaves
+through the other (H7 measures this before it is stated as fact here).
+
+Later increments (W2–W7, S2–S9, appliance variants, replay, the physical
+ingress port) are a dependency-ordered roadmap in the plan, each with the
+measurement or build-repo delivery it waits for.
+
+---
+
 ## Docs procedure
 
 Steps D1–D4 (`preflight` `gate` `copy` `apt` `phone-home` `docker` `files`)
