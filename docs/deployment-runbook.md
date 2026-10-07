@@ -543,7 +543,7 @@ The kit keeps its one mirrored hub: the **outer** view is a gateway's uplink
 on `br-lab` through two kit TAPs, as every pack scenario already does; the
 **inner** view is the host's `tcpdump` run *inside the gateway container's
 network namespace*, so it never touches the mirrored bridge and live Malcolm
-is not doubled. Impairment is a kit script (`r770-wan.sh apply|show|clear`)
+is not doubled. Impairment is a kit script (`scripts/r770-wan.sh` `apply|show|clear`)
 that shapes **only** `lab-tapN` and refuses any other name; its profiles are
 files under `config/` carrying the wiki's values. Each WAN scenario owns one
 `198.18.<k>.0/24` slice for its simulated public links and one

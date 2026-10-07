@@ -17,6 +17,7 @@ bundled installer's filename. `tests/no-pins.bats` enforces this.
 | `nginx/snippets/lab-tls.conf` | same path | comment no longer names the staging VM's CA path | the R770 issues its own CA |
 | `nginx/snippets/lab-auth.conf` | same path | none | |
 | `gns3/gns3_server.conf.template` | same path | `__PASSWORD__` → `__ADMIN_PW__`; `jwt_secret_key` line dropped (measured: not honoured) | fewer lies in the template |
+| `wan/profiles/*.conf` | none yet (kit-originated) | n/a | values from `docs/wiki/wan.md` and the filed spec section 6.2; read by `scripts/r770-wan.sh`; to be carried back to the build repo (see the carry-back bullet in `docs/kit-sync.md`) |
 | `systemd/gns3.service` | new | — | a server started from a shell outlived its tmux session |
 | `networkd/{br-lab,lab-mirror}.netdev`, `networkd/{br-lab,lab-mon0,lab_mirror0}.network`, `networkd/lab_mirror0.link`, `networkd/lab-tap.{netdev,network}.template` | new | — | Phase 11 live mirror: a hub-mode lab bridge (no MAC learning, no multicast snooping) whose veth peer Malcolm captures, with offloads off on that capture end (installed as `/etc/systemd/network/05-*` by `r770-gns3-deploy.sh labnet`) |
 | `config/docs/mkdocs.yml` | `config/docs/mkdocs.yml` | header comment names the kit's build path | built on the R770, not the VM |

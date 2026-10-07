@@ -23,6 +23,7 @@ Requires `shellcheck` and `bats` (>= 1.10): `sudo apt-get -y install shellcheck 
 | `docs-deploy.bats` | load and the tag assertion, `--network none`, the atomic publish (a failed build leaves the live site; stale `docs.new`/`docs.prev` cleared), image-list refusals, `full` slicing and the warn contract |
 | `scenario.bats` | `r770-scenario.sh` against a fake GNS3 controller (`helpers/fake_gns3.py`): list, login refusals, the credential kept out of argv, up (render, TAP choice, import/open/start order, node config, readiness), traffic (order, window, run record, WARN/FAIL), down (ours only), status |
 | `scenarios.bats` | the scenario pack's content via `helpers/lint_scenarios.py`: layout, project JSON and tokens, two TAP-type Cloud ports, images bundled or upstream-pending, addresses inside each range, `expect.txt` shape, shellcheck on node and traffic scripts |
+| `wan.bats` | `r770-wan.sh` with `tc` stubbed: refusal of any name but a kit TAP before any `tc`, profile validation naming the key, HTB then netem, the recorded profile, `show`, idempotent `clear`, every shipped profile parses |
 | `portal-deploy.bats` | the SAN list, file modes, `nginx -t` before reload, gate, probe verdicts, `docs` retired |
 | `airgap-check.bats` | every false-pass the posture check must not produce; SKIP vs FAIL |
 | `validate.bats` | one row per check, SKIP with reason, FAIL diagnosis, arguments-not-facts, interfaces never guessed, indexing lag as WARN |
