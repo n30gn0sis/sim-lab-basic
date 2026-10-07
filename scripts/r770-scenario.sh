@@ -878,12 +878,18 @@ pcap_file() {  # pcap_file <run-dir> <outer|inner-node> — the capture's path f
     if [ -z "$f" ] || [ ! -s "$1/$f" ]; then die "run has no capture '$2' (run.conf names: $(grep -E '^(outer|inner)=' "$1/run.conf" | cut -d= -f2 | cut -d: -f1 | tr '\n' ' '))"; fi
     printf '%s' "$1/$f"
 }
+tshark_run() {  # tshark_run <args…> — stdout to $WORK/tshark.out; on failure returns 1, first stderr line in TSHARK_ERR
+    local rc=0 err="$WORK/tshark.err"
+    tshark "$@" >"$WORK/tshark.out" 2>"$err" || rc=$?
+    if [ "$rc" -ne 0 ]; then TSHARK_ERR=$(head -1 "$err"); TSHARK_ERR=${TSHARK_ERR:-exit $rc}; return 1; fi
+}
 pcap_check() {  # pcap_check <run-dir> <file> <mode> <filter> <expect> <label> — one row -> PASS/FAIL
     local pc n field want=$5
     pc=$(pcap_file "$1" "$2") || exit 1
     case "$3" in
         count)
-            n=$(tshark -r "$pc" -Y "$4" 2>/dev/null | wc -l)
+            tshark_run -r "$pc" -Y "$4" || { expected_row FAIL "$6: tshark failed: $TSHARK_ERR"; return 0; }
+            n=$(grep -c '^' "$WORK/tshark.out")
             case "$want" in
                 0)    if [ "$n" -eq 0 ]; then expected_row PASS "$6"; else expected_row FAIL "$6: $n packet(s) match '$4', expected none"; fi ;;
                 '>0') if [ "$n" -gt 0 ]; then expected_row PASS "$6 ($n packets)"; else expected_row FAIL "$6: 0 packets match '$4'"; fi ;;
@@ -892,7 +898,8 @@ pcap_check() {  # pcap_check <run-dir> <file> <mode> <filter> <expect> <label> �
         "distinct "*)
             field=${3#distinct }
             [[ "$want" =~ ^\>=([0-9]+)$ ]] || die "pcap-expect.txt: distinct expects >=N (got '$want')"
-            n=$(tshark -r "$pc" -Y "$4" -T fields -e "$field" 2>/dev/null | grep -v '^$' | sort -u | wc -l)
+            tshark_run -r "$pc" -Y "$4" -T fields -e "$field" || { expected_row FAIL "$6: tshark failed: $TSHARK_ERR"; return 0; }
+            n=$(grep -v '^$' "$WORK/tshark.out" | sort -u | wc -l)
             if [ "$n" -ge "${BASH_REMATCH[1]}" ]; then expected_row PASS "$6 ($n distinct $field)"; else expected_row FAIL "$6: $n distinct $field, expected $want"; fi ;;
         *)  die "pcap-expect.txt: unknown mode '$3' (count | distinct <field>)" ;;
     esac
@@ -906,7 +913,9 @@ decrypt_check() {  # decrypt_check <run-dir> — X7: outer ESP decrypts with the
     prof="$WORK/.config/wireshark/profiles/gt"; mkdir -p "$prof"; cp "$esp_sa" "$prof/esp_sa"
     pc=$(pcap_file "$1" outer) || exit 1
     # a decrypted ESP packet dissects to its inner protocol; count ESP frames that also carry tcp/udp/icmp
-    n=$(HOME="$WORK" tshark -C gt -o esp.enable_encryption_decode:TRUE -r "$pc" -Y 'esp && (tcp || udp || icmp)' 2>/dev/null | wc -l)
+    HOME="$WORK" XDG_CONFIG_HOME='' tshark_run -C gt -o esp.enable_encryption_decode:TRUE -r "$pc" -Y 'esp && (tcp || udp || icmp)' \
+        || { expected_row FAIL "X7 decryption: tshark failed: $TSHARK_ERR"; return 0; }
+    n=$(grep -c '^' "$WORK/tshark.out")
     if [ "$n" -gt 0 ]; then expected_row PASS "X7 decryption: $n ESP packets decode with the run's keys"
     else expected_row FAIL "X7 decryption: keys present but no ESP packet decoded — compare esp_sa's SPIs with the outer capture"; fi
 }
@@ -919,7 +928,7 @@ drops_check() {  # drops_check <run-dir> — X8
 }
 cmd_verify() {
     banner "verify — $RUN_DIR_ARG"
-    local d=$RUN_DIR_ARG s f line n file mode filt want label istart
+    local d=$RUN_DIR_ARG s f line n rows file mode filt want label istart
     if [ -z "$d" ] || [ ! -f "$d/run.conf" ]; then die "${d:-verify} has no run.conf — not a run directory (see: r770-scenario.sh status)"; fi
     s=$(rc_get "$d" scenario); scenario_check "$s"; NAME=$s
     grep -q '^end=20' "$d/run.conf" || warn "run.conf has no clean end= — the run was interrupted; judging what is there"
@@ -928,13 +937,15 @@ cmd_verify() {
     istart=$(rc_get "$d" idle_start)
     { echo "# expected observations — $(rc_get "$d" run_id)"; echo; } > "$d/expected.md"
     if [ -f "$f" ]; then
-        n=0
+        n=0; rows=0
         while IFS= read -r line; do
             n=$((n + 1)); case "$line" in ''|'#'*) continue ;; esac
+            rows=$((rows + 1))
             IFS='|' read -r file mode filt want label <<< "$line"
             [ -n "$label" ] || die "$f line $n: need <file>|<mode>|<filter>|<expectation>|<label>"
             pcap_check "$d" "$file" "$mode" "${filt//__IDLE_START__/$istart}" "$want" "$label"
         done < "$f"
+        [ "$rows" -gt 0 ] || skip "scenarios/$s/pcap-expect.txt has no rows — only the built-in checks"
     else
         skip "scenarios/$s has no pcap-expect.txt — only the built-in checks"
     fi
@@ -948,7 +959,7 @@ cmd_verify() {
 SUB="${1:-}"; [ $# -gt 0 ] && shift
 case "$SUB" in
     up|traffic|down|check|record) case "${1:-}" in -*|"") ;; *) NAME=$1; shift ;; esac ;;
-    verify|ingest) case "${1:-}" in -*|"") ;; *) RUN_DIR_ARG=$1; shift ;; esac ;;
+    verify) case "${1:-}" in -*|"") ;; *) RUN_DIR_ARG=$1; shift ;; esac ;;
 esac
 while [ $# -gt 0 ]; do
     case "$1" in

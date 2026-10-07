@@ -1161,3 +1161,12 @@ esac'
     make_run_dir demo; printf 'outer|weird|x|0|bad\n' > "$SCENARIO_DIR/demo/pcap-expect.txt"
     run scenario verify "$RD"; [ "$status" -eq 1 ]; [[ "$output" == *"weird"* ]]
 }
+@test "verify: a failing tshark is a FAIL naming it, never a false PASS on a must-be-absent row; an empty pcap-expect.txt SKIPs" {
+    record_env; make_run_dir demo
+    printf 'outer|count|udp.port==4500|0|X2 nothing on 4500\n' > "$SCENARIO_DIR/demo/pcap-expect.txt"
+    stub tshark 'echo "tshark: bad filter" >&2; exit 2'
+    run scenario verify "$RD"; echo "$output"; [ "$status" -eq 1 ]
+    [[ "$output" == *"FAIL  X2"*"tshark failed: tshark: bad filter"* ]]; [[ "$output" != *"PASS  X2"* ]]
+    printf '# nothing\n\n' > "$SCENARIO_DIR/demo/pcap-expect.txt"
+    run scenario verify "$RD"; echo "$output"; [ "$status" -eq 0 ]; [[ "$output" == *"SKIP"*"no rows"* ]]
+}
