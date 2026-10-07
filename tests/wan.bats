@@ -63,3 +63,29 @@ wan() { kit_run "$SCRIPT" "$@"; }
         run wan apply "$(basename "$f" .conf)" lab-tap0; echo "$f: $output"; [ "$status" -eq 0 ]
     done
 }
+
+@test "clear --dry-run keeps the recorded profile, so show still names it" {
+    wan apply branch-wan lab-tap0 >/dev/null
+    : > "$STUB_LOG"
+    run wan clear lab-tap0 --dry-run; [ "$status" -eq 0 ]
+    [ -e "$ROOT/run/r770-wan/lab-tap0" ]
+    ! grep -q "qdisc del" "$STUB_LOG"
+    run wan show
+    [[ "$output" == *"lab-tap0"*"branch-wan"* ]]
+}
+
+@test "the current line names the profile once, or says clean" {
+    run wan apply branch-wan lab-tap0
+    [[ "$output" == *"current:  lab-tap0 clean (default qdisc)"* ]]
+    run wan apply satellite lab-tap0
+    [[ "$output" == *"current:  lab-tap0 profile branch-wan"* ]]
+    [[ "$output" != *"branch-wanbranch-wan"* ]]
+}
+
+@test "a profile whose last line has no trailing newline still applies that line" {
+    mkdir -p "$BATS_TEST_TMPDIR/profiles"
+    printf 'rate=20mbit\ndelay=40ms\nloss=2%%' > "$BATS_TEST_TMPDIR/profiles/nonl.conf"
+    WAN_PROFILE_DIR="$BATS_TEST_TMPDIR/profiles" run wan apply nonl lab-tap0
+    [ "$status" -eq 0 ]
+    grep -qE 'netem delay 40ms .*loss 2%' "$STUB_LOG"
+}

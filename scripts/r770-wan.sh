@@ -42,7 +42,7 @@ profile_read() {  # profile_read <name> — sets RATE DELAY JITTER LOSS REORDER 
         die "no profile '$1' in $PROFILES (have: ${have[*]:-none})"
     fi
     RATE=""; DELAY=""; JITTER=""; LOSS=""; REORDER=""; DESC=""
-    while IFS= read -r line; do
+    while IFS= read -r line || [ -n "$line" ]; do
         case "$line" in ''|'#'*) continue ;; esac
         k=${line%%=*}; v=${line#*=}
         case "$k" in
@@ -71,7 +71,7 @@ cmd_apply() {
     local prof=$1 tap=$2 cur
     need_root; tap_check "$tap"; profile_read "$prof"; netem_args
     cur=$(applied "$tap")
-    note "current:  $tap ${cur:+profile $cur}${cur:-clean (default qdisc)}"
+    if [ -n "$cur" ]; then note "current:  $tap profile $cur"; else note "current:  $tap clean (default qdisc)"; fi
     note "proposed: htb rate $RATE, netem ${NETEM[*]}${DESC:+ — $DESC}"
     note "rollback: r770-wan.sh clear $tap"
     if ! { run tc qdisc replace dev "$tap" root handle 1: htb default 10 \
@@ -86,7 +86,7 @@ cmd_apply() {
 clear_one() {  # clear_one <tap> [sweep] — sweep also deletes a root qdisc nothing here recorded
     if [ -z "${2:-}" ] && [ -z "$(applied "$1")" ] && ! tc qdisc show dev "$1" 2>/dev/null | grep -q netem; then pass "$1 already clean"; return 0; fi
     run tc qdisc del dev "$1" root || note "tc had no root qdisc to delete on $1 (already default)"
-    rm -f "$(p "$STATE")/$1"
+    [ "$DRY" = "1" ] || rm -f "$(p "$STATE")/$1"
     pass "$1 clean"
 }
 cmd_clear() {
