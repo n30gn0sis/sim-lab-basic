@@ -46,6 +46,7 @@ PY
 @test "every address a scenario names lies in its own range" { lint addresses; }
 @test "every expect.txt line is proto|port|src|dst inside the scenario's range" { lint expect; }
 @test "every events/*.txt line is t|action|arg, a known action, t non-decreasing, profiles that exist" { lint events; }
+@test "every pcap-expect.txt row is file|mode|filter|expectation|label, with a mode and expectation that agree" { lint pcap-expect; }
 
 @test "every BGP neighbor keeps alive at 10s or less, so any traffic window carries the session" {
     # the session comes up during `up`, before any capture starts; at FRR's 60s default a
@@ -186,4 +187,10 @@ PY
     [[ "$output" == *"link-down takes a or b"* ]]
     [[ "$output" == *"exec takes <node>|<command>"* ]]
     [[ "$output" == *"t=9999 is past traffic_secs + idle_secs"* ]]
+}
+@test "the pcap-expect lint rejects a bad mode, expectation and node" {
+    d="$BATS_TEST_TMPDIR/pack"; mkdir -p "$d"; cp -r scenarios/s0-w1 "$d/"
+    printf 'outer|weird|x|0|a\ninner-nope|count|x|0|b\nouter|count|x|>=3|c\nouter|distinct esp.spi|esp|>0|d\nouter|count|x|0\n' > "$d/s0-w1/pcap-expect.txt"
+    run env SCENARIOS_ROOT="$d" python3 tests/helpers/lint_scenarios.py pcap-expect; echo "$output"
+    [ "$status" -ne 0 ]; [ "$(grep -c 'pcap-expect.txt line' <<< "$output")" -eq 5 ]
 }

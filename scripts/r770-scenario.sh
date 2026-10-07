@@ -16,6 +16,9 @@
 #   record <name>   traffic, captured: outer on the first kit TAP, inner in
 #                   each inner_capture node's netns, an idle tail, and a run
 #                   directory (run.conf, drop stats, sha256sums)
+#   verify <run-dir> judge a finished run directory with tshark: every row of
+#                   the scenario's pcap-expect.txt, decryption (only with
+#                   discovered keys), zero kernel drops; writes expected.md
 #   down <name>     stop and delete the imported project (idempotent)
 #   status          which scenarios are up, their TAPs, their last run record
 #   check <name>    judge the newest traffic run in Malcolm: every expect.txt
@@ -857,10 +860,95 @@ cmd_status() {
     return 0
 }
 
+# ── verify ───────────────────────────────────────────────────────────────────
+# A judge of files: tshark over a finished run directory. No GNS3, no root.
+RUN_DIR_ARG=""
+rc_get() { sed -n "s/^$2=//p" "$1/run.conf" | head -1; }   # rc_get <run-dir> <key>
+expected_row() {  # expected_row <PASS|FAIL|SKIP> <text> — the verdict, in the transcript and in expected.md
+    case "$1" in PASS) pass "$2" ;; FAIL) fail "$2" ;; SKIP) skip "$2" ;; esac
+    printf -- '- %s  %s\n' "$1" "$2" >> "$RUN_DIR_ARG/expected.md"
+}
+pcap_file() {  # pcap_file <run-dir> <outer|inner-node> — the capture's path from run.conf, or die
+    local f
+    case "$2" in
+        outer)   f=$(rc_get "$1" outer); f=${f%%:*} ;;
+        inner-*) f=$(sed -n "s/^inner=\(inner-${2#inner-}\.pcapng\):.*/\1/p" "$1/run.conf" | head -1) ;;
+        *)       die "pcap-expect.txt names '$2'; a row's file is outer or inner-<node>" ;;
+    esac
+    if [ -z "$f" ] || [ ! -s "$1/$f" ]; then die "run has no capture '$2' (run.conf names: $(grep -E '^(outer|inner)=' "$1/run.conf" | cut -d= -f2 | cut -d: -f1 | tr '\n' ' '))"; fi
+    printf '%s' "$1/$f"
+}
+pcap_check() {  # pcap_check <run-dir> <file> <mode> <filter> <expect> <label> — one row -> PASS/FAIL
+    local pc n field want=$5
+    pc=$(pcap_file "$1" "$2") || exit 1
+    case "$3" in
+        count)
+            n=$(tshark -r "$pc" -Y "$4" 2>/dev/null | wc -l)
+            case "$want" in
+                0)    if [ "$n" -eq 0 ]; then expected_row PASS "$6"; else expected_row FAIL "$6: $n packet(s) match '$4', expected none"; fi ;;
+                '>0') if [ "$n" -gt 0 ]; then expected_row PASS "$6 ($n packets)"; else expected_row FAIL "$6: 0 packets match '$4'"; fi ;;
+                *)    die "pcap-expect.txt: count expects 0 or >0 (got '$want')" ;;
+            esac ;;
+        "distinct "*)
+            field=${3#distinct }
+            [[ "$want" =~ ^\>=([0-9]+)$ ]] || die "pcap-expect.txt: distinct expects >=N (got '$want')"
+            n=$(tshark -r "$pc" -Y "$4" -T fields -e "$field" 2>/dev/null | grep -v '^$' | sort -u | wc -l)
+            if [ "$n" -ge "${BASH_REMATCH[1]}" ]; then expected_row PASS "$6 ($n distinct $field)"; else expected_row FAIL "$6: $n distinct $field, expected $want"; fi ;;
+        *)  die "pcap-expect.txt: unknown mode '$3' (count | distinct <field>)" ;;
+    esac
+}
+decrypt_check() {  # decrypt_check <run-dir> — X7: outer ESP decrypts with the node's keys
+    local keys prof esp_sa n pc
+    keys=$(rc_get "$1" keys)
+    if [ "$keys" != present ]; then expected_row SKIP "X7 decryption: keys=$keys — the inner capture is the plaintext truth"; return 0; fi
+    esp_sa=$(find "$1/gt" -path '*/keys/esp_sa' 2>/dev/null | head -1)
+    if [ -z "$esp_sa" ]; then expected_row FAIL "X7 decryption: keys=present but no gt/*/keys/esp_sa"; return 0; fi
+    prof="$WORK/.config/wireshark/profiles/gt"; mkdir -p "$prof"; cp "$esp_sa" "$prof/esp_sa"
+    pc=$(pcap_file "$1" outer) || exit 1
+    # a decrypted ESP packet dissects to its inner protocol; count ESP frames that also carry tcp/udp/icmp
+    n=$(HOME="$WORK" tshark -C gt -o esp.enable_encryption_decode:TRUE -r "$pc" -Y 'esp && (tcp || udp || icmp)' 2>/dev/null | wc -l)
+    if [ "$n" -gt 0 ]; then expected_row PASS "X7 decryption: $n ESP packets decode with the run's keys"
+    else expected_row FAIL "X7 decryption: keys present but no ESP packet decoded — compare esp_sa's SPIs with the outer capture"; fi
+}
+drops_check() {  # drops_check <run-dir> — X8
+    local bad
+    if [ ! -s "$1/capture-stats.txt" ]; then expected_row FAIL "X8 drops: no capture-stats.txt"; return 0; fi
+    bad=$(grep -v ' 0 packets dropped by kernel' "$1/capture-stats.txt" | cut -d: -f1 | tr '\n' ' ')
+    if [ -z "$bad" ]; then expected_row PASS "X8 drops: 0 packets dropped by kernel on every capture"
+    else expected_row FAIL "X8 drops: kernel drops on: ${bad% }"; fi
+}
+cmd_verify() {
+    banner "verify — $RUN_DIR_ARG"
+    local d=$RUN_DIR_ARG s f line n file mode filt want label istart
+    if [ -z "$d" ] || [ ! -f "$d/run.conf" ]; then die "${d:-verify} has no run.conf — not a run directory (see: r770-scenario.sh status)"; fi
+    s=$(rc_get "$d" scenario); scenario_check "$s"; NAME=$s
+    grep -q '^end=20' "$d/run.conf" || warn "run.conf has no clean end= — the run was interrupted; judging what is there"
+    work
+    f="$SCEN_DIR/$s/pcap-expect.txt"
+    istart=$(rc_get "$d" idle_start)
+    { echo "# expected observations — $(rc_get "$d" run_id)"; echo; } > "$d/expected.md"
+    if [ -f "$f" ]; then
+        n=0
+        while IFS= read -r line; do
+            n=$((n + 1)); case "$line" in ''|'#'*) continue ;; esac
+            IFS='|' read -r file mode filt want label <<< "$line"
+            [ -n "$label" ] || die "$f line $n: need <file>|<mode>|<filter>|<expectation>|<label>"
+            pcap_check "$d" "$file" "$mode" "${filt//__IDLE_START__/$istart}" "$want" "$label"
+        done < "$f"
+    else
+        skip "scenarios/$s has no pcap-expect.txt — only the built-in checks"
+    fi
+    decrypt_check "$d"
+    drops_check "$d"
+    note "X9 (Malcolm): r770-scenario.sh ingest $d, then r770-scenario.sh check $s"
+    footer "verify"
+}
+
 # ── dispatch ─────────────────────────────────────────────────────────────────
 SUB="${1:-}"; [ $# -gt 0 ] && shift
 case "$SUB" in
     up|traffic|down|check|record) case "${1:-}" in -*|"") ;; *) NAME=$1; shift ;; esac ;;
+    verify|ingest) case "${1:-}" in -*|"") ;; *) RUN_DIR_ARG=$1; shift ;; esac ;;
 esac
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -882,6 +970,7 @@ case "$SUB" in
     up|traffic|down|check|record)
         [ -n "$NAME" ] || die "$SUB needs a scenario name (see: r770-scenario.sh list)"
         "cmd_$SUB" ;;
+    verify) cmd_verify ;;
     status) cmd_status ;;
     -h|--help|help|"") usage ;;
     *) die "unknown subcommand: $SUB (try --help)" ;;

@@ -533,7 +533,7 @@ The build repo's IPsec & WAN scenario spec is filed in the kit as
 built carries it out is `docs/superpowers/specs/2026-10-07-ipsec-wan-scenarios-kit-design.md`,
 and the work is sequenced in `docs/superpowers/plans/2026-10-07-ipsec-wan-scenarios.md`.
 `record` exists (its captures, idle tail, run directory, `--impair` and
-`--events`, and the ground truth under `gt/`); the rest of
+`--events`, and the ground truth under `gt/`) and so does `verify`; the rest of
 this section says what the kit will do so the procedure is reviewed before
 it is built, and is rewritten "as measured" after the staging rehearsal
 (plan Task 11).
@@ -622,6 +622,21 @@ or any bad line of the events file is refused before any capture starts, and
 `tests/helpers/lint_scenarios.py events` holds the pack's own
 `scenarios/<name>/events/*.txt` (`s1-w1-ss` ships `baseline.txt` and
 `wan-flap.txt`) to the same rules.
+
+`r770-scenario.sh verify <run-dir>` judges a finished run directory from its
+files alone: no GNS3 login, no root, no docker. Each row of the scenario's
+`pcap-expect.txt` (`<file>|<mode>|<filter>|<expectation>|<label>`: `outer` or
+`inner-<node>`, `count` with `0` or `>0`, `distinct <field>` with `>=N`;
+`__IDLE_START__` is the run's `idle_start`) is run with `tshark` against that
+capture and is a PASS or a FAIL under its label. `X7 decryption` is a SKIP
+naming `keys=<state>` unless `run.conf` says `keys=present`; with keys it builds
+a throwaway Wireshark profile from `gt/*/keys/esp_sa` and needs at least one
+outer ESP packet to decode. `X8 drops` fails any capture whose
+`capture-stats.txt` line does not say `0 packets dropped by kernel`. Every
+verdict is also written to `expected.md` in the run directory. A directory
+without `run.conf`, or a row it cannot read, is refused (exit 1), never
+skipped. `tests/helpers/lint_scenarios.py pcap-expect` holds the pack's rows to
+the same grammar. `tshark` comes from the bundle's apt set.
 
 Two findings from the design, to be confirmed on staging: the pack's
 `ipsec-ike` rehearsal saw strongSwan float to `udp/4500` with no NAT in the

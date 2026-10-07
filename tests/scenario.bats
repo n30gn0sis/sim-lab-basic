@@ -1123,3 +1123,41 @@ while True: time.sleep(0.1)
     [[ "$output" == *"WARN  event t=1 exec a|boom | x exited 1"* ]]
     [ "$(grep -c '^WARN  event' <<< "$output")" -eq 1 ]
 }
+
+# ── verify — tshark over a run directory ────────────────────────────────────
+make_run_dir() {  # make_run_dir <scenario> — a finished run under cases/, keys absent
+    RD="$CASES/$1/$1-20261001T1400Z"; mkdir -p "$RD"
+    printf 'scenario=%s\nrun_id=%s-20261001T1400Z\ntap_a=lab-tap0\nouter=outer-lab-tap0.pcapng:lab-tap0\ninner=inner-a.pcapng:a:eth0\nidle_start=1759327440\nkeys=absent\nend=2026-10-01T14:05:00Z\n' "$1" "$1" > "$RD/run.conf"
+    printf pcap > "$RD/outer-lab-tap0.pcapng"; printf pcap > "$RD/inner-a.pcapng"
+    printf 'outer-lab-tap0: 7 packets captured; 0 packets dropped by kernel\ninner-a: 7 packets captured; 0 packets dropped by kernel\n' > "$RD/capture-stats.txt"
+}
+@test "verify judges every pcap-expect.txt row with tshark, renders __IDLE_START__, SKIPs decryption without keys, checks drops" {
+    record_env; make_run_dir demo
+    printf 'outer|count|isakmp|>0|X1 ike seen\nouter|count|udp.port==4500|0|X2 nothing on 4500\nouter|distinct esp.spi|esp|>=4|X5 two SPI pairs\nouter|count|isakmp && frame.time_epoch >= __IDLE_START__|>0|X6 dpd in tail\n' > "$SCENARIO_DIR/demo/pcap-expect.txt"
+    # tshark: count = lines printed; -T fields prints the field per packet
+    stub tshark 'echo "tshark $*" >> "$STUB_LOG"
+case "$*" in
+  *"isakmp && frame.time_epoch >= 1759327440"*) printf "1\n2\n" ;;
+  *isakmp*) printf "1\n2\n3\n" ;;
+  *4500*) : ;;
+  *"-e esp.spi"*) printf "0x1\n0x2\n0x3\n0x4\n0x1\n" ;;
+esac'
+    run scenario verify "$RD"; echo "$output"; [ "$status" -eq 0 ]   # a SKIP does not change the exit (footer)
+    [[ "$output" == *"PASS  X1"* && "$output" == *"PASS  X2"* && "$output" == *"PASS  X5"*"4 distinct"* && "$output" == *"PASS  X6"* ]]
+    [[ "$output" == *"SKIP  X7"*"keys=absent"* && "$output" == *"PASS  X8"* ]]
+    grep -q -- '-r .*/outer-lab-tap0.pcapng -Y isakmp' "$STUB_LOG"
+    [ -f "$RD/expected.md" ]; grep -q 'X1' "$RD/expected.md"
+}
+@test "verify FAILs a row whose expectation does not hold, and a capture with kernel drops" {
+    record_env; make_run_dir demo
+    printf 'outer|count|udp.port==4500|0|X2 nothing on 4500\n' > "$SCENARIO_DIR/demo/pcap-expect.txt"
+    stub tshark 'printf "1\n"'
+    sed -i 's/inner-a: .*/inner-a: 7 packets captured; 3 packets dropped by kernel/' "$RD/capture-stats.txt"
+    run scenario verify "$RD"; [ "$status" -eq 1 ]
+    [[ "$output" == *"FAIL  X2"*"1 packet"* && "$output" == *"FAIL  X8"*"inner-a"* ]]
+}
+@test "verify refuses a directory that is not a run, and a row it cannot parse" {
+    record_env; run scenario verify "$BATS_TEST_TMPDIR"; [ "$status" -eq 1 ]; [[ "$output" == *"run.conf"* ]]
+    make_run_dir demo; printf 'outer|weird|x|0|bad\n' > "$SCENARIO_DIR/demo/pcap-expect.txt"
+    run scenario verify "$RD"; [ "$status" -eq 1 ]; [[ "$output" == *"weird"* ]]
+}

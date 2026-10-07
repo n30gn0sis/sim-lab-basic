@@ -238,6 +238,39 @@ def check_events(s, c, errs):
                     errs.append(f"{where} line {n}: {act} takes a or b (got {arg!r})")
 
 
+def check_pcap_expect(s, c, errs):
+    """pcap-expect.txt: the rules r770-scenario.sh verify applies to each row (optional file)."""
+    path = os.path.join(ROOT, s, "pcap-expect.txt")
+    if not os.path.isfile(path):
+        return
+    docker = {n["name"] for n in project(s)["topology"]["nodes"] if n["node_type"] == "docker"}
+    with open(path) as f:
+        for n, line in enumerate(f, 1):
+            line = line.rstrip("\n")
+            if not line or line.startswith("#"):
+                continue
+            where = f"{s}: pcap-expect.txt line {n}"
+            parts = line.split("|")
+            if len(parts) != 5:
+                errs.append(f"{where} is not file|mode|filter|expectation|label (got {len(parts)} fields)")
+                continue
+            file, mode, filt, want, label = parts
+            if file != "outer" and not (file.startswith("inner-") and file[6:] in docker):
+                errs.append(f"{where}: file {file!r} is not outer or inner-<docker node> (nodes: {sorted(docker)})")
+            if mode == "count":
+                if want not in ("0", ">0"):
+                    errs.append(f"{where}: count expects 0 or >0 (got {want!r})")
+            elif re.fullmatch(r"distinct \S+", mode):
+                if not re.fullmatch(r">=[0-9]+", want):
+                    errs.append(f"{where}: distinct expects >=N (got {want!r})")
+            else:
+                errs.append(f"{where}: mode {mode!r} is not count or distinct <field>")
+            if not filt.strip():
+                errs.append(f"{where}: empty filter")
+            if not label.strip():
+                errs.append(f"{where}: empty label")
+
+
 def main():
     check = sys.argv[1]
     errs = []
@@ -255,7 +288,7 @@ def main():
                         errs.append(f"range {n} of {s} overlaps {n2} of {s2}")
                 owned.append((s, n))
         else:
-            globals()["check_" + check](s, c, errs)
+            globals()["check_" + check.replace("-", "_")](s, c, errs)
     for e in errs:
         print(e)
     return 1 if errs else 0
