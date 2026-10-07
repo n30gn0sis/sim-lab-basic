@@ -164,6 +164,11 @@ PY
     ! grep -q '10\.211\.' scenarios/s1-w1-ss/nodes/isp1.sh
 }
 @test "s1-w1-ss's gateways enable save-keys only when the plugin is present, never assume it" {
-    grep -q 'save-keys' scenarios/s1-w1-ss/nodes/gw-a.sh
-    grep -qE 'if .*libstrongswan-save-keys\.so' scenarios/s1-w1-ss/nodes/gw-a.sh
+    for g in gw-a gw-b; do
+        grep -q 'save-keys' "scenarios/s1-w1-ss/nodes/$g.sh"
+        grep -qE 'if .*libstrongswan-save-keys\.so' "scenarios/s1-w1-ss/nodes/$g.sh"
+    done
+}
+@test "s1-w1-ss's traffic starts by tearing the IKE SA down, so IKE_SA_INIT is in the window" {
+    grep -q 'gw-a) *swanctl --terminate --ike s1' scenarios/s1-w1-ss/traffic.sh
 }
