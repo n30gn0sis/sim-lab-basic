@@ -940,7 +940,7 @@ while True: time.sleep(0.1)
     grep -q 'nsenter --net=/proc/4242/ns/net tcpdump -ni eth0 .*-w .*/inner-a.pcapng' "$STUB_LOG"
     [ -s "$d/outer-lab-tap0.pcapng" ] && [ -s "$d/inner-a.pcapng" ]
     grep -q '^scenario=demo$' "$d/run.conf"; grep -q '^run_id=demo-[0-9]\{8\}T[0-9]\{4\}Z$' "$d/run.conf"
-    grep -q '^tap_a=lab-tap0$' "$d/run.conf"; grep -q '^idle_secs=3$' "$d/run.conf"
+    grep -q '^tap_a=lab-tap0$' "$d/run.conf"; grep -q '^taps=lab-tap0,lab-tap1$' "$d/run.conf"; grep -q '^idle_secs=3$' "$d/run.conf"
     grep -q '^idle_start=' "$d/run.conf"; grep -q '^end=20' "$d/run.conf"; grep -q '^keys=n/a$' "$d/run.conf"
     grep -q '^load_start=0.42$' "$d/run.conf"; grep -q '^inner=inner-a.pcapng:a:eth0$' "$d/run.conf"
     grep -q 'outer-lab-tap0: .*0 packets dropped by kernel' "$d/capture-stats.txt"
@@ -974,16 +974,33 @@ while True: time.sleep(0.1)
     run scenario record demo; [ "$status" -eq 1 ]; [[ "$output" == *"not up"* ]]
 }
 
-@test "record's EXIT trap stops the captures already running when it dies mid-setup, and closes run.conf as interrupted" {
-    record_env; sed -i 's/^inner_capture=.*/inner_capture=a:eth0 b:eth0/' "$SCENARIO_DIR/demo/scenario.conf"
+@test "record's EXIT trap stops the captures already running when one dies at startup, names it, and closes run.conf as interrupted" {
+    record_env
+    # tcpdump refuses the inner interface, as the real one does an unknown device
+    sed -i '1a case " $* " in *" -ni eth0 "*) echo "tcpdump: eth0: No such device exists" >\&2; exit 1 ;; esac' "$BIN/tcpdump"
     scenario up demo --bundle "$BUNDLE" >/dev/null
-    echo 4242 > "$BATS_TEST_TMPDIR/pid-cid-a"; echo 0 > "$BATS_TEST_TMPDIR/pid-cid-b"   # b: no running pid -> die after two captures started
+    echo 4242 > "$BATS_TEST_TMPDIR/pid-cid-a"
     run scenario record demo
     echo "$output"; [ "$status" -eq 1 ]
-    [[ "$output" == *"docker reports no running pid for b"* ]]
+    [[ "$output" == *"capture inner-a did not start: tcpdump: eth0: No such device exists"* ]]
     command sleep 0.3; ! pgrep -f "$CASES" >/dev/null
     d=$(find "$CASES/demo" -mindepth 1 -maxdepth 1 -type d | head -1)
     grep -q '^end=interrupted ' "$d/run.conf"
-    grep -q '^outer-lab-tap0: ' "$d/capture-stats.txt"; grep -q '^inner-a: ' "$d/capture-stats.txt"
+    grep -q '^outer-lab-tap0: .*0 packets dropped by kernel' "$d/capture-stats.txt"
     ! grep -q '^docker exec -i [^ ]* sh -s [ab] ' "$STUB_LOG"   # traffic.sh never ran
+}
+
+@test "record refuses an inner_capture node that does not exist, or one named twice, before writing anything" {
+    record_env
+    scenario up demo --bundle "$BUNDLE" >/dev/null
+    echo 4242 > "$BATS_TEST_TMPDIR/pid-cid-a"
+    sed -i 's/^inner_capture=.*/inner_capture=zz:eth0/' "$SCENARIO_DIR/demo/scenario.conf"
+    run scenario record demo
+    echo "$output"; [ "$status" -eq 1 ]; [[ "$output" == *"no container for node zz"* ]]
+    [ ! -d "$CASES/demo" ]
+    sed -i 's/^inner_capture=.*/inner_capture=a:eth0 a:eth1/' "$SCENARIO_DIR/demo/scenario.conf"
+    run scenario record demo
+    echo "$output"; [ "$status" -eq 1 ]; [[ "$output" == *"inner_capture names a twice"* ]]
+    [ ! -d "$CASES/demo" ]
+    ! grep -q '^tcpdump' "$STUB_LOG"
 }

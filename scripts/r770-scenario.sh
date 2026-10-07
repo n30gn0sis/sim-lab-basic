@@ -372,12 +372,12 @@ IMPAIRED_TAPS=()             # TAPs shaped for this run; the trap clears them
 # hooks the ground-truth and event steps fill in; no-ops until then
 gt_snapshot() { :; }; gt_collect() { :; }; gt_keys_state() { printf 'n/a'; }
 events_start() { :; }; events_stop() { :; }
-cases_gate() {  # cases_gate <secs> — refuse when the run could not fit; prints the estimate
+cases_gate() {  # cases_gate <secs> <inner-captures> — refuse when the run could not fit; prints the estimate
     local dir free est
     dir=$(p "$CASES"); mkdir -p "$dir" || die "cannot create $dir"
     free=$(df -Pm "$dir" | awk 'NR == 2 {print $4}')
-    # every iperf3 client in the pack is capped at 50 Mbit/s (tests/scenarios.bats), captured twice (outer, inner): 2 * 50 Mbit/s * secs / 8
-    est=$(( 2 * 50 * $1 / 8 + 64 ))
+    # every iperf3 client in the pack is capped at 50 Mbit/s (tests/scenarios.bats), captured once outer and once per inner point: (1 + inner) * 50 Mbit/s * secs / 8
+    est=$(( (1 + $2) * 50 * $1 / 8 + 64 ))
     [ "${free:-0}" -ge $((MIN_FREE_MB + est)) ] \
         || die "free space on $dir is ${free:-unknown} MB; this run needs about ${est} MB above the ${MIN_FREE_MB} MB floor (SCENARIO_CASES_MIN_FREE_MB) — nothing was captured"
     note "free space: ${free} MB on $dir (run estimate ${est} MB, floor ${MIN_FREE_MB} MB)"
@@ -429,7 +429,8 @@ cmd_record() {
     need_root
     scenario_check "$NAME"
     gns3_login
-    local pid secs idle start tend istart end tap_a tap_b cp node iface cid npid keys
+    local pid secs idle start tend istart end taps tap_a tap_b cp node iface cid npid keys i l bad_caps="" seen=" "
+    local -a inner=() labels=()   # inner: "<node> <iface> <netns-pid>", resolved before anything is written
     pid=$(our_project "$NAME") || die "could not list GNS3 projects"
     if [ -z "$pid" ] || [ "$pid" = "FOREIGN" ]; then die "$NAME is not up — r770-scenario.sh up $NAME --bundle <dir>"; fi
     nodes "$pid" > "$WORK/nodes.tsv" || die "could not read the project's nodes"
@@ -437,8 +438,22 @@ cmd_record() {
     secs=${SCENARIO_TRAFFIC_SECS:-$(conf "$NAME" traffic_secs)}; idle=$(conf "$NAME" idle_secs); idle=${idle:-0}
     case "$secs" in ''|*[!0-9]*) die "the traffic window must be whole seconds (got '$secs')" ;; esac
     case "$idle" in *[!0-9]*) die "idle_secs must be whole seconds (got '$idle')" ;; esac
-    read -r tap_a tap_b <<< "$(awk -F'\t' '$2 == "cloud" && $5 != "" {print $5}' "$WORK/nodes.tsv" | paste -sd' ' -)"
+    taps=$(awk -F'\t' '$2 == "cloud" && $5 != "" {print $5}' "$WORK/nodes.tsv" | paste -sd, -)
+    IFS=, read -r tap_a tap_b _ <<< "$taps"
     [ -n "$tap_a" ] || die "no kit TAP bound by this project's Cloud nodes — not a pack scenario?"
+    # every inner point resolved to a running netns now, so a typo in
+    # scenario.conf is refused before anything is written under cases/
+    for cp in $(conf "$NAME" inner_capture); do
+        node=${cp%%:*}; iface=${cp#*:}
+        if [ -z "$node" ] || [ -z "$iface" ] || [ "$node" = "$cp" ]; then die "inner_capture entry '$cp' is not <node>:<iface>"; fi
+        # inner-<node>.pcapng is the file name later steps read: one capture per node
+        case "$seen" in *" $node "*) die "inner_capture names $node twice — one inner capture per node" ;; esac
+        seen="$seen$node "
+        cid=$(container_of "$WORK/nodes.tsv" "$node") || exit 1
+        npid=$(docker inspect -f '{{.State.Pid}}' "$cid" 2>/dev/null) || die "docker inspect gave no pid for $node ($cid)"
+        case "$npid" in ''|0|*[!0-9]*) die "docker reports no running pid for $node ($cid)" ;; esac
+        inner+=("$node $iface $npid")
+    done
     if [ "$DRY" = "1" ]; then
         # a dry run creates no run directory and starts no capture: it only says what would be
         echo "DRY-RUN: tcpdump -ni $tap_a -w $(p "$CASES")/$NAME/$NAME-<UTC>/outer-$tap_a.pcapng"
@@ -447,27 +462,31 @@ cmd_record() {
         echo "DRY-RUN: idle tail ${idle}s, then run.conf, capture-stats.txt, sha256sums"
         footer "record"
     fi
-    cases_gate "$secs"
+    cases_gate "$secs" "${#inner[@]}"
     RUN_ID="$NAME-$(date -u +%Y%m%dT%H%MZ)"; RUN_DIR="$(p "$CASES")/$NAME/$RUN_ID"
     [ ! -e "$RUN_DIR" ] || die "$RUN_DIR already exists — one run per minute; nothing under $(p "$CASES") is overwritten"
     mkdir -p "$RUN_DIR" || die "cannot create $RUN_DIR"
     trap record_cleanup EXIT
     {
         echo "scenario=$NAME"; echo "run_id=$RUN_ID"; echo "project=lab-scenario-$NAME"
-        echo "taps=$tap_a,$tap_b"; echo "tap_a=$tap_a"; echo "tap_b=$tap_b"
+        echo "taps=$taps"; echo "tap_a=$tap_a"; echo "tap_b=$tap_b"
         echo "secs=$secs"; echo "idle_secs=$idle"; echo "spec=ipsec-scenarios-0.1"
         echo "load_start=$(cut -d' ' -f1 "$(p /proc/loadavg)")"
     } > "$RUN_DIR/run.conf"
     note "run directory: $RUN_DIR"
     capture_start "outer-$tap_a" "$tap_a"; echo "outer=outer-$tap_a.pcapng:$tap_a" >> "$RUN_DIR/run.conf"
-    for cp in $(conf "$NAME" inner_capture); do
-        node=${cp%%:*}; iface=${cp#*:}
-        cid=$(container_of "$WORK/nodes.tsv" "$node") || exit 1
-        npid=$(docker inspect -f '{{.State.Pid}}' "$cid" 2>/dev/null) || die "docker inspect gave no pid for $node ($cid)"
-        case "$npid" in ''|0|*[!0-9]*) die "docker reports no running pid for $node ($cid)" ;; esac
+    for cp in "${inner[@]}"; do
+        read -r node iface npid <<< "$cp"
         capture_start "inner-$node" "$iface" "$npid"; echo "inner=inner-$node.pcapng:$node:$iface" >> "$RUN_DIR/run.conf"
     done
     sleep 2   # the capture files open before the first frame
+    # a tcpdump that refused its interface (or an nsenter whose pid just
+    # exited) is gone by now: refuse the run rather than PASS without its file
+    for i in "${!CAP_PIDS[@]}"; do
+        kill -0 "${CAP_PIDS[$i]}" 2>/dev/null \
+            || die "capture ${CAP_LABELS[$i]} did not start: $(paste -sd' ' "$RUN_DIR/.${CAP_LABELS[$i]}.stats" 2>/dev/null)"
+    done
+    labels=("${CAP_LABELS[@]}")
     gt_snapshot "$NAME" start
     start=$(date -u +%Y-%m-%dT%H:%M:%SZ); echo "start=$start" >> "$RUN_DIR/run.conf"
     events_start "$NAME"
@@ -482,8 +501,10 @@ cmd_record() {
     end=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     { echo "keys=$keys"; echo "load_end=$(cut -d' ' -f1 "$(p /proc/loadavg)")"; echo "end=$end"; } >> "$RUN_DIR/run.conf"
     ( cd "$RUN_DIR" && find . -maxdepth 1 -name '*.pcapng' -printf '%P\n' | sort | xargs -r sha256sum > sha256sums )
-    write_run_record "$start" "$end" "$secs" "$T_OK" "$T_BADN" "$tap_a,$tap_b" "$RUN_DIR"
-    if [ -z "$T_BADN" ]; then pass "recorded $RUN_ID: traffic ran in every node:$T_OKN"
+    write_run_record "$start" "$end" "$secs" "$T_OK" "$T_BADN" "$taps" "$RUN_DIR"
+    for l in "${labels[@]}"; do [ -s "$RUN_DIR/$l.pcapng" ] || bad_caps="$bad_caps $l"; done
+    if [ -n "$bad_caps" ]; then fail "recorded $RUN_ID, but capture(s) missing or empty:$bad_caps — $RUN_DIR kept for inspection"
+    elif [ -z "$T_BADN" ]; then pass "recorded $RUN_ID: traffic ran in every node:$T_OKN"
     elif [ "$T_OK" -gt 0 ]; then warn "recorded $RUN_ID with traffic failed in:$T_BADN"
     else fail "no traffic generator ran (failed in:$T_BADN) — $RUN_DIR kept for inspection"; fi
     note "next: r770-scenario.sh verify $RUN_DIR · r770-scenario.sh ingest $RUN_DIR · r770-scenario.sh check $NAME"
