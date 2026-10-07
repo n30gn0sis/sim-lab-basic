@@ -13,6 +13,9 @@
 #                   node's config with docker exec, wait until it is ready
 #   traffic <name>  run the scenario's traffic for its window; write a run
 #                   record (UTC start/end, range, TAPs) under r770-evidence/
+#   record <name>   traffic, captured: outer on the first kit TAP, inner in
+#                   each inner_capture node's netns, an idle tail, and a run
+#                   directory (run.conf, drop stats, sha256sums)
 #   down <name>     stop and delete the imported project (idempotent)
 #   status          which scenarios are up, their TAPs, their last run record
 #   check <name>    judge the newest traffic run in Malcolm: every expect.txt
@@ -27,7 +30,12 @@
 #
 #   SCENARIO_WAIT_SECS 120 · SCENARIO_CHECK_WAIT_SECS (default: this Malcolm's
 #   PCAP_ROTATE_MINUTES*60+180, else 180) · SCENARIO_TRAFFIC_SECS (default: the
-#   scenario's traffic_secs) · GNS3_LAB_TAPS 4 · GNS3_ADMIN_USER admin
+#   scenario's traffic_secs) · GNS3_LAB_TAPS 4 · GNS3_ADMIN_USER admin ·
+#   SCENARIO_CASES_DIR /data/pcap/cases · SCENARIO_CASES_MIN_FREE_MB 10240
+#
+# record is traffic with captures, an idle tail and a run directory under
+# SCENARIO_CASES_DIR; its EXIT trap stops every capture and clears every
+# qdisc it applied. Nothing under the cases directory is ever deleted.
 #
 #   0  done · 2  done with warnings · 1  refused or failed
 #
@@ -305,12 +313,33 @@ cmd_down() {
 }
 
 # ── traffic ──────────────────────────────────────────────────────────────────
+run_traffic() {  # run_traffic <scenario> <nodes.tsv> <secs> — traffic.sh in every traffic node; sets T_OK T_OKN T_BADN
+    local n cid; T_OK=0; T_OKN=""; T_BADN=""
+    for n in $(conf "$1" traffic_nodes); do
+        cid=$(container_of "$2" "$n") || exit 1
+        if run docker exec -i "$cid" sh -s "$n" "$3" < "$SCEN_DIR/$1/traffic.sh"; then T_OK=$((T_OK + 1)); T_OKN="$T_OKN $n"; else T_BADN="$T_BADN $n"; fi
+    done
+}
+write_run_record() {  # write_run_record <start> <end> <secs> <ok> <badn> <taps> [<run-dir>] — the pack's .run record
+    [ "$DRY" = "1" ] && return 0
+    local rec
+    rec="${KIT_EVIDENCE_DIR:-$PWD/r770-evidence}/scenario-$NAME-$(hostname -s 2>/dev/null || echo host)-$(date +%Y%m%d-%H%M%S).run"
+    mkdir -p "$(dirname "$rec")"
+    {
+        echo "scenario=$NAME"; echo "range=$(conf "$NAME" range)"; echo "project=lab-scenario-$NAME"
+        echo "taps=$6"; echo "start=$1"; echo "end=$2"; echo "secs=$3"
+        echo "nodes_ok=$4"; echo "nodes_failed=$(printf '%s' "$5" | wc -w)"
+        echo "expect=scenarios/$NAME/expect.txt"
+        if [ -n "${7:-}" ]; then echo "case=$7"; fi
+    } > "$rec"
+    note "run record: $rec"
+}
 cmd_traffic() {
     banner "traffic — $NAME"
     need_root
     scenario_check "$NAME"
     gns3_login
-    local pid secs start end n cid taps rec ok=0 okn="" badn=""
+    local pid secs start end taps
     pid=$(our_project "$NAME") || die "could not list GNS3 projects"
     if [ -z "$pid" ] || [ "$pid" = "FOREIGN" ]; then die "$NAME is not up — r770-scenario.sh up $NAME --bundle <dir>"; fi
     nodes "$pid" > "$WORK/nodes.tsv" || die "could not read the project's nodes"
@@ -319,36 +348,146 @@ cmd_traffic() {
     case "$secs" in ''|*[!0-9]*) die "the traffic window must be whole seconds (got '$secs')" ;; esac
     taps=$(awk -F'\t' '$5 != "" {print $5}' "$WORK/nodes.tsv" | paste -sd, -)
     start=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-    for n in $(conf "$NAME" traffic_nodes); do
-        cid=$(container_of "$WORK/nodes.tsv" "$n") || exit 1
-        if run docker exec -i "$cid" sh -s "$n" "$secs" < "$SCEN_DIR/$NAME/traffic.sh"; then
-            ok=$((ok + 1)); okn="$okn $n"
-        else
-            badn="$badn $n"
-        fi
-    done
+    run_traffic "$NAME" "$WORK/nodes.tsv" "$secs"
     end=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-    if [ "$DRY" != "1" ]; then
-        rec="${KIT_EVIDENCE_DIR:-$PWD/r770-evidence}/scenario-$NAME-$(hostname -s 2>/dev/null || echo host)-$(date +%Y%m%d-%H%M%S).run"
-        mkdir -p "$(dirname "$rec")"
-        {
-            echo "scenario=$NAME"
-            echo "range=$(conf "$NAME" range)"
-            echo "project=lab-scenario-$NAME"
-            echo "taps=$taps"
-            echo "start=$start"
-            echo "end=$end"
-            echo "secs=$secs"
-            echo "nodes_ok=$ok"
-            echo "nodes_failed=$(printf '%s' "$badn" | wc -w)"
-            echo "expect=scenarios/$NAME/expect.txt"
-        } > "$rec"
-        note "run record: $rec"
-    fi
-    if [ -z "$badn" ]; then pass "traffic ran in every node:$okn"
-    elif [ "$ok" -gt 0 ]; then warn "traffic failed in:$badn (ran in:$okn)"
-    else fail "no traffic generator ran (failed in:$badn)"; fi
+    write_run_record "$start" "$end" "$secs" "$T_OK" "$T_BADN" "$taps"
+    if [ -z "$T_BADN" ]; then pass "traffic ran in every node:$T_OKN"
+    elif [ "$T_OK" -gt 0 ]; then warn "traffic failed in:$T_BADN (ran in:$T_OKN)"
+    else fail "no traffic generator ran (failed in:$T_BADN)"; fi
     footer "traffic"
+}
+
+# ── record ───────────────────────────────────────────────────────────────────
+# One run, one directory: SCENARIO_CASES_DIR/<name>/<name>-<UTC minute>/ holds
+# the outer capture (the first kit TAP: what the ISP side of the lab sees),
+# one inner capture per inner_capture=<node>:<iface> (the host's tcpdump run
+# inside that container's netns, so no node image needs tcpdump), run.conf,
+# capture-stats.txt and sha256sums. The idle tail after traffic keeps the
+# captures open for DPD and keepalives.
+CASES="${SCENARIO_CASES_DIR:-/data/pcap/cases}"
+MIN_FREE_MB="${SCENARIO_CASES_MIN_FREE_MB:-10240}"
+RUN_DIR=""; RUN_ID=""
+CAP_PIDS=(); CAP_LABELS=()   # running tcpdumps, by label
+IMPAIRED_TAPS=()             # TAPs shaped for this run; the trap clears them
+# hooks the ground-truth and event steps fill in; no-ops until then
+gt_snapshot() { :; }; gt_collect() { :; }; gt_keys_state() { printf 'n/a'; }
+events_start() { :; }; events_stop() { :; }
+cases_gate() {  # cases_gate <secs> — refuse when the run could not fit; prints the estimate
+    local dir free est
+    dir=$(p "$CASES"); mkdir -p "$dir" || die "cannot create $dir"
+    free=$(df -Pm "$dir" | awk 'NR == 2 {print $4}')
+    # every iperf3 client in the pack is capped at 50 Mbit/s (tests/scenarios.bats), captured twice (outer, inner): 2 * 50 Mbit/s * secs / 8
+    est=$(( 2 * 50 * $1 / 8 + 64 ))
+    [ "${free:-0}" -ge $((MIN_FREE_MB + est)) ] \
+        || die "free space on $dir is ${free:-unknown} MB; this run needs about ${est} MB above the ${MIN_FREE_MB} MB floor (SCENARIO_CASES_MIN_FREE_MB) — nothing was captured"
+    note "free space: ${free} MB on $dir (run estimate ${est} MB, floor ${MIN_FREE_MB} MB)"
+}
+capture_start() {  # capture_start <label> <iface> [<netns-pid>] — a tcpdump into $RUN_DIR/<label>.pcapng
+    local out="$RUN_DIR/$1.pcapng" err="$RUN_DIR/.$1.stats"
+    # nsenter execs tcpdump in place (no --fork), so $! is tcpdump itself and kill -INT reaches it
+    if [ -n "${3:-}" ]; then
+        nsenter --net="/proc/$3/ns/net" tcpdump -ni "$2" -s 0 -U -w "$out" 2> "$err" &
+    else
+        tcpdump -ni "$2" -s 0 -U -w "$out" 2> "$err" &
+    fi
+    CAP_PIDS+=($!); CAP_LABELS+=("$1")
+    note "capture $1: $2${3:+ inside netns of pid $3} -> $out"
+}
+capture_stop_all() {  # capture_stop_all — SIGINT each tcpdump (it then flushes and prints its counts), wait, keep the counts
+    local i n live
+    for i in "${!CAP_PIDS[@]}"; do kill -INT "${CAP_PIDS[$i]}" 2>/dev/null || true; done
+    # a background job starts with SIGINT ignored until tcpdump installs its own
+    # handler, so a SIGINT sent in that first instant (the trap firing right
+    # after capture_start) is lost and a bare wait would hang: give it 5 tries,
+    # then SIGTERM, which tcpdump handles the same way and nothing ignores
+    for ((n = 0; n < 5; n++)); do
+        live=0
+        for i in "${!CAP_PIDS[@]}"; do kill -0 "${CAP_PIDS[$i]}" 2>/dev/null && live=1; done
+        [ "$live" = 0 ] && break
+        sleep 1
+    done
+    for i in "${!CAP_PIDS[@]}"; do kill -TERM "${CAP_PIDS[$i]}" 2>/dev/null || true; done
+    for i in "${!CAP_PIDS[@]}"; do
+        wait "${CAP_PIDS[$i]}" 2>/dev/null || true
+        printf '%s: %s\n' "${CAP_LABELS[$i]}" "$(grep -E 'dropped by kernel|captured' "$RUN_DIR/.${CAP_LABELS[$i]}.stats" 2>/dev/null | paste -sd';' - | sed 's/;/; /g')" >> "$RUN_DIR/capture-stats.txt"
+        rm -f "$RUN_DIR/.${CAP_LABELS[$i]}.stats"
+    done
+    CAP_PIDS=(); CAP_LABELS=()
+}
+record_cleanup() {  # the EXIT trap: nothing left running, nothing left shaped, the manifest closed
+    local t
+    events_stop
+    capture_stop_all
+    for t in "${IMPAIRED_TAPS[@]}"; do "$KIT_DIR/scripts/r770-wan.sh" clear "$t" >/dev/null 2>&1 || true; done
+    if [ -n "$RUN_DIR" ] && [ -f "$RUN_DIR/run.conf" ] && ! grep -q '^end=' "$RUN_DIR/run.conf"; then
+        echo "end=interrupted $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$RUN_DIR/run.conf"
+    fi
+    cleanup
+}
+cmd_record() {
+    banner "record — $NAME"
+    need_root
+    scenario_check "$NAME"
+    gns3_login
+    local pid secs idle start tend istart end tap_a tap_b cp node iface cid npid keys
+    pid=$(our_project "$NAME") || die "could not list GNS3 projects"
+    if [ -z "$pid" ] || [ "$pid" = "FOREIGN" ]; then die "$NAME is not up — r770-scenario.sh up $NAME --bundle <dir>"; fi
+    nodes "$pid" > "$WORK/nodes.tsv" || die "could not read the project's nodes"
+    ready_check "$NAME" 0 || die "$NAME is up but not ready ($(conf "$NAME" ready)) — nothing was recorded"
+    secs=${SCENARIO_TRAFFIC_SECS:-$(conf "$NAME" traffic_secs)}; idle=$(conf "$NAME" idle_secs); idle=${idle:-0}
+    case "$secs" in ''|*[!0-9]*) die "the traffic window must be whole seconds (got '$secs')" ;; esac
+    case "$idle" in *[!0-9]*) die "idle_secs must be whole seconds (got '$idle')" ;; esac
+    read -r tap_a tap_b <<< "$(awk -F'\t' '$2 == "cloud" && $5 != "" {print $5}' "$WORK/nodes.tsv" | paste -sd' ' -)"
+    [ -n "$tap_a" ] || die "no kit TAP bound by this project's Cloud nodes — not a pack scenario?"
+    if [ "$DRY" = "1" ]; then
+        # a dry run creates no run directory and starts no capture: it only says what would be
+        echo "DRY-RUN: tcpdump -ni $tap_a -w $(p "$CASES")/$NAME/$NAME-<UTC>/outer-$tap_a.pcapng"
+        for cp in $(conf "$NAME" inner_capture); do echo "DRY-RUN: nsenter --net=/proc/<pid of ${cp%%:*}>/ns/net tcpdump -ni ${cp#*:} -w .../inner-${cp%%:*}.pcapng"; done
+        run_traffic "$NAME" "$WORK/nodes.tsv" "$secs"
+        echo "DRY-RUN: idle tail ${idle}s, then run.conf, capture-stats.txt, sha256sums"
+        footer "record"
+    fi
+    cases_gate "$secs"
+    RUN_ID="$NAME-$(date -u +%Y%m%dT%H%MZ)"; RUN_DIR="$(p "$CASES")/$NAME/$RUN_ID"
+    [ ! -e "$RUN_DIR" ] || die "$RUN_DIR already exists — one run per minute; nothing under $(p "$CASES") is overwritten"
+    mkdir -p "$RUN_DIR" || die "cannot create $RUN_DIR"
+    trap record_cleanup EXIT
+    {
+        echo "scenario=$NAME"; echo "run_id=$RUN_ID"; echo "project=lab-scenario-$NAME"
+        echo "taps=$tap_a,$tap_b"; echo "tap_a=$tap_a"; echo "tap_b=$tap_b"
+        echo "secs=$secs"; echo "idle_secs=$idle"; echo "spec=ipsec-scenarios-0.1"
+        echo "load_start=$(cut -d' ' -f1 "$(p /proc/loadavg)")"
+    } > "$RUN_DIR/run.conf"
+    note "run directory: $RUN_DIR"
+    capture_start "outer-$tap_a" "$tap_a"; echo "outer=outer-$tap_a.pcapng:$tap_a" >> "$RUN_DIR/run.conf"
+    for cp in $(conf "$NAME" inner_capture); do
+        node=${cp%%:*}; iface=${cp#*:}
+        cid=$(container_of "$WORK/nodes.tsv" "$node") || exit 1
+        npid=$(docker inspect -f '{{.State.Pid}}' "$cid" 2>/dev/null) || die "docker inspect gave no pid for $node ($cid)"
+        case "$npid" in ''|0|*[!0-9]*) die "docker reports no running pid for $node ($cid)" ;; esac
+        capture_start "inner-$node" "$iface" "$npid"; echo "inner=inner-$node.pcapng:$node:$iface" >> "$RUN_DIR/run.conf"
+    done
+    sleep 2   # the capture files open before the first frame
+    gt_snapshot "$NAME" start
+    start=$(date -u +%Y-%m-%dT%H:%M:%SZ); echo "start=$start" >> "$RUN_DIR/run.conf"
+    events_start "$NAME"
+    run_traffic "$NAME" "$WORK/nodes.tsv" "$secs"
+    tend=$(date -u +%Y-%m-%dT%H:%M:%SZ); echo "traffic_end=$tend" >> "$RUN_DIR/run.conf"
+    istart=$(date -u +%s); echo "idle_start=$istart" >> "$RUN_DIR/run.conf"
+    if [ "$idle" -gt 0 ]; then note "idle tail: ${idle}s (DPD, keepalives)"; sleep "$idle"; fi
+    events_stop
+    gt_snapshot "$NAME" end
+    capture_stop_all
+    gt_collect "$NAME"; keys=$(gt_keys_state)
+    end=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    { echo "keys=$keys"; echo "load_end=$(cut -d' ' -f1 "$(p /proc/loadavg)")"; echo "end=$end"; } >> "$RUN_DIR/run.conf"
+    ( cd "$RUN_DIR" && find . -maxdepth 1 -name '*.pcapng' -printf '%P\n' | sort | xargs -r sha256sum > sha256sums )
+    write_run_record "$start" "$end" "$secs" "$T_OK" "$T_BADN" "$tap_a,$tap_b" "$RUN_DIR"
+    if [ -z "$T_BADN" ]; then pass "recorded $RUN_ID: traffic ran in every node:$T_OKN"
+    elif [ "$T_OK" -gt 0 ]; then warn "recorded $RUN_ID with traffic failed in:$T_BADN"
+    else fail "no traffic generator ran (failed in:$T_BADN) — $RUN_DIR kept for inspection"; fi
+    note "next: r770-scenario.sh verify $RUN_DIR · r770-scenario.sh ingest $RUN_DIR · r770-scenario.sh check $NAME"
+    footer "record"
 }
 
 # ── check ────────────────────────────────────────────────────────────────────
@@ -541,7 +680,7 @@ cmd_status() {
 # ── dispatch ─────────────────────────────────────────────────────────────────
 SUB="${1:-}"; [ $# -gt 0 ] && shift
 case "$SUB" in
-    up|traffic|down|check) case "${1:-}" in -*|"") ;; *) NAME=$1; shift ;; esac ;;
+    up|traffic|down|check|record) case "${1:-}" in -*|"") ;; *) NAME=$1; shift ;; esac ;;
 esac
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -557,7 +696,7 @@ done
 kit_init "r770-scenario"
 case "$SUB" in
     list) cmd_list ;;
-    up|traffic|down|check)
+    up|traffic|down|check|record)
         [ -n "$NAME" ] || die "$SUB needs a scenario name (see: r770-scenario.sh list)"
         "cmd_$SUB" ;;
     status) cmd_status ;;

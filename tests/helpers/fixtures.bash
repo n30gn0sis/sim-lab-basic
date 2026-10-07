@@ -108,6 +108,7 @@ make_root() {
     printf 'ENABLED=1\n' > "$r/etc/default/motd-news"
     ln -s ../sites-available/default "$r/etc/nginx/sites-enabled/default"
     echo "server {}" > "$r/etc/nginx/sites-available/default"
+    mkdir -p "$r/proc"; echo '0.42 0.40 0.38 1/200 1234' > "$r/proc/loadavg"
 }
 
 # make_malcolm_tree <root> — what /opt/malcolm looks like AFTER `unpack` and

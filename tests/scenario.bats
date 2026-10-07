@@ -890,3 +890,100 @@ lab_mon0() { mkdir -p "$ROOT/sys/class/net/lab-mon0"; printf '02:00:00:00:00:01\
     [ "$status" -eq 1 ]
     [[ "$output" == *"scenarios/demo/expect.txt has no rows — nothing to check"* ]]
 }
+
+# ── record — a reference run: captures, idle tail, manifest, checksums ───────
+record_env() {
+    # a path on the box: record reads it through p(), so here it lands under $ROOT
+    export SCENARIO_CASES_DIR=/data/pcap/cases SCENARIO_CASES_MIN_FREE_MB=0; CASES="$ROOT/data/pcap/cases"
+    printf 'idle_secs=3\ninner_capture=a:eth0\n' >> "$SCENARIO_DIR/demo/scenario.conf"
+    # tcpdump: records argv, writes the -w file, prints drop stats on SIGINT like
+    # the real one. python3, not bash: a backgrounded non-interactive child
+    # starts with SIGINT ignored, and bash cannot trap a signal ignored on entry
+    # (real tcpdump installs its own handler, so the script's kill -INT reaches it)
+    stub tcpdump 'echo "tcpdump $*" >> "$STUB_LOG"
+exec python3 -c "
+import signal, sys, time
+out = sys.argv[sys.argv.index(\"-w\") + 1]
+def stop(*_):
+    sys.stderr.write(\"7 packets captured\n7 packets received by filter\n0 packets dropped by kernel\n\"); sys.exit(0)
+signal.signal(signal.SIGINT, stop); signal.signal(signal.SIGTERM, stop)
+open(out, \"w\").write(\"pcap\")
+while True: time.sleep(0.1)
+" "$@"'
+    stub nsenter 'echo "nsenter $*" >> "$STUB_LOG"; shift; exec "$@"'
+    # the real sleep by path: `command sleep` inside $BIN/sleep would find itself.
+    # 0.3s, so the tcpdump stubs have installed their SIGINT handler before the
+    # script stops them (a SIGINT before that is ignored and wait would hang)
+    unstub sleep; stub sleep "exec \"$REAL/sleep\" 0.3"
+    # docker inspect -f {{.State.Pid}} <cid>: the pid file for that container, else 1
+    sed -i 's|^  exec)|  inspect) cat "$BATS_TEST_TMPDIR/pid-${!#}" 2>/dev/null \|\| echo 1 ;;\n  exec)|' "$BIN/docker"
+}
+
+@test "record refuses when free space is under the floor, before any capture" {
+    record_env; export SCENARIO_CASES_MIN_FREE_MB=999999999
+    scenario up demo --bundle "$BUNDLE" >/dev/null
+    run scenario record demo
+    echo "$output"
+    [ "$status" -eq 1 ]; [[ "$output" == *"free space"* ]]
+    ! grep -q '^tcpdump' "$STUB_LOG"
+    [ ! -d "$CASES/demo" ]
+}
+
+@test "record captures outer on TAP_A and inner inside the node's netns, runs traffic, idles, writes the manifest" {
+    record_env
+    scenario up demo --bundle "$BUNDLE" >/dev/null
+    echo 4242 > "$BATS_TEST_TMPDIR/pid-cid-a"
+    run scenario record demo
+    echo "$output"; [ "$status" -eq 0 ]
+    d=$(find "$CASES/demo" -mindepth 1 -maxdepth 1 -type d | head -1); [ -n "$d" ]
+    grep -q 'tcpdump -ni lab-tap0 .*-w .*/outer-lab-tap0.pcapng' "$STUB_LOG"
+    grep -q 'nsenter --net=/proc/4242/ns/net tcpdump -ni eth0 .*-w .*/inner-a.pcapng' "$STUB_LOG"
+    [ -s "$d/outer-lab-tap0.pcapng" ] && [ -s "$d/inner-a.pcapng" ]
+    grep -q '^scenario=demo$' "$d/run.conf"; grep -q '^run_id=demo-[0-9]\{8\}T[0-9]\{4\}Z$' "$d/run.conf"
+    grep -q '^tap_a=lab-tap0$' "$d/run.conf"; grep -q '^idle_secs=3$' "$d/run.conf"
+    grep -q '^idle_start=' "$d/run.conf"; grep -q '^end=20' "$d/run.conf"; grep -q '^keys=n/a$' "$d/run.conf"
+    grep -q '^load_start=0.42$' "$d/run.conf"; grep -q '^inner=inner-a.pcapng:a:eth0$' "$d/run.conf"
+    grep -q 'outer-lab-tap0: .*0 packets dropped by kernel' "$d/capture-stats.txt"
+    grep -q 'outer-lab-tap0.pcapng' "$d/sha256sums"; grep -q 'inner-a.pcapng' "$d/sha256sums"; ! grep -q 'run.conf' "$d/sha256sums"
+    # the captures started before traffic.sh ran in any node
+    [ "$(grep -n '^tcpdump' "$STUB_LOG" | head -1 | cut -d: -f1)" -lt "$(grep -n '^docker exec -i' "$STUB_LOG" | tail -1 | cut -d: -f1)" ]
+    # the pack's own run record, so check works unchanged
+    rec=$(ls "$KIT_EVIDENCE_DIR"/scenario-demo-*.run); grep -q "^case=$d$" "$rec"
+}
+
+@test "record works with outer capture alone when the scenario names no inner point" {
+    record_env; sed -i '/^inner_capture=/d' "$SCENARIO_DIR/demo/scenario.conf"
+    scenario up demo --bundle "$BUNDLE" >/dev/null
+    run scenario record demo; echo "$output"; [ "$status" -eq 0 ]
+    ! grep -q '^nsenter' "$STUB_LOG"
+}
+
+@test "record's EXIT trap stops every capture on a FAIL (traffic failed in every node)" {
+    record_env
+    scenario up demo --bundle "$BUNDLE" >/dev/null
+    echo 1 > "$BATS_TEST_TMPDIR/rc-execi-cid-a"; echo 1 > "$BATS_TEST_TMPDIR/rc-execi-cid-b"
+    run scenario record demo
+    echo "$output"; [ "$status" -eq 1 ]
+    command sleep 0.3; ! pgrep -f "$CASES" >/dev/null
+    d=$(find "$CASES/demo" -mindepth 1 -maxdepth 1 -type d | head -1)
+    grep -q '^end=' "$d/run.conf"
+}
+
+@test "record refuses when the scenario is not up" {
+    record_env
+    run scenario record demo; [ "$status" -eq 1 ]; [[ "$output" == *"not up"* ]]
+}
+
+@test "record's EXIT trap stops the captures already running when it dies mid-setup, and closes run.conf as interrupted" {
+    record_env; sed -i 's/^inner_capture=.*/inner_capture=a:eth0 b:eth0/' "$SCENARIO_DIR/demo/scenario.conf"
+    scenario up demo --bundle "$BUNDLE" >/dev/null
+    echo 4242 > "$BATS_TEST_TMPDIR/pid-cid-a"; echo 0 > "$BATS_TEST_TMPDIR/pid-cid-b"   # b: no running pid -> die after two captures started
+    run scenario record demo
+    echo "$output"; [ "$status" -eq 1 ]
+    [[ "$output" == *"docker reports no running pid for b"* ]]
+    command sleep 0.3; ! pgrep -f "$CASES" >/dev/null
+    d=$(find "$CASES/demo" -mindepth 1 -maxdepth 1 -type d | head -1)
+    grep -q '^end=interrupted ' "$d/run.conf"
+    grep -q '^outer-lab-tap0: ' "$d/capture-stats.txt"; grep -q '^inner-a: ' "$d/capture-stats.txt"
+    ! grep -q '^docker exec -i [^ ]* sh -s [ab] ' "$STUB_LOG"   # traffic.sh never ran
+}

@@ -526,15 +526,17 @@ refused rather than taken down, a check that could not judge (Malcolm
 not answering) is a WARN, not a PASS, and a run in which no scenario ran
 is a FAIL.
 
-## IPsec & simulated-WAN scenarios (planned — NOT STARTED)
+## IPsec & simulated-WAN scenarios (in progress)
 
 The build repo's IPsec & WAN scenario spec is filed in the kit as
 `docs/superpowers/specs/2026-09-24-ipsec-scenarios-spec.md`; how the kit as
 built carries it out is `docs/superpowers/specs/2026-10-07-ipsec-wan-scenarios-kit-design.md`,
 and the work is sequenced in `docs/superpowers/plans/2026-10-07-ipsec-wan-scenarios.md`.
-Nothing below exists yet; this section says what the kit will do so the
-procedure is reviewed before it is built, and is rewritten "as measured"
-after the staging rehearsal (plan Task 11).
+`record` exists (its captures, idle tail and run directory; `--impair`,
+`--events` and the ground truth under `gt/` are still to come); the rest of
+this section says what the kit will do so the procedure is reviewed before
+it is built, and is rewritten "as measured" after the staging rehearsal
+(plan Task 11).
 
 **What changes against the pack as it stands.** The spec assumes a
 two-bridge fabric (`br-lab-tNN` outer, `br-lab-iNN` inner) and host tools
@@ -564,17 +566,29 @@ sudo ./scripts/r770-scenario.sh check  s1-w1-ss                              # X
 sudo ./scripts/r770-scenario.sh down   s1-w1-ss
 ```
 
-`record` is `traffic` with evidence: captures start before any generator
-runs (so IKE_SA_INIT is in the file), the scenario idles `idle_secs` at the
-end (so DPD shows), and the run directory under `SCENARIO_CASES_DIR`
-(`/data/pcap/cases`) holds `run.conf`, the outer and inner `.pcapng`,
-`gt/<node>/` (SA snapshots, charon log, ESP/IKE keys **only if** the bundled
-strongSwan turns out to carry `save-keys` — discovered at run time, never
-assumed), `events.log`, `capture-stats.txt` (zero kernel drops is the bar)
-and `sha256sums`. It refuses when free space is under
-`SCENARIO_CASES_MIN_FREE_MB` plus the run's estimate; nothing under `cases/`
-is ever deleted by the kit; Ctrl-C stops every capture and clears every
-impairment the run applied.
+`record` is `traffic` with evidence. It refuses, before any capture, when
+free space on `SCENARIO_CASES_DIR` (`/data/pcap/cases`) is under
+`SCENARIO_CASES_MIN_FREE_MB` (10240) plus the run's estimate. Then it starts
+the captures — the outer one with `tcpdump` on the first kit TAP the
+project's Cloud nodes bind (read from GNS3, never typed), and one inner one
+per `inner_capture=<node>:<iface>` with the host's `tcpdump` inside that
+container's network namespace (`nsenter --net=/proc/<pid>/ns/net`, the pid
+from `docker inspect`) — and only then runs `traffic.sh` in every traffic
+node, so IKE_SA_INIT is in the file. After the traffic window it idles
+`idle_secs` (so DPD and keepalives show), stops each capture with SIGINT
+(SIGTERM after 5 s), and writes the run directory
+`<SCENARIO_CASES_DIR>/<name>/<name>-<UTC yyyymmddThhmmZ>/`: `run.conf`
+(scenario, run_id, TAPs, capture points, start, traffic_end, idle_start,
+`keys=`, load, end), the outer and inner `.pcapng`, `capture-stats.txt`
+(tcpdump's own counts; zero kernel drops is the bar) and `sha256sums` over
+the captures, plus the pack's usual `.run` record in `r770-evidence/` with a
+`case=` line, so `check` works unchanged. `gt/<node>/` (SA snapshots,
+charon log, ESP/IKE keys **only if** the bundled strongSwan turns out to
+carry `save-keys` — discovered at run time, never assumed) and `events.log`
+join it in later steps. Nothing under `cases/` is ever deleted by the kit.
+An EXIT trap — success, failure or Ctrl-C — stops every capture still
+running, clears every impairment the run applied, and closes `run.conf`
+with `end=interrupted <UTC>` if the run did not finish.
 
 Two findings from the design, to be confirmed on staging: the pack's
 `ipsec-ike` rehearsal saw strongSwan float to `udp/4500` with no NAT in the
