@@ -10,8 +10,8 @@ setup() { cd "$BATS_TEST_DIRNAME/.."; }
 lint() { run python3 tests/helpers/lint_scenarios.py "$1"; echo "$output"; [ "$status" -eq 0 ]; }
 
 @test "the pack holds the scenarios the kit documents" {
-    for s in client-server ipsec-esp ipsec-ike ospf bgp dns tls ssh s0-w1; do [ -f "scenarios/$s/scenario.conf" ] || { echo "missing $s"; false; }; done
-    [ "$(find scenarios -mindepth 2 -maxdepth 2 -name scenario.conf | wc -l)" -eq 9 ]
+    for s in client-server ipsec-esp ipsec-ike ospf bgp dns tls ssh s0-w1 s1-w1-ss; do [ -f "scenarios/$s/scenario.conf" ] || { echo "missing $s"; false; }; done
+    [ "$(find scenarios -mindepth 2 -maxdepth 2 -name scenario.conf | wc -l)" -eq 10 ]
 }
 
 @test "the dns scenario's responder answers A under scenario.lab and NXDOMAIN otherwise" {
@@ -154,4 +154,16 @@ PY
     sed -i 's|^range=.*|range=198.18.11.0/24 10.210.5.0/24|' "$d/two/scenario.conf"
     SCENARIOS_ROOT="$d" run python3 tests/helpers/lint_scenarios.py layout; echo "$output"
     [ "$status" -ne 0 ]; [[ "$output" == *"overlaps"* ]]
+}
+
+@test "s1-w1-ss disables MOBIKE on both gateways, so IKE stays on udp/500 with no NAT (spec X2)" {
+    for g in gw-a gw-b; do grep -qE '^\s*mobike\s*=\s*no' "scenarios/s1-w1-ss/nodes/$g.swanctl.conf"; done
+}
+@test "s1-w1-ss's ISP knows neither site, so any 10.211.x.x address on the outer side is leakage" {
+    ! grep -q '10\.211\.' scenarios/s1-w1-ss/nodes/isp1.frr.conf
+    ! grep -q '10\.211\.' scenarios/s1-w1-ss/nodes/isp1.sh
+}
+@test "s1-w1-ss's gateways enable save-keys only when the plugin is present, never assume it" {
+    grep -q 'save-keys' scenarios/s1-w1-ss/nodes/gw-a.sh
+    grep -qE 'if .*libstrongswan-save-keys\.so' scenarios/s1-w1-ss/nodes/gw-a.sh
 }

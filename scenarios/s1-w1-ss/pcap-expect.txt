@@ -1,0 +1,7 @@
+outer|count|isakmp && udp.port==500 && ip.addr==198.18.11.2 && ip.addr==198.18.11.6|>0|X1 IKE_SA_INIT/IKE_AUTH on udp/500 between the public addresses
+outer|count|udp.port==4500|0|X2 no NAT, MOBIKE off: nothing on udp/4500
+outer|count|esp && !udp|>0|X3 data as ESP (proto 50), not UDP-encapsulated
+outer|count|ip.addr==10.211.0.0/16|0|X4 no site address on the outer side
+outer|distinct esp.spi|esp|>=4|X5 at least one CHILD_SA rekey: a second SPI pair
+outer|count|isakmp && frame.time_epoch >= __IDLE_START__|>0|X6 DPD INFORMATIONAL during the idle tail
+inner-gw-a|count|tcp.port==5201 && ip.src==10.211.1.10|>0|I1 iperf3 in clear on site A's LAN
