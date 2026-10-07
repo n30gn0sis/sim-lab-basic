@@ -26,6 +26,11 @@
 #   --taps a,b      up: the two kit TAPs to bind (default: two free ones)
 #   --force         up: take an existing copy down first
 #   --run <file>    check: judge this run record instead of the newest
+#   --impair <profile>@a|b   record: shape TAP_A or TAP_B with a WAN profile
+#                   (r770-wan.sh) once the captures are open; repeatable
+#   --events <file> record: t|action|arg lines run from traffic start, each
+#                   logged to events.log (note, wan-apply <profile>@a|b,
+#                   wan-clear a|b, link-down a|b, link-up a|b, exec <node>|<cmd>)
 #   --yes / --non-interactive / --dry-run   as everywhere in the kit
 #
 #   SCENARIO_WAIT_SECS 120 · SCENARIO_CHECK_WAIT_SECS (default: this Malcolm's
@@ -34,8 +39,9 @@
 #   SCENARIO_CASES_DIR /data/pcap/cases · SCENARIO_CASES_MIN_FREE_MB 10240
 #
 # record is traffic with captures, an idle tail and a run directory under
-# SCENARIO_CASES_DIR; its EXIT trap stops every capture and clears every
-# qdisc it applied. Nothing under the cases directory is ever deleted.
+# SCENARIO_CASES_DIR; its EXIT trap stops the event scheduler and every
+# capture, clears every qdisc it applied and brings up every link an event
+# took down. Nothing under the cases directory is ever deleted.
 #
 #   0  done · 2  done with warnings · 1  refused or failed
 #
@@ -371,7 +377,75 @@ CAP_PIDS=(); CAP_LABELS=()   # running tcpdumps, by label
 IMPAIRED_TAPS=()             # TAPs shaped for this run; the trap clears them
 # hooks the ground-truth and event steps fill in; no-ops until then
 gt_snapshot() { :; }; gt_collect() { :; }; gt_keys_state() { printf 'n/a'; }
-events_start() { :; }; events_stop() { :; }
+# --impair <profile>@a|b and --events <file>: both checked before anything is
+# written, both undone by the trap. a/b are the run's TAP_A/TAP_B, read from the
+# project's Cloud nodes in cmd_record, never typed.
+IMPAIR=(); EVENTS_FILE=""; EV_PID=""; TAP_A_RUN=""; TAP_B_RUN=""
+tap_of_role() { case "$1" in a) printf '%s' "$TAP_A_RUN" ;; b) printf '%s' "$TAP_B_RUN" ;; *) return 1 ;; esac; }
+side_check() {  # side_check <a|b> <what> — this project binds a TAP on that side, or die
+    [ -n "$(tap_of_role "$1")" ] || die "$2: this project binds no TAP for side $1"
+}
+impair_check() {  # impair_check <profile@role> — valid shape and an existing profile, or die (before any capture)
+    local prof=${1%@*} role=${1##*@}
+    { [ "$prof" != "$1" ] && [ -n "$prof" ] && [[ "$role" =~ ^[ab]$ ]]; } || die "--impair takes <profile>@a or <profile>@b (got '$1')"
+    [ -f "${WAN_PROFILE_DIR:-$KIT_DIR/config/wan/profiles}/$prof.conf" ] || die "no WAN profile '$prof' (see: r770-wan.sh show, config/wan/profiles/)"
+    side_check "$role" "--impair $1"
+}
+impair_apply() {  # impair_apply <profile@role> — through r770-wan.sh (its PASS line lands in the transcript); remembered for the trap and the manifest
+    local prof=${1%@*} role=${1##*@} tap; tap=$(tap_of_role "$role")
+    "$KIT_DIR/scripts/r770-wan.sh" apply "$prof" "$tap" || die "r770-wan.sh refused $prof on $tap"
+    IMPAIRED_TAPS+=("$tap"); echo "impair=$1:$tap" >> "$RUN_DIR/run.conf"
+}
+events_check() {  # events_check <file> [<window>] — every line t|action|arg, known action, t non-decreasing and inside the window (lint_scenarios.py events: the same rules)
+    local line t act arg prev=-1 n=0
+    [ -f "$1" ] || die "no events file $1"
+    while IFS= read -r line || [ -n "$line" ]; do
+        n=$((n + 1)); case "$line" in ''|'#'*) continue ;; esac
+        IFS='|' read -r t act arg <<< "$line"
+        case "$t" in ''|*[!0-9]*) die "$1 line $n: t must be whole seconds (got '$t')" ;; esac
+        [ "$t" -ge "$prev" ] || die "$1 line $n: times must not decrease"; prev=$t
+        # past traffic + idle tail no capture is open, and the run would wait for it
+        [ -z "${2:-}" ] || [ "$t" -le "$2" ] || die "$1 line $n: t=$t is past this run's window (traffic + idle tail = $2 s)"
+        case "$act" in
+            note) [ -n "$arg" ] || die "$1 line $n: note needs an argument" ;;
+            exec) { [ "${arg#*|}" != "$arg" ] && [ -n "${arg%%|*}" ] && [ -n "${arg#*|}" ]; } || die "$1 line $n: exec takes <node>|<command>" ;;
+            wan-apply) impair_check "$arg" ;;
+            wan-clear|link-down|link-up) [[ "$arg" =~ ^[ab]$ ]] || die "$1 line $n: $act takes a or b"
+                                         side_check "$arg" "$1 line $n" ;;
+            *) die "$1 line $n: unknown action '$act' (known: note wan-apply wan-clear link-down link-up exec)" ;;
+        esac
+    done < "$1"
+}
+event_run() {  # event_run <t> <action> <arg> — do it, log it, snapshot ground truth after it; a failure is logged, never fatal
+    local rc=0 tap node cmd cid
+    case "$2" in
+        note)      note "event t=$1: $3" ;;
+        # its own subshell: a refusal is rc 1 in the log, not the scheduler's death
+        wan-apply) ( impair_apply "$3" ) || rc=$? ;;
+        wan-clear) tap=$(tap_of_role "$3"); "$KIT_DIR/scripts/r770-wan.sh" clear "$tap" || rc=$? ;;
+        link-down|link-up) tap=$(tap_of_role "$3"); run ip link set dev "$tap" "${2#link-}" || rc=$? ;;
+        exec)      node=${3%%|*}; cmd=${3#*|}
+                   if cid=$(container_of "$WORK/nodes.tsv" "$node"); then run docker exec "$cid" sh -c "$cmd" || rc=$?; else rc=1; fi ;;
+    esac
+    printf '%s|%s|%s|%s|%s\n' "$(date -u +%Y-%m-%dT%H:%M:%S.%3NZ)" "$1" "$2" "$3" "$rc" >> "$RUN_DIR/events.log"
+    [ "$2" = note ] || gt_snapshot "$NAME" "t$1-$2"
+    return 0
+}
+events_start() {  # events_start — the scheduler, in the background, t counted from now (traffic start)
+    [ -n "$EVENTS_FILE" ] || return 0
+    echo "events=$EVENTS_FILE" >> "$RUN_DIR/run.conf"; cp "$EVENTS_FILE" "$RUN_DIR/events.txt"
+    (
+        t0=$(date +%s)
+        while IFS='|' read -r t act arg || [ -n "$t" ]; do
+            case "$t" in ''|'#'*) continue ;; esac
+            while [ $(( $(date +%s) - t0 )) -lt "$t" ]; do sleep 1; done
+            event_run "$t" "$act" "$arg"
+        done < "$RUN_DIR/events.txt"
+    ) & EV_PID=$!
+}
+# events_stop — wait for the scheduler to reach its last event (the idle tail
+# covers it on the box); idempotent, since the trap calls it again
+events_stop() { if [ -n "$EV_PID" ]; then wait "$EV_PID" 2>/dev/null || true; EV_PID=""; fi; }
 cases_gate() {  # cases_gate <secs> <inner-captures> — refuse when the run could not fit; prints the estimate
     local dir free est
     dir=$(p "$CASES"); mkdir -p "$dir" || die "cannot create $dir"
@@ -415,10 +489,26 @@ capture_stop_all() {  # capture_stop_all — SIGINT each tcpdump (it then flushe
     CAP_PIDS=(); CAP_LABELS=()
 }
 record_cleanup() {  # the EXIT trap: nothing left running, nothing left shaped, the manifest closed
-    local t
+    local t r cleared=" "
+    # interrupted mid-events: stop the scheduler rather than wait out its schedule
+    if [ -n "$EV_PID" ]; then kill "$EV_PID" 2>/dev/null || true; fi
     events_stop
     capture_stop_all
-    for t in "${IMPAIRED_TAPS[@]}"; do "$KIT_DIR/scripts/r770-wan.sh" clear "$t" >/dev/null 2>&1 || true; done
+    # the scheduler's wan-apply ran in a subshell and could not grow IMPAIRED_TAPS:
+    # run.conf's impair= lines name every TAP either path shaped
+    if [ -n "$RUN_DIR" ] && [ -f "$RUN_DIR/run.conf" ]; then
+        while IFS= read -r t; do IMPAIRED_TAPS+=("$t"); done < <(sed -n 's/^impair=.*:\(lab-tap[0-9]*\)$/\1/p' "$RUN_DIR/run.conf")
+    fi
+    for t in "${IMPAIRED_TAPS[@]}"; do
+        case "$cleared" in *" $t "*) continue ;; esac; cleared="$cleared$t "
+        "$KIT_DIR/scripts/r770-wan.sh" clear "$t" >/dev/null 2>&1 || true
+    done
+    # a link-down event never outlives the run, even when its link-up never came
+    if [ -n "$RUN_DIR" ] && [ -f "$RUN_DIR/events.log" ]; then
+        while IFS= read -r r; do
+            if t=$(tap_of_role "$r") && [ -n "$t" ]; then ip link set dev "$t" up 2>/dev/null || true; fi
+        done < <(awk -F'|' '$3 == "link-down" {print $4}' "$RUN_DIR/events.log" | sort -u)
+    fi
     if [ -n "$RUN_DIR" ] && [ -f "$RUN_DIR/run.conf" ] && ! grep -q '^end=' "$RUN_DIR/run.conf"; then
         echo "end=interrupted $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$RUN_DIR/run.conf"
     fi
@@ -441,6 +531,7 @@ cmd_record() {
     taps=$(awk -F'\t' '$2 == "cloud" && $5 != "" {print $5}' "$WORK/nodes.tsv" | paste -sd, -)
     IFS=, read -r tap_a tap_b _ <<< "$taps"
     [ -n "$tap_a" ] || die "no kit TAP bound by this project's Cloud nodes — not a pack scenario?"
+    TAP_A_RUN=$tap_a; TAP_B_RUN=$tap_b
     # every inner point resolved to a running netns now, so a typo in
     # scenario.conf is refused before anything is written under cases/
     for cp in $(conf "$NAME" inner_capture); do
@@ -454,10 +545,15 @@ cmd_record() {
         case "$npid" in ''|0|*[!0-9]*) die "docker reports no running pid for $node ($cid)" ;; esac
         inner+=("$node $iface $npid")
     done
+    # --impair specs and the whole events file, refused here or never
+    for i in "${IMPAIR[@]}"; do impair_check "$i"; done
+    [ -z "$EVENTS_FILE" ] || events_check "$EVENTS_FILE" $((secs + idle))
     if [ "$DRY" = "1" ]; then
         # a dry run creates no run directory and starts no capture: it only says what would be
         echo "DRY-RUN: tcpdump -ni $tap_a -w $(p "$CASES")/$NAME/$NAME-<UTC>/outer-$tap_a.pcapng"
         for cp in $(conf "$NAME" inner_capture); do echo "DRY-RUN: nsenter --net=/proc/<pid of ${cp%%:*}>/ns/net tcpdump -ni ${cp#*:} -w .../inner-${cp%%:*}.pcapng"; done
+        for i in "${IMPAIR[@]}"; do echo "DRY-RUN: r770-wan.sh apply ${i%@*} $(tap_of_role "${i##*@}")"; done
+        [ -z "$EVENTS_FILE" ] || echo "DRY-RUN: events from $EVENTS_FILE, t counted from traffic start, logged to .../events.log"
         run_traffic "$NAME" "$WORK/nodes.tsv" "$secs"
         echo "DRY-RUN: idle tail ${idle}s, then run.conf, capture-stats.txt, sha256sums"
         footer "record"
@@ -487,6 +583,8 @@ cmd_record() {
             || die "capture ${CAP_LABELS[$i]} did not start: $(paste -sd' ' "$RUN_DIR/.${CAP_LABELS[$i]}.stats" 2>/dev/null)"
     done
     labels=("${CAP_LABELS[@]}")
+    # shaped only once every capture is open, so the capture holds the change
+    for i in "${IMPAIR[@]}"; do impair_apply "$i"; done
     gt_snapshot "$NAME" start
     start=$(date -u +%Y-%m-%dT%H:%M:%SZ); echo "start=$start" >> "$RUN_DIR/run.conf"
     events_start "$NAME"
@@ -709,6 +807,9 @@ while [ $# -gt 0 ]; do
         --taps)    TAPS="${2:-}"; shift ;;
         --run)     [ -n "${2:-}" ] || die "--run needs a run record path (see: r770-scenario.sh status)"
                    RUN_FILE=$2; shift ;;
+        --impair)  IMPAIR+=("${2:-}"); shift ;;
+        --events)  [ -n "${2:-}" ] || die "--events needs a file of t|action|arg lines"
+                   EVENTS_FILE=$2; shift ;;
         -h|--help) usage ;;
         *)         common_flag "$1" || die "unknown option: $1 (try --help)" ;;
     esac

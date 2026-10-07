@@ -45,6 +45,7 @@ PY
 @test "every image is bundled or upstream-pending, and nodes use only the scenario's image tokens" { lint images; }
 @test "every address a scenario names lies in its own range" { lint addresses; }
 @test "every expect.txt line is proto|port|src|dst inside the scenario's range" { lint expect; }
+@test "every events/*.txt line is t|action|arg, a known action, t non-decreasing, profiles that exist" { lint events; }
 
 @test "every BGP neighbor keeps alive at 10s or less, so any traffic window carries the session" {
     # the session comes up during `up`, before any capture starts; at FRR's 60s default a
@@ -171,4 +172,18 @@ PY
 }
 @test "s1-w1-ss's traffic starts by tearing the IKE SA down, so IKE_SA_INIT is in the window" {
     grep -q 'gw-a) *swanctl --terminate --ike s1' scenarios/s1-w1-ss/traffic.sh
+}
+
+@test "the events lint rejects an unknown action, a decreasing t, a missing profile and a bad side" {
+    d="$BATS_TEST_TMPDIR/pack"; mkdir -p "$d"; cp -r scenarios/s1-w1-ss "$d/"
+    printf '5|note|x\n3|note|y\n4|teleport|a\n4|wan-apply|no-such@a\n4|link-down|c\n4|exec|a\n9999|note|late\n' > "$d/s1-w1-ss/events/bad.txt"
+    SCENARIOS_ROOT="$d" run python3 tests/helpers/lint_scenarios.py events
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"line 2: times must not decrease"* ]]
+    [[ "$output" == *"unknown action 'teleport'"* ]]
+    [[ "$output" == *"no WAN profile 'no-such'"* ]]
+    [[ "$output" == *"link-down takes a or b"* ]]
+    [[ "$output" == *"exec takes <node>|<command>"* ]]
+    [[ "$output" == *"t=9999 is past traffic_secs + idle_secs"* ]]
 }

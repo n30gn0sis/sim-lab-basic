@@ -532,8 +532,8 @@ The build repo's IPsec & WAN scenario spec is filed in the kit as
 `docs/superpowers/specs/2026-09-24-ipsec-scenarios-spec.md`; how the kit as
 built carries it out is `docs/superpowers/specs/2026-10-07-ipsec-wan-scenarios-kit-design.md`,
 and the work is sequenced in `docs/superpowers/plans/2026-10-07-ipsec-wan-scenarios.md`.
-`record` exists (its captures, idle tail and run directory; `--impair`,
-`--events` and the ground truth under `gt/` are still to come); the rest of
+`record` exists (its captures, idle tail, run directory, `--impair` and
+`--events`; the ground truth under `gt/` is still to come); the rest of
 this section says what the kit will do so the procedure is reviewed before
 it is built, and is rewritten "as measured" after the staging rehearsal
 (plan Task 11).
@@ -584,11 +584,34 @@ node, so IKE_SA_INIT is in the file. After the traffic window it idles
 the captures, plus the pack's usual `.run` record in `r770-evidence/` with a
 `case=` line, so `check` works unchanged. `gt/<node>/` (SA snapshots,
 charon log, ESP/IKE keys **only if** the bundled strongSwan turns out to
-carry `save-keys` — discovered at run time, never assumed) and `events.log`
-join it in later steps. Nothing under `cases/` is ever deleted by the kit.
-An EXIT trap — success, failure or Ctrl-C — stops every capture still
-running, clears every impairment the run applied, and closes `run.conf`
-with `end=interrupted <UTC>` if the run did not finish.
+carry `save-keys` — discovered at run time, never assumed) joins it in a
+later step. Nothing under `cases/` is ever deleted by the kit.
+An EXIT trap — success, failure or Ctrl-C — stops the event scheduler and
+every capture still running, clears every impairment the run applied (from
+`--impair` or a `wan-apply` event), brings up every TAP an event took down,
+and closes `run.conf` with `end=interrupted <UTC>` if the run did not finish.
+
+Impairment and events are run parameters, not scenario content.
+`--impair <profile>@a|b` (repeatable) shapes the run's TAP_A or TAP_B — the
+TAPs the project's Cloud nodes bind, read from GNS3 — with a profile from
+`config/wan/profiles/` through `scripts/r770-wan.sh apply`, once every capture
+is open, so the capture holds the change; it is recorded in `run.conf` as
+`impair=<profile>@<a|b>:<tap>`. The direction rule: netem shapes what the
+host sends *into* a TAP, so `@b` shapes site A → site B (to be measured on
+staging — Task 11, H7). `--events <file>` runs `t|action|arg` lines, `t` in
+whole seconds after traffic start and never decreasing, alongside the
+traffic: `note <text>`, `wan-apply <profile>@a|b`, `wan-clear a|b`,
+`link-down a|b`, `link-up a|b`, `exec <node>|<command>` (`sh -c` in that
+node's container). Every event must fall inside `traffic_secs` +
+`idle_secs`; the run waits for the last one. The file is copied into the run
+directory as `events.txt`, named in `run.conf` as `events=<file>`, and every
+executed event is a line of `events.log`:
+`<YYYY-MM-DDTHH:MM:SS.mmmZ>|<t>|<action>|<arg>|<rc>` (UTC, milliseconds; a
+non-zero `rc` is logged, never fatal). An unknown profile, a malformed spec
+or any bad line of the events file is refused before any capture starts, and
+`tests/helpers/lint_scenarios.py events` holds the pack's own
+`scenarios/<name>/events/*.txt` (`s1-w1-ss` ships `baseline.txt` and
+`wan-flap.txt`) to the same rules.
 
 Two findings from the design, to be confirmed on staging: the pack's
 `ipsec-ike` rehearsal saw strongSwan float to `udp/4500` with no NAT in the

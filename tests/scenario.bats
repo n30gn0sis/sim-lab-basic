@@ -1004,3 +1004,74 @@ while True: time.sleep(0.1)
     [ ! -d "$CASES/demo" ]
     ! grep -q '^tcpdump' "$STUB_LOG"
 }
+
+@test "record --impair refuses a bad spec or an unknown profile before any capture" {
+    record_env; scenario up demo --bundle "$BUNDLE" >/dev/null
+    for bad in branch-wan@c @a branch-wan no-such@a; do
+        run scenario record demo --impair "$bad"; echo "$bad: $output"; [ "$status" -eq 1 ]; [[ "$output" == *"profile"* ]]
+    done
+    ! grep -q '^tcpdump' "$STUB_LOG"
+    [ ! -d "$CASES/demo" ]
+}
+
+@test "record --impair applies the profile to the named TAP via r770-wan.sh after captures start, records it, clears it at the end" {
+    record_env; scenario up demo --bundle "$BUNDLE" >/dev/null
+    stub tc 'echo "tc $*" >> "$STUB_LOG"'
+    run scenario record demo --impair branch-wan@b; echo "$output"; [ "$status" -eq 0 ]
+    d=$(find "$CASES/demo" -mindepth 1 -maxdepth 1 -type d | head -1); [ -n "$d" ]
+    grep -q '^impair=branch-wan@b:lab-tap1$' "$d/run.conf"
+    [ "$(grep -n '^tcpdump' "$STUB_LOG" | head -1 | cut -d: -f1)" -lt "$(grep -n 'tc qdisc replace dev lab-tap1' "$STUB_LOG" | head -1 | cut -d: -f1)" ]
+    grep -q 'tc qdisc del dev lab-tap1 root' "$STUB_LOG"
+}
+
+@test "record --events runs each action at its time, logs it with a millisecond UTC stamp, refuses an unknown action up front" {
+    record_env; scenario up demo --bundle "$BUNDLE" >/dev/null
+    stub tc 'echo "tc $*" >> "$STUB_LOG"'; stub ip 'echo "ip $*" >> "$STUB_LOG"'
+    printf '# a comment\n0|note|traffic start\n1|wan-apply|poor-broadband@a\n2|link-down|b\n2|link-up|b\n3|wan-clear|a\n3|exec|a|echo hi\n' > "$BATS_TEST_TMPDIR/ev.txt"
+    run scenario record demo --events "$BATS_TEST_TMPDIR/ev.txt"; echo "$output"; [ "$status" -eq 0 ]
+    d=$(find "$CASES/demo" -mindepth 1 -maxdepth 1 -type d | head -1); [ -n "$d" ]
+    cat "$d/events.log"
+    [ "$(wc -l < "$d/events.log")" -eq 6 ]
+    grep -qE '^20[0-9]{2}-[0-9]{2}-[0-9]{2}T[0-9:]{8}\.[0-9]{3}Z\|1\|wan-apply\|poor-broadband@a\|0$' "$d/events.log"
+    grep -qE '\|3\|exec\|a\|echo hi\|0$' "$d/events.log"
+    grep -q 'ip link set dev lab-tap1 down' "$STUB_LOG"; grep -q 'ip link set dev lab-tap1 up' "$STUB_LOG"
+    grep -q 'docker exec .* sh -c echo hi' "$STUB_LOG"
+    grep -q "^events=$BATS_TEST_TMPDIR/ev.txt$" "$d/run.conf"
+    grep -q '^impair=poor-broadband@a:lab-tap0$' "$d/run.conf"
+    cmp "$BATS_TEST_TMPDIR/ev.txt" "$d/events.txt"
+    printf '0|teleport|x\n' > "$BATS_TEST_TMPDIR/bad.txt"
+    run scenario record demo --events "$BATS_TEST_TMPDIR/bad.txt"; echo "$output"; [ "$status" -eq 1 ]; [[ "$output" == *"teleport"* ]]
+    printf '2|note|x\n1|note|y\n' > "$BATS_TEST_TMPDIR/back.txt"
+    run scenario record demo --events "$BATS_TEST_TMPDIR/back.txt"; [ "$status" -eq 1 ]; [[ "$output" == *"must not decrease"* ]]
+    printf '0|note|x\n9|note|late\n' > "$BATS_TEST_TMPDIR/late.txt"   # demo: traffic 5 s + idle 3 s
+    run scenario record demo --events "$BATS_TEST_TMPDIR/late.txt"; [ "$status" -eq 1 ]; [[ "$output" == *"past this run's window"* ]]
+    [ "$(find "$CASES/demo" -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 1 ]
+}
+
+@test "record --dry-run with --impair and --events says what it would shape and schedule, and writes nothing" {
+    record_env; scenario up demo --bundle "$BUNDLE" >/dev/null
+    stub tc 'echo "tc $*" >> "$STUB_LOG"'
+    printf '0|note|go\n' > "$BATS_TEST_TMPDIR/ev.txt"
+    run scenario record demo --impair branch-wan@a --events "$BATS_TEST_TMPDIR/ev.txt" --dry-run; echo "$output"; [ "$status" -eq 0 ]
+    [[ "$output" == *"DRY-RUN: r770-wan.sh apply branch-wan lab-tap0"* ]]
+    [[ "$output" == *"DRY-RUN: events from $BATS_TEST_TMPDIR/ev.txt"* ]]
+    ! grep -q '^tc ' "$STUB_LOG"; ! grep -q '^tcpdump' "$STUB_LOG"
+    [ ! -d "$CASES/demo" ]
+}
+
+@test "record interrupted mid-events stops the scheduler at once, clears the shaping, brings the link back up" {
+    record_env; scenario up demo --bundle "$BUNDLE" >/dev/null
+    stub tc 'echo "tc $*" >> "$STUB_LOG"'; stub ip 'echo "ip $*" >> "$STUB_LOG"'
+    printf '1|wan-apply|branch-wan@b\n1|link-down|b\n8|note|never reached\n' > "$BATS_TEST_TMPDIR/ev.txt"
+    PATH="$KIT_PATH" "$SCRIPT" record demo --events "$BATS_TEST_TMPDIR/ev.txt" > "$BATS_TEST_TMPDIR/out" 2>&1 &
+    rpid=$!
+    for _ in $(seq 100); do grep -qs '|link-down|' "$CASES"/demo/*/events.log && break; command sleep 0.1; done
+    t0=$(date +%s); kill -TERM "$rpid"; wait "$rpid" || true; cat "$BATS_TEST_TMPDIR/out"
+    [ $(( $(date +%s) - t0 )) -lt 6 ]
+    d=$(find "$CASES/demo" -mindepth 1 -maxdepth 1 -type d | head -1)
+    ! grep -q 'never reached' "$d/events.log"
+    grep -q '^impair=branch-wan@b:lab-tap1$' "$d/run.conf"; grep -q 'tc qdisc del dev lab-tap1 root' "$STUB_LOG"
+    grep -q 'ip link set dev lab-tap1 up' "$STUB_LOG"
+    grep -q '^end=interrupted ' "$d/run.conf"
+    command sleep 0.3; ! pgrep -f "$CASES" >/dev/null
+}

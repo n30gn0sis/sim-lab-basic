@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Lint the kit's scenario pack (scenarios/<name>/...). Usage: lint_scenarios.py <check>
 
-Checks: layout json topology images addresses expect. Prints one line per
+Checks: layout json topology images addresses expect events. Prints one line per
 problem and exits 1 if there are any. Run from the repo root.
 """
 import ipaddress
@@ -15,6 +15,8 @@ KEYS = ["name", "description", "range", "images", "traffic_secs", "ready", "traf
 UPSTREAM_PENDING = {"strongswan"}  # added to the build repo's pin block, not yet in a bundle
 PROTOS = {"tcp", "udp", "icmp", "esp", "ospf"}
 NODE_SUFFIXES = (".sh", ".frr.conf", ".swanctl.conf")  # the only kinds r770-scenario.sh applies
+WAN_PROFILES = os.environ.get("WAN_PROFILE_DIR", os.path.join("config", "wan", "profiles"))
+EVENT_ACTIONS = {"note", "exec", "wan-apply", "wan-clear", "link-down", "link-up"}  # r770-scenario.sh events_check
 
 
 def ranges_of(c):
@@ -194,6 +196,46 @@ def check_expect(s, c, errs):
             n = ipaddress.ip_network(r)
             if not (any(n.subnet_of(net) for net in nets) or n.is_multicast):
                 errs.append(f"{s}: expect.txt range {r} is outside {c['range']}")
+
+
+def check_events(s, c, errs):
+    """events/*.txt: the rules r770-scenario.sh's events_check applies before a run."""
+    ed = os.path.join(ROOT, s, "events")
+    for name in sorted(os.listdir(ed)) if os.path.isdir(ed) else []:
+        where = f"{s}: events/{name}"
+        if not name.endswith(".txt"):
+            errs.append(f"{where} is not .txt — record --events files are events/*.txt")
+            continue
+        prev = -1
+        window = int(c.get("traffic_secs") or 0) + int(c.get("idle_secs") or 0)
+        with open(os.path.join(ed, name)) as f:
+            for n, line in enumerate(f, 1):
+                line = line.rstrip("\n")
+                if not line or line.startswith("#"):
+                    continue
+                t, act, arg = (line.split("|", 2) + ["", ""])[:3]
+                if not t.isdigit():
+                    errs.append(f"{where} line {n}: t must be whole seconds (got {t!r})")
+                    continue
+                if int(t) < prev:
+                    errs.append(f"{where} line {n}: times must not decrease")
+                prev = int(t)
+                if prev > window:
+                    errs.append(f"{where} line {n}: t={t} is past traffic_secs + idle_secs = {window}")
+                if act not in EVENT_ACTIONS:
+                    errs.append(f"{where} line {n}: unknown action {act!r} (known: {sorted(EVENT_ACTIONS)})")
+                elif act == "note" and not arg:
+                    errs.append(f"{where} line {n}: note needs an argument")
+                elif act == "exec" and not re.fullmatch(r"[^|]+\|.+", arg):
+                    errs.append(f"{where} line {n}: exec takes <node>|<command>")
+                elif act == "wan-apply":
+                    prof, _, role = arg.rpartition("@")
+                    if not prof or role not in ("a", "b"):
+                        errs.append(f"{where} line {n}: wan-apply takes <profile>@a or <profile>@b (got {arg!r})")
+                    elif not os.path.isfile(os.path.join(WAN_PROFILES, prof + ".conf")):
+                        errs.append(f"{where} line {n}: no WAN profile {prof!r} under {WAN_PROFILES}")
+                elif act in ("wan-clear", "link-down", "link-up") and arg not in ("a", "b"):
+                    errs.append(f"{where} line {n}: {act} takes a or b (got {arg!r})")
 
 
 def main():

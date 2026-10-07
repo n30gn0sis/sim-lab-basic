@@ -1,0 +1,2 @@
+# S1 baseline: no impairment, notes only (times are seconds after traffic start)
+0|note|traffic start
