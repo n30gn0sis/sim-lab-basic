@@ -464,7 +464,7 @@ esac
 ```text
 icmp||10.210.1.0/24|10.210.2.0/24
 tcp|5201|10.210.1.0/24|10.210.2.0/24
-icmp||198.18.10.0/30|198.18.10.4/30
+icmp||10.210.1.0/24|198.18.10.4/30
 ```
 `pcap-expect.txt` (Task 9's format; the baseline's distinctive fact is that site addresses ARE visible on the outer side):
 ```text
@@ -1312,7 +1312,7 @@ This task runs on the staging host (VM 9770, air gap blocked, a bundle cut from 
 - [ ] **H5 — clear.** `r770-wan.sh apply branch-wan lab-tap1`; `ping` h-a→h-b shows ≈ +40 ms one way; `r770-wan.sh clear --all`; RTT back within 1 ms of H2's baseline.
 - [ ] **H6 — trap.** `record s0-w1` then Ctrl-C at ~20 s: `pgrep tcpdump` empty, `r770-wan.sh show` clean, the run directory has `end=interrupted …`.
 - [ ] **H7 — impairment direction.** `record s0-w1 --impair poor-broadband@b` (expected: site A → site B capped to 10 Mbit/s and +80 ms; `iperf3 -R` or the reverse ping unchanged). **Write the measured direction into the runbook**; if it is the opposite of the design note's claim, swap `a`/`b` in `tap_of_role` (one change), rerun, and correct the design note.
-- [ ] **W1 validation (spec §4, `s0-w1`'s `traffic.sh` output in the transcript):** 20 pings, traceroute showing `198.18.10.1`, `ping -M do -s 1472` succeeding (path MTU 1500), iperf3 ≈ 50 Mbit/s (the cap). Record RTT and throughput in the runbook as the S0 baseline.
+- [ ] **W1 validation (spec §4, `s0-w1`'s `traffic.sh` output in the transcript):** inside `isp1`, `vtysh -c 'show ip route static'` lists both site routes (FRR starts `staticd` with zebra unconditionally — the plan relies on it, this is where it is proven); 20 pings, traceroute showing `198.18.10.1`, `ping -M do -s 1472` succeeding (path MTU 1500), iperf3 ≈ 50 Mbit/s (the cap). Record RTT and throughput in the runbook as the S0 baseline.
 - [ ] **S1 — `up s1-w1-ss`**; inside `gw-a`: `swanctl --list-sas` shows `s1-net` INSTALLED; `cat /gt/keys.state` → the O3 answer (present/absent) — **write it into `docs/kit-sync.md`**. `ip xfrm state` non-empty (spec R2).
 - [ ] **S1 — negative test (spec §11.1):** with the tunnel down (`swanctl --terminate --ike s1` on gw-a, then before any traffic re-triggers it) a ping h-a→h-b fails — the ISP has no route to the sites. Recorded as the expected failure.
 - [ ] **S1 — reference run:** `record s1-w1-ss --events scenarios/s1-w1-ss/events/baseline.txt`, then `verify <run-dir>`: X1–X6, X8 PASS; X7 PASS or SKIP per O3. **If X2 fails (packets on 4500):** MOBIKE is not the whole story — read `gt/gw-a/charon.log` for the float reason; one hypothesis, one change. **If X5 fails:** the 240 s window did not span a rekey (strongSwan randomises `rekey_time` downward by `rand_time`, default 10%); raise `traffic_secs` to 300 — one change.
