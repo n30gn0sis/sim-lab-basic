@@ -1218,11 +1218,13 @@ out = sys.argv[sys.argv.index(\"-w\") + 1]; arm = os.environ[\"BATS_TEST_TMPDIR\
 def stop(*_):
     sys.stderr.write(\"7 packets captured\n0 packets dropped by kernel\n\"); sys.exit(0)
 signal.signal(signal.SIGINT, stop); signal.signal(signal.SIGTERM, stop)
+# the real tcpdump announces itself on stderr first; its error, then its counts, come after
+sys.stderr.write(\"tcpdump: listening on x, link-type EN10MB (Ethernet), snapshot length 262144 bytes\n\"); sys.stderr.flush()
 open(out, \"w\").write(\"pcap\")
 while True:
     time.sleep(0.1)
     if \"outer\" in out and os.path.exists(arm):
-        sys.stderr.write(\"tcpdump: pcap_loop: The interface disappeared\n\"); sys.exit(1)
+        sys.stderr.write(\"tcpdump: pcap_loop: The interface disappeared\n7 packets captured\n0 packets dropped by kernel\n\"); sys.exit(1)
 " "$@"'
     run scenario record demo; echo "$output"; [ "$status" -eq 1 ]
     d=$(find "$CASES/demo" -mindepth 1 -maxdepth 1 -type d | head -1)

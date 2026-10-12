@@ -550,7 +550,10 @@ capture_stop_all() {  # capture_stop_all — SIGINT each tcpdump (it then flushe
     for i in "${!CAP_PIDS[@]}"; do
         rc=0; wait "${CAP_PIDS[$i]}" 2>/dev/null || rc=$?
         if [ -n "${early[i]:-}" ]; then
-            printf '%s: exited early (rc %s) — %s\n' "${CAP_LABELS[$i]}" "$rc" "$(head -1 "$RUN_DIR/.${CAP_LABELS[$i]}.stats" 2>/dev/null)" >> "$RUN_DIR/capture-stats.txt"
+            # tcpdump's stderr opens with its "listening on" banner and closes with
+            # its counts; the reason it died is the first line that is neither
+            printf '%s: exited early (rc %s) — %s\n' "${CAP_LABELS[$i]}" "$rc" \
+                "$(grep -vE '^tcpdump: listening on |^[0-9]+ packets ' "$RUN_DIR/.${CAP_LABELS[$i]}.stats" 2>/dev/null | head -1)" >> "$RUN_DIR/capture-stats.txt"
             CAP_EARLY="$CAP_EARLY ${CAP_LABELS[$i]}"
         else printf '%s: %s\n' "${CAP_LABELS[$i]}" "$(grep -E 'dropped by kernel|captured' "$RUN_DIR/.${CAP_LABELS[$i]}.stats" 2>/dev/null | paste -sd';' - | sed 's/;/; /g')" >> "$RUN_DIR/capture-stats.txt"; fi
         rm -f "$RUN_DIR/.${CAP_LABELS[$i]}.stats"
