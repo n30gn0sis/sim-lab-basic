@@ -459,8 +459,8 @@ passes, the nodes are left running for inspection and `down` removes them.
 `traffic` runs only when the scenario is ready and writes
 `scenario-<name>-<host>-<ts>.run` (UTC start/end, range, TAPs) beside the
 transcript. `ipsec-ike` refuses until a bundle carries a strongSwan image.
-Each scenario owns one /16 (`client-server` 10.205, `ipsec-esp` 10.201,
-`ipsec-ike` 10.202, `ospf` 10.203, `bgp` 10.204, `dns` 10.206, `tls` 10.207, `ssh` 10.208), so two can share the hub.
+Each scenario owns one or more ranges, none overlapping another's (`client-server` 10.205, `ipsec-esp` 10.201,
+`ipsec-ike` 10.202, `ospf` 10.203, `bgp` 10.204, `s0-w1` (198.18.10.0/24 and 10.210.0.0/16), `s1-w1-ss` (198.18.11.0/24 and 10.211.0.0/16), `dns` 10.206, `tls` 10.207, `ssh` 10.208), so two can share the hub.
 
 A scenario's `expect.txt` lists the flows a run's window must show on the
 mirror, and the pack is built so that every window does:
@@ -525,6 +525,165 @@ is still taken down, an interrupted run takes down the one that is up
 refused rather than taken down, a check that could not judge (Malcolm
 not answering) is a WARN, not a PASS, and a run in which no scenario ran
 is a FAIL.
+
+## IPsec & simulated-WAN scenarios (built, staging rehearsal pending)
+
+The build repo's IPsec & WAN scenario spec is filed in the kit as
+`docs/superpowers/specs/2026-09-24-ipsec-scenarios-spec.md`; how the kit as
+built carries it out is `docs/superpowers/specs/2026-10-07-ipsec-wan-scenarios-kit-design.md`,
+and the work is sequenced in `docs/superpowers/plans/2026-10-07-ipsec-wan-scenarios.md`.
+Status: built, staging rehearsal pending (plan Task 11). `record` (its
+captures, idle tail, run directory, `--impair` and `--events`, and the ground
+truth under `gt/`), `verify` and `ingest` all exist and are covered offline by
+`tests/scenario.bats`; nothing here has yet run against a real GNS3, tcpdump or
+Malcolm, so this section is rewritten "as measured" after that rehearsal.
+
+**What changes against the pack as it stands.** The spec assumes a
+two-bridge fabric (`br-lab-tNN` outer, `br-lab-iNN` inner) and host tools
+(`lab-transit.sh`, `wan-apply`) that live in the build repo's unbuilt phases.
+The kit keeps its one mirrored hub: the **outer** view is a gateway's uplink
+on `br-lab` through two kit TAPs, as every pack scenario already does; the
+**inner** view is the host's `tcpdump` run *inside the gateway container's
+network namespace*, so it never touches the mirrored bridge and live Malcolm
+is not doubled. Impairment is a kit script (`scripts/r770-wan.sh` `apply|show|clear`)
+that shapes **only** `lab-tapN` and refuses any other name; its profiles are
+files under `config/` carrying the wiki's values. Each WAN scenario owns one
+`198.18.<k>.0/24` slice for its simulated public links and one
+`10.2<xx>.0.0/16` for its sites (`range=` becomes a list), so two can still
+share the hub.
+
+**First increment (spec IP0–IP4):** two pack scenarios — `s0-w1`, the
+plaintext baseline over a single FRR ISP, and `s1-w1-ss`, IKEv2 PSK
+site-to-site over the same ISP with strongSwan both ends — and three new
+`r770-scenario.sh` subcommands:
+
+```bash
+sudo ./scripts/r770-scenario.sh up s1-w1-ss --bundle $B
+sudo ./scripts/r770-scenario.sh record s1-w1-ss [--impair branch-wan@b] [--events scenarios/s1-w1-ss/events/wan-flap.txt]
+sudo ./scripts/r770-scenario.sh verify /data/pcap/cases/s1-w1-ss/<run-id>    # X1–X8 with tshark, on the box
+sudo ./scripts/r770-scenario.sh ingest /data/pcap/cases/s1-w1-ss/<run-id>    # PCAPs into Malcolm's drop-off, never gt/
+sudo ./scripts/r770-scenario.sh check  s1-w1-ss                              # the run's flows in Arkime (live view; the upload's proof is the tag search)
+sudo ./scripts/r770-scenario.sh down   s1-w1-ss
+```
+
+`record` is `traffic` with evidence. It refuses, before any capture, when
+free space on `SCENARIO_CASES_DIR` (`/data/pcap/cases`) is under
+`SCENARIO_CASES_MIN_FREE_MB` (10240) plus the run's estimate. Then it starts
+the captures — the outer one with `tcpdump` on the TAP that the Cloud named
+`tap-a` binds (TAP_A, the gateway side; read from GNS3 by the Cloud's name,
+never by node order and never typed — `tests/helpers/lint_scenarios.py
+topology` holds every pack project to `tap-a`/`tap-b`), and one inner one
+per `inner_capture=<node>:<iface>` with the host's `tcpdump` inside that
+container's network namespace (`nsenter --net=/proc/<pid>/ns/net`, the pid
+from `docker inspect`) — and only then runs `traffic.sh` in every traffic
+node, so IKE_SA_INIT is in the file. After the traffic window it idles
+`idle_secs` (so DPD and keepalives show), stops each capture with SIGINT
+(SIGTERM after 5 s), and writes the run directory
+`<SCENARIO_CASES_DIR>/<name>/<name>-<UTC yyyymmddThhmmZ>/`: `run.conf`
+(scenario, run_id, TAPs, capture points, start, traffic_end, idle_start,
+`keys=`, load, end), the outer and inner `.pcapng`, `capture-stats.txt`
+(tcpdump's own counts; zero kernel drops is the bar) and `sha256sums` over
+the captures, plus the pack's usual `.run` record in `r770-evidence/` with a
+`case=` line, so `check` works unchanged. `gt/<node>/` is the ground truth:
+each `gt=` command (e.g. `swanctl --list-sas`) is run in its node at the
+start, after every non-`note` event and at the end, into
+`gt/<node>/sa/<tag>-<UTC>.txt`; after the idle tail each `gt_dirs=` path is
+`docker cp`'d into `gt/<node>/` (charon log, and ESP/IKE keys **only if** the
+bundled strongSwan carries `save-keys`). `run.conf` gets `keys=present|absent|n/a`,
+read from each node's `keys.state` (never assumed; `n/a` with no `gt_dirs`).
+`gt/` is never in `sha256sums` and never ingested. Nothing under `cases/` is ever deleted by the kit.
+An EXIT trap — success, failure or Ctrl-C — stops the event scheduler and
+every capture still running, clears every impairment the run applied (from
+`--impair` or a `wan-apply` event), brings up every TAP an event took down,
+and closes `run.conf` with `end=interrupted <UTC>` if the run did not finish.
+
+Impairment and events are run parameters, not scenario content.
+`--impair <profile>@a|b` (repeatable) shapes the run's TAP_A or TAP_B — the
+TAPs the Clouds named `tap-a` and `tap-b` bind, read from GNS3 — with a profile from
+`config/wan/profiles/` through `scripts/r770-wan.sh apply`, once every capture
+is open, so the capture holds the change; it is recorded in `run.conf` as
+`impair=<profile>@<a|b>:<tap>`. The direction rule: netem shapes what the
+host sends *into* a TAP, so `@b` shapes site A → site B (to be measured on
+staging — Task 11, H7). `--events <file>` runs `t|action|arg` lines, `t` in
+whole seconds after traffic start and never decreasing, alongside the
+traffic: `note <text>`, `wan-apply <profile>@a|b`, `wan-clear a|b`,
+`link-down a|b`, `link-up a|b`, `exec <node>|<command>` (`sh -c` in that
+node's container). Every event must fall inside `traffic_secs` +
+`idle_secs`; the run waits for the last one. The file is copied into the run
+directory as `events.txt`, named in `run.conf` as `events=<file>`, and every
+executed event is a line of `events.log`:
+`<YYYY-MM-DDTHH:MM:SS.mmmZ>|<t>|<action>|<arg>|<rc>` (UTC, milliseconds).
+Read `t` and `action` as the first fields after the stamp and `rc` as the
+**last** one: an `exec` or `note` argument may itself contain `|`. Timing is
+±1 s — the scheduler ticks on whole seconds; the millisecond stamp records
+when the event really ran. A non-zero `rc` does not stop the schedule, but
+each one is a WARN naming the event, so the run exits 2. An interrupted run
+that had `--impair` or `--events` kills the scheduler and everything it
+started, then clears and brings up both of its TAPs whatever was recorded. An unknown profile, a malformed spec
+or any bad line of the events file is refused before any capture starts, and
+`tests/helpers/lint_scenarios.py events` holds the pack's own
+`scenarios/<name>/events/*.txt` (`s1-w1-ss` ships `baseline.txt` and
+`wan-flap.txt`) to the same rules.
+
+`r770-scenario.sh verify <run-dir>` judges a finished run directory from its
+files alone: no GNS3 login, no docker. It writes `expected.md` into the run
+directory, which `record` made root-owned under `/data/pcap/cases`, so it runs
+as the user who owns that directory (normally root, so `sudo`); a run directory
+it cannot write `expected.md` into is refused (exit 1), never judged unrecorded. Each row of the scenario's
+`pcap-expect.txt` (`<file>|<mode>|<filter>|<expectation>|<label>`: `outer` or
+`inner-<node>`, `count` with `0` or `>0`, `distinct <field>` with `>=N`;
+`__IDLE_START__` is the run's `idle_start`) is run with `tshark` against that
+capture and is a PASS or a FAIL under its label. `X7 decryption` is a SKIP
+naming `keys=<state>` unless `run.conf` says `keys=present`; with keys it builds
+a throwaway Wireshark profile from `gt/*/keys/esp_sa` and needs at least one
+outer ESP packet to decode. `X8 drops` judges each capture `run.conf`
+names by its `capture-stats.txt` line: one that does not say `0 packets
+dropped by kernel` is a FAIL for kernel drops; one `record` wrote as `exited
+early (rc N) — <tcpdump's first stderr line>` (the capture ended before the
+run did, so its file is partial) is a FAIL of its own, "capture ended
+abnormally"; a capture with no line at all is a FAIL, "no stats". Every
+verdict is also written to `expected.md` in the run directory. A directory
+without `run.conf`, or a row it cannot read, is refused (exit 1), never
+skipped. `tests/helpers/lint_scenarios.py pcap-expect` holds the pack's rows to
+the same grammar. `tshark` comes from the bundle's apt set.
+
+`r770-scenario.sh ingest <run-dir>` (root; no GNS3 login) hands a finished run's
+captures to Malcolm. It copies only the files `run.conf` names in its `outer=`
+and `inner=` lines, by those explicit names and never a glob over the run
+directory, so `gt/` cannot travel. Each lands in Malcolm's upload drop-off
+(`<MALCOLM_HOME>/malcolm/pcap/upload/`, owned `1000:1000`) as
+`<run-id>,<view>.pcapng` (`<run-id>,outer.pcapng`,
+`<run-id>,inner-<node>.pcapng`); Malcolm tags an upload from the
+comma-separated parts of its name, so the run id and the view become tags.
+Every capture is checked present and non-empty before the first copy, so a bad
+run leaves nothing behind; a `run.conf` that names no capture, a directory
+without `run.conf`, or a host without the drop-off (Malcolm not set up here) is
+refused (exit 1). A run without a clean `end=<UTC>` (its trap wrote
+`end=interrupted …`) is refused as no reference set; a run `record` closed with
+`result=FAIL` is handed over with a WARN (exit 2). On success `ingest=<UTC>` is
+appended to `run.conf`; `--dry-run` copies nothing and claims no PASS.
+
+What proves what: `r770-scenario.sh check <name>` proves the run's flows are in
+Malcolm over the run's window — the live mirror's view, which already saw the
+outer traffic during `record` — so it PASSes whether or not the upload was
+ingested. The proof that the upload was ingested is an Arkime search on the
+tag `<run-id>` (and `outer` / `inner-<node>`), done on staging in plan Task 11.
+After `ingest` the outer sessions appear twice in Arkime, once live and once
+from the upload, told apart by that tag.
+
+Two findings from the design, to be confirmed on staging: the pack's
+`ipsec-ike` rehearsal saw strongSwan float to `udp/4500` with no NAT in the
+path — that is MOBIKE (on by default), not NAT detection, so `s1-w1-ss` sets
+`mobike = no` and the spec's "stays on 500" observation (X2) holds as
+written; and a profile applied to the TAP on the ISP side (`@b`) shapes
+site A → site B, because a frame enters the host through one TAP and leaves
+through the other (H7 measures this before it is stated as fact here).
+
+Later increments (W2–W7, S2–S9, appliance variants, replay, the physical
+ingress port) are a dependency-ordered roadmap in the plan, each with the
+measurement or build-repo delivery it waits for.
+
+---
 
 ## Docs procedure
 

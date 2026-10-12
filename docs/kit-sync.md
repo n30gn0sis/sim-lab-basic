@@ -108,6 +108,27 @@ is asserted against those tools' `--help` before use.
   a config-file import. If a future installer drops that, the fallback is the
   build repo's runbook procedure (`--defaults --configure`) plus the same
   rebind; the kit dies naming the flag rather than guessing.
+- **To carry back once the IPsec & WAN scenarios are rehearsed (2026-10-07,
+  design only — `docs/superpowers/specs/2026-10-07-ipsec-wan-scenarios-kit-design.md`).**
+  The build repo's spec (filed here as
+  `docs/superpowers/specs/2026-09-24-ipsec-scenarios-spec.md`) assumes a
+  two-bridge fabric (`br-lab-tNN` / `br-lab-iNN`, `lab-transit.sh`) and
+  Phase-12 `wan-apply`. The kit's decisions, for the build repo's
+  `lab-fabric.md` and `wan.md` to adopt or reject: (1) the inner view is the
+  host's `tcpdump` inside the gateway's network namespace, so no inner bridge
+  and no mirror suppression; (2) each WAN scenario owns one `198.18.<k>.0/24`
+  slice plus one `10.2<xx>.0.0/16`, never a shared `198.18.<site>.0/30` plan
+  (two scenarios must coexist on the hub); (3) impairment profiles are
+  key=value files under the kit's `config/`, carrying `wan.md`'s values and
+  the spec's §6.2 additions, applied only to kit TAPs — `wan.md`'s "TBD"
+  install path is this script; (4) strongSwan's float to `udp/4500` without
+  NAT (measured on the `ipsec-ike` rehearsal) is MOBIKE, so the spec's X2
+  needs `mobike = no` or a reworded observation; (5) whether the bundled
+  strongSwan carries `save-keys` (spec O3) is discovered at run time and will
+  be recorded here after the rehearsal; (6) a kit-built `ipsec-ss` image
+  (spec E1/E3) is not needed for S0/S1 — the pinned image serves; it becomes
+  a pin-block question only if a later scenario needs a plugin the image
+  lacks.
 - **Carried to the build repo 2026-09-25 (simlab-build PR #11).** The
   hub-mode lab mirror (buildout §4.3/§7.2, PRD §5); the wiki's mirror
   procedure (Cloud node, **TAP** tab — never the Ethernet tab, which gns3-server

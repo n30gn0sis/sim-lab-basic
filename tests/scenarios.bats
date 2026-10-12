@@ -10,8 +10,8 @@ setup() { cd "$BATS_TEST_DIRNAME/.."; }
 lint() { run python3 tests/helpers/lint_scenarios.py "$1"; echo "$output"; [ "$status" -eq 0 ]; }
 
 @test "the pack holds the scenarios the kit documents" {
-    for s in client-server ipsec-esp ipsec-ike ospf bgp dns tls ssh; do [ -f "scenarios/$s/scenario.conf" ] || { echo "missing $s"; false; }; done
-    [ "$(find scenarios -mindepth 2 -maxdepth 2 -name scenario.conf | wc -l)" -eq 8 ]
+    for s in client-server ipsec-esp ipsec-ike ospf bgp dns tls ssh s0-w1 s1-w1-ss; do [ -f "scenarios/$s/scenario.conf" ] || { echo "missing $s"; false; }; done
+    [ "$(find scenarios -mindepth 2 -maxdepth 2 -name scenario.conf | wc -l)" -eq 10 ]
 }
 
 @test "the dns scenario's responder answers A under scenario.lab and NXDOMAIN otherwise" {
@@ -45,6 +45,8 @@ PY
 @test "every image is bundled or upstream-pending, and nodes use only the scenario's image tokens" { lint images; }
 @test "every address a scenario names lies in its own range" { lint addresses; }
 @test "every expect.txt line is proto|port|src|dst inside the scenario's range" { lint expect; }
+@test "every events/*.txt line is t|action|arg, a known action, t non-decreasing, profiles that exist" { lint events; }
+@test "every pcap-expect.txt row is file|mode|filter|expectation|label, with a mode and expectation that agree" { lint pcap-expect; }
 
 @test "every BGP neighbor keeps alive at 10s or less, so any traffic window carries the session" {
     # the session comes up during `up`, before any capture starts; at FRR's 60s default a
@@ -132,4 +134,75 @@ PY
     echo "$output"
     [ "$status" -eq 1 ]
     [[ "$output" == *"revision"* ]]
+}
+
+@test "the layout lint accepts a range list and rejects a CIDR shared between scenarios" {
+    d="$BATS_TEST_TMPDIR/pack"; mkdir -p "$d"
+    for s in one two; do
+        mkdir -p "$d/$s/project" "$d/$s/nodes"
+        cp scenarios/client-server/project/client-server.gns3 "$d/$s/project/$s.gns3"
+        printf 'name=%s\ndescription=x\nimages=netshoot\ntraffic_secs=10\nready=cl|true\ntraffic_nodes=cl\n' "$s" > "$d/$s/scenario.conf"
+    done
+    echo 'range=198.18.10.0/24 10.210.0.0/16' >> "$d/one/scenario.conf"
+    echo 'range=198.18.11.0/24 10.211.0.0/16' >> "$d/two/scenario.conf"
+    printf '#!/bin/sh\nping -c 1 198.18.10.2\n' > "$d/one/traffic.sh"
+    printf 'icmp||198.18.10.0/30|10.210.1.0/24\n' > "$d/one/expect.txt"
+    printf '#!/bin/sh\nping -c 1 198.18.11.2\n' > "$d/two/traffic.sh"
+    printf 'icmp||198.18.11.0/30|10.211.1.0/24\n' > "$d/two/expect.txt"
+    SCENARIOS_ROOT="$d" run python3 tests/helpers/lint_scenarios.py layout; echo "$output"; [ "$status" -eq 0 ]
+    SCENARIOS_ROOT="$d" run python3 tests/helpers/lint_scenarios.py addresses; echo "$output"; [ "$status" -eq 0 ]
+    SCENARIOS_ROOT="$d" run python3 tests/helpers/lint_scenarios.py expect; echo "$output"; [ "$status" -eq 0 ]
+    # the second scenario claims a slice inside the first's /16
+    sed -i 's|^range=.*|range=198.18.11.0/24 10.210.5.0/24|' "$d/two/scenario.conf"
+    SCENARIOS_ROOT="$d" run python3 tests/helpers/lint_scenarios.py layout; echo "$output"
+    [ "$status" -ne 0 ]; [[ "$output" == *"overlaps"* ]]
+}
+
+@test "s1-w1-ss disables MOBIKE on both gateways, so IKE stays on udp/500 with no NAT (spec X2)" {
+    for g in gw-a gw-b; do grep -qE '^\s*mobike\s*=\s*no' "scenarios/s1-w1-ss/nodes/$g.swanctl.conf"; done
+}
+@test "s1-w1-ss's ISP knows neither site, so any 10.211.x.x address on the outer side is leakage" {
+    ! grep -q '10\.211\.' scenarios/s1-w1-ss/nodes/isp1.frr.conf
+    ! grep -q '10\.211\.' scenarios/s1-w1-ss/nodes/isp1.sh
+}
+@test "s1-w1-ss's gateways enable save-keys only when the plugin is present, never assume it" {
+    for g in gw-a gw-b; do
+        grep -q 'save-keys' "scenarios/s1-w1-ss/nodes/$g.sh"
+        grep -qE 'if .*libstrongswan-save-keys\.so' "scenarios/s1-w1-ss/nodes/$g.sh"
+    done
+}
+@test "s1-w1-ss's traffic starts by tearing the IKE SA down, so IKE_SA_INIT is in the window" {
+    grep -q 'gw-a) *swanctl --terminate --ike s1' scenarios/s1-w1-ss/traffic.sh
+}
+
+@test "the events lint rejects an unknown action, a decreasing t, a missing profile and a bad side" {
+    d="$BATS_TEST_TMPDIR/pack"; mkdir -p "$d"; cp -r scenarios/s1-w1-ss "$d/"
+    printf '5|note|x\n3|note|y\n4|teleport|a\n4|wan-apply|no-such@a\n4|link-down|c\n4|exec|a\n9999|note|late\n' > "$d/s1-w1-ss/events/bad.txt"
+    SCENARIOS_ROOT="$d" run python3 tests/helpers/lint_scenarios.py events
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"line 2: times must not decrease"* ]]
+    [[ "$output" == *"unknown action 'teleport'"* ]]
+    [[ "$output" == *"no WAN profile 'no-such'"* ]]
+    [[ "$output" == *"link-down takes a or b"* ]]
+    [[ "$output" == *"exec takes <node>|<command>"* ]]
+    [[ "$output" == *"t=9999 is past traffic_secs + idle_secs"* ]]
+}
+@test "the pcap-expect lint rejects a bad mode, expectation and node" {
+    d="$BATS_TEST_TMPDIR/pack"; mkdir -p "$d"; cp -r scenarios/s0-w1 "$d/"
+    printf 'outer|weird|x|0|a\ninner-nope|count|x|0|b\nouter|count|x|>=3|c\nouter|distinct esp.spi|esp|>0|d\nouter|count|x|0\n' > "$d/s0-w1/pcap-expect.txt"
+    run env SCENARIOS_ROOT="$d" python3 tests/helpers/lint_scenarios.py pcap-expect; echo "$output"
+    [ "$status" -ne 0 ]; [ "$(grep -c 'pcap-expect.txt line' <<< "$output")" -eq 5 ]
+}
+
+@test "the topology lint rejects Clouds not named tap-a/tap-b, and tap-a carrying __TAP_B__" {
+    d="$BATS_TEST_TMPDIR/pack"; mkdir -p "$d"; cp -r scenarios/client-server "$d/"
+    f="$d/client-server/project/client-server.gns3"; cp "$f" "$BATS_TEST_TMPDIR/orig"
+    python3 -c 'import json, sys; f = sys.argv[1]; p = json.load(open(f)); [n.update(name={"tap-a": "tap-b", "tap-b": "tap-a"}[n["name"]]) for n in p["topology"]["nodes"] if n["name"] in ("tap-a", "tap-b")]; json.dump(p, open(f, "w"))' "$f"
+    SCENARIOS_ROOT="$d" run python3 tests/helpers/lint_scenarios.py topology; echo "$output"
+    [ "$status" -eq 1 ]; [[ "$output" == *"Cloud tap-a must carry __TAP_A__"* ]]
+    cp "$BATS_TEST_TMPDIR/orig" "$f"
+    python3 -c 'import json, sys; f = sys.argv[1]; p = json.load(open(f)); [n.update(name="edge") for n in p["topology"]["nodes"] if n["name"] == "tap-a"]; json.dump(p, open(f, "w"))' "$f"
+    SCENARIOS_ROOT="$d" run python3 tests/helpers/lint_scenarios.py topology; echo "$output"
+    [ "$status" -eq 1 ]; [[ "$output" == *"Clouds must be named exactly tap-a and tap-b"* ]]
 }

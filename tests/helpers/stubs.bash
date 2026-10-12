@@ -22,7 +22,7 @@ kit_test_env() {
              chmod touch install date hostname basename dirname readlink realpath printf echo \
              true false test find xargs tee diff cmp comm tar gzip gunzip zcat stat mktemp \
              sleep timeout id sha256sum base64 od head tail paste seq expr uname nproc \
-             du df getent python3 gpg openssl; do
+             du df getent python3 gpg openssl pgrep; do
         p=$(command -v "$t" 2>/dev/null) && ln -sf "$p" "$REAL/$t"
     done
     KIT_PATH="$BIN:$REAL"

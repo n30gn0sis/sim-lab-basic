@@ -41,6 +41,7 @@ Each script has more than `full` calls. These are operator-invoked:
 | gns3 | `assert-tags` `status` | the tag check alone / read-only |
 | docs | `assert-tags` `status` | the tag check alone / read-only |
 | scenario | `list` `up` `traffic` `down` `status` | an operator tool, not a deployment step: runs the scenario pack on a deployed GNS3 (after `labnet`); not gated — it touches only the GNS3 projects it imported |
+| wan | `apply` `show` `clear` | an operator tool, not a deployment step: HTB rate plus netem from `config/wan/profiles/*.conf` on `lab-tapN` only, refusing any other name; not gated, it records what it applied under `/run/r770-wan/` |
 | portal | `ca` `cert` `htpasswd` `nginx` | the whole front door is optional and hand-run — see above |
 | portal | `status`, `--print-sans` | read-only |
 

@@ -1,0 +1,8 @@
+# S1 under a branch circuit that drops for 30 s mid-run (an S7 preview; a DPD restart should follow)
+0|note|traffic start
+10|wan-apply|branch-wan@b
+10|wan-apply|branch-wan@a
+90|link-down|b
+120|link-up|b
+200|wan-clear|a
+200|wan-clear|b

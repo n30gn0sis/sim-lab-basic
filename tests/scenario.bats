@@ -890,3 +890,384 @@ lab_mon0() { mkdir -p "$ROOT/sys/class/net/lab-mon0"; printf '02:00:00:00:00:01\
     [ "$status" -eq 1 ]
     [[ "$output" == *"scenarios/demo/expect.txt has no rows — nothing to check"* ]]
 }
+
+# ── record — a reference run: captures, idle tail, manifest, checksums ───────
+record_env() {
+    # a path on the box: record reads it through p(), so here it lands under $ROOT
+    export SCENARIO_CASES_DIR=/data/pcap/cases SCENARIO_CASES_MIN_FREE_MB=0; CASES="$ROOT/data/pcap/cases"
+    printf 'idle_secs=3\ninner_capture=a:eth0\n' >> "$SCENARIO_DIR/demo/scenario.conf"
+    # tcpdump: records argv, writes the -w file, prints drop stats on SIGINT like
+    # the real one. python3, not bash: a backgrounded non-interactive child
+    # starts with SIGINT ignored, and bash cannot trap a signal ignored on entry
+    # (real tcpdump installs its own handler, so the script's kill -INT reaches it)
+    stub tcpdump 'echo "tcpdump $*" >> "$STUB_LOG"
+exec python3 -c "
+import signal, sys, time
+out = sys.argv[sys.argv.index(\"-w\") + 1]
+def stop(*_):
+    sys.stderr.write(\"7 packets captured\n7 packets received by filter\n0 packets dropped by kernel\n\"); sys.exit(0)
+signal.signal(signal.SIGINT, stop); signal.signal(signal.SIGTERM, stop)
+open(out, \"w\").write(\"pcap\")
+while True: time.sleep(0.1)
+" "$@"'
+    stub nsenter 'echo "nsenter $*" >> "$STUB_LOG"; shift; exec "$@"'
+    # the real sleep by path: `command sleep` inside $BIN/sleep would find itself.
+    # 0.3s, so the tcpdump stubs have installed their SIGINT handler before the
+    # script stops them (a SIGINT before that is ignored and wait would hang)
+    unstub sleep; stub sleep "exec \"$REAL/sleep\" 0.3"
+    # docker inspect -f {{.State.Pid}} <cid>: the pid file for that container, else 1
+    sed -i 's|^  exec)|  inspect) cat "$BATS_TEST_TMPDIR/pid-${!#}" 2>/dev/null \|\| echo 1 ;;\n  exec)|' "$BIN/docker"
+}
+
+@test "record refuses when free space is under the floor, before any capture" {
+    record_env; export SCENARIO_CASES_MIN_FREE_MB=999999999
+    scenario up demo --bundle "$BUNDLE" >/dev/null
+    run scenario record demo
+    echo "$output"
+    [ "$status" -eq 1 ]; [[ "$output" == *"free space"* ]]
+    ! grep -q '^tcpdump' "$STUB_LOG"
+    [ ! -d "$CASES/demo" ]
+}
+
+@test "record captures outer on TAP_A and inner inside the node's netns, runs traffic, idles, writes the manifest" {
+    record_env
+    scenario up demo --bundle "$BUNDLE" >/dev/null
+    echo 4242 > "$BATS_TEST_TMPDIR/pid-cid-a"
+    run scenario record demo
+    echo "$output"; [ "$status" -eq 0 ]
+    d=$(find "$CASES/demo" -mindepth 1 -maxdepth 1 -type d | head -1); [ -n "$d" ]
+    grep -q 'tcpdump -ni lab-tap0 .*-w .*/outer-lab-tap0.pcapng' "$STUB_LOG"
+    grep -q 'nsenter --net=/proc/4242/ns/net tcpdump -ni eth0 .*-w .*/inner-a.pcapng' "$STUB_LOG"
+    [ -s "$d/outer-lab-tap0.pcapng" ] && [ -s "$d/inner-a.pcapng" ]
+    grep -q '^scenario=demo$' "$d/run.conf"; grep -q '^run_id=demo-[0-9]\{8\}T[0-9]\{4\}Z$' "$d/run.conf"
+    grep -q '^tap_a=lab-tap0$' "$d/run.conf"; grep -q '^taps=lab-tap0,lab-tap1$' "$d/run.conf"; grep -q '^idle_secs=3$' "$d/run.conf"
+    grep -q '^idle_start=' "$d/run.conf"; grep -q '^end=20' "$d/run.conf"; grep -q '^keys=n/a$' "$d/run.conf"
+    grep -q '^load_start=0.42$' "$d/run.conf"; grep -q '^inner=inner-a.pcapng:a:eth0$' "$d/run.conf"
+    grep -q 'outer-lab-tap0: .*0 packets dropped by kernel' "$d/capture-stats.txt"
+    grep -q 'outer-lab-tap0.pcapng' "$d/sha256sums"; grep -q 'inner-a.pcapng' "$d/sha256sums"; ! grep -q 'run.conf' "$d/sha256sums"
+    # the captures started before traffic.sh ran in any node
+    [ "$(grep -n '^tcpdump' "$STUB_LOG" | head -1 | cut -d: -f1)" -lt "$(grep -n '^docker exec -i' "$STUB_LOG" | tail -1 | cut -d: -f1)" ]
+    # the pack's own run record, so check works unchanged
+    rec=$(ls "$KIT_EVIDENCE_DIR"/scenario-demo-*.run); grep -q "^case=$d$" "$rec"
+}
+
+@test "record works with outer capture alone when the scenario names no inner point" {
+    record_env; sed -i '/^inner_capture=/d' "$SCENARIO_DIR/demo/scenario.conf"
+    scenario up demo --bundle "$BUNDLE" >/dev/null
+    run scenario record demo; echo "$output"; [ "$status" -eq 0 ]
+    ! grep -q '^nsenter' "$STUB_LOG"
+}
+
+@test "record's EXIT trap stops every capture on a FAIL (traffic failed in every node)" {
+    record_env
+    scenario up demo --bundle "$BUNDLE" >/dev/null
+    echo 1 > "$BATS_TEST_TMPDIR/rc-execi-cid-a"; echo 1 > "$BATS_TEST_TMPDIR/rc-execi-cid-b"
+    run scenario record demo
+    echo "$output"; [ "$status" -eq 1 ]
+    command sleep 0.3; ! pgrep -f "$CASES" >/dev/null
+    d=$(find "$CASES/demo" -mindepth 1 -maxdepth 1 -type d | head -1)
+    grep -q '^end=' "$d/run.conf"
+}
+
+@test "record refuses when the scenario is not up" {
+    record_env
+    run scenario record demo; [ "$status" -eq 1 ]; [[ "$output" == *"not up"* ]]
+}
+
+@test "record's EXIT trap stops the captures already running when one dies at startup, names it, and closes run.conf as interrupted" {
+    record_env
+    # tcpdump refuses the inner interface, as the real one does an unknown device
+    sed -i '1a case " $* " in *" -ni eth0 "*) echo "tcpdump: eth0: No such device exists" >\&2; exit 1 ;; esac' "$BIN/tcpdump"
+    scenario up demo --bundle "$BUNDLE" >/dev/null
+    echo 4242 > "$BATS_TEST_TMPDIR/pid-cid-a"
+    run scenario record demo
+    echo "$output"; [ "$status" -eq 1 ]
+    [[ "$output" == *"capture inner-a did not start: tcpdump: eth0: No such device exists"* ]]
+    command sleep 0.3; ! pgrep -f "$CASES" >/dev/null
+    d=$(find "$CASES/demo" -mindepth 1 -maxdepth 1 -type d | head -1)
+    grep -q '^end=interrupted ' "$d/run.conf"
+    grep -q '^outer-lab-tap0: .*0 packets dropped by kernel' "$d/capture-stats.txt"
+    ! grep -q '^docker exec -i [^ ]* sh -s [ab] ' "$STUB_LOG"   # traffic.sh never ran
+}
+
+@test "record refuses an inner_capture node that does not exist, or one named twice, before writing anything" {
+    record_env
+    scenario up demo --bundle "$BUNDLE" >/dev/null
+    echo 4242 > "$BATS_TEST_TMPDIR/pid-cid-a"
+    sed -i 's/^inner_capture=.*/inner_capture=zz:eth0/' "$SCENARIO_DIR/demo/scenario.conf"
+    run scenario record demo
+    echo "$output"; [ "$status" -eq 1 ]; [[ "$output" == *"no container for node zz"* ]]
+    [ ! -d "$CASES/demo" ]
+    sed -i 's/^inner_capture=.*/inner_capture=a:eth0 a:eth1/' "$SCENARIO_DIR/demo/scenario.conf"
+    run scenario record demo
+    echo "$output"; [ "$status" -eq 1 ]; [[ "$output" == *"inner_capture names a twice"* ]]
+    [ ! -d "$CASES/demo" ]
+    ! grep -q '^tcpdump' "$STUB_LOG"
+}
+
+@test "record snapshots ground truth at start, after each event and at end, collects /gt, and reports keys=" {
+    record_env; scenario up demo --bundle "$BUNDLE" >/dev/null
+    printf 'gt=a|swanctl --list-sas;b|swanctl --list-sas\ngt_dirs=a:/gt b:/gt\n' >> "$SCENARIO_DIR/demo/scenario.conf"
+    # docker cp <cid>:/gt/. <dst> copies gt-<cid> when the test made one; a node
+    # without it reports keys.state=absent, as the real /gt would
+    mkdir -p "$BATS_TEST_TMPDIR/gt-cid-a/keys"; echo present > "$BATS_TEST_TMPDIR/gt-cid-a/keys.state"; echo k > "$BATS_TEST_TMPDIR/gt-cid-a/keys/esp_sa"
+    sed -i 's|^  exec)|  cp) src=${2%%:*}; if [ -d "$BATS_TEST_TMPDIR/gt-$src" ]; then cp -r "$BATS_TEST_TMPDIR/gt-$src/." "$3"; else echo absent > "$3/keys.state"; fi ;;\n  exec)|' "$BIN/docker"
+    printf '0|note|go\n1|link-down|b\n' > "$BATS_TEST_TMPDIR/ev.txt"; stub ip 'exit 0'
+    run scenario record demo --events "$BATS_TEST_TMPDIR/ev.txt"; echo "$output"; [ "$status" -eq 0 ]
+    d=$(find "$CASES/demo" -mindepth 1 -maxdepth 1 -type d | head -1); [ -n "$d" ]
+    for n in a b; do
+        ls "$d/gt/$n/sa/" | grep -q '^start-'; ls "$d/gt/$n/sa/" | grep -q '^t1-link-down-'; ls "$d/gt/$n/sa/" | grep -q '^end-'
+    done
+    [ "$(ls "$d/gt/a/sa/" | grep -c '^t0-note')" -eq 0 ]
+    grep -q 'docker exec cid-a sh -c swanctl --list-sas' "$STUB_LOG"
+    grep -q 'docker cp cid-a:/gt/. ' "$STUB_LOG"
+    [ -f "$d/gt/a/keys/esp_sa" ]; grep -qx absent "$d/gt/b/keys.state"
+    grep -q '^keys=present$' "$d/run.conf"
+    ! grep -q 'gt/' "$d/sha256sums"
+}
+
+@test "record reports keys=absent when no node has key material, and n/a without gt_dirs" {
+    record_env; scenario up demo --bundle "$BUNDLE" >/dev/null
+    run scenario record demo; echo "$output"; [ "$status" -eq 0 ]
+    d=$(find "$CASES/demo" -mindepth 1 -maxdepth 1 -type d | head -1); [ -n "$d" ]
+    grep -q '^keys=n/a$' "$d/run.conf"; [ ! -d "$d/gt" ]
+    rm -rf "$CASES/demo"
+    printf 'gt_dirs=a:/gt b:/gt\n' >> "$SCENARIO_DIR/demo/scenario.conf"
+    sed -i 's|^  exec)|  cp) echo absent > "$3/keys.state" ;;\n  exec)|' "$BIN/docker"
+    run scenario record demo; echo "$output"; [ "$status" -eq 0 ]
+    d=$(find "$CASES/demo" -mindepth 1 -maxdepth 1 -type d | head -1)
+    grep -q '^keys=absent$' "$d/run.conf"
+}
+
+@test "record --impair refuses a bad spec or an unknown profile before any capture" {
+    record_env; scenario up demo --bundle "$BUNDLE" >/dev/null
+    for bad in branch-wan@c @a branch-wan no-such@a; do
+        run scenario record demo --impair "$bad"; echo "$bad: $output"; [ "$status" -eq 1 ]; [[ "$output" == *"profile"* ]]
+    done
+    ! grep -q '^tcpdump' "$STUB_LOG"
+    [ ! -d "$CASES/demo" ]
+}
+
+@test "record --impair applies the profile to the named TAP via r770-wan.sh after captures start, records it, clears it at the end" {
+    record_env; scenario up demo --bundle "$BUNDLE" >/dev/null
+    stub tc 'echo "tc $*" >> "$STUB_LOG"'
+    run scenario record demo --impair branch-wan@b; echo "$output"; [ "$status" -eq 0 ]
+    d=$(find "$CASES/demo" -mindepth 1 -maxdepth 1 -type d | head -1); [ -n "$d" ]
+    grep -q '^impair=branch-wan@b:lab-tap1$' "$d/run.conf"
+    [ "$(grep -n '^tcpdump' "$STUB_LOG" | head -1 | cut -d: -f1)" -lt "$(grep -n 'tc qdisc replace dev lab-tap1' "$STUB_LOG" | head -1 | cut -d: -f1)" ]
+    grep -q 'tc qdisc del dev lab-tap1 root' "$STUB_LOG"
+}
+
+@test "record --events runs each action at its time, logs it with a millisecond UTC stamp, refuses an unknown action up front" {
+    record_env; scenario up demo --bundle "$BUNDLE" >/dev/null
+    stub tc 'echo "tc $*" >> "$STUB_LOG"'; stub ip 'echo "ip $*" >> "$STUB_LOG"'
+    printf '# a comment\n0|note|traffic start\n1|wan-apply|poor-broadband@a\n2|link-down|b\n2|link-up|b\n3|wan-clear|a\n3|exec|a|echo hi\n' > "$BATS_TEST_TMPDIR/ev.txt"
+    run scenario record demo --events "$BATS_TEST_TMPDIR/ev.txt"; echo "$output"; [ "$status" -eq 0 ]
+    d=$(find "$CASES/demo" -mindepth 1 -maxdepth 1 -type d | head -1); [ -n "$d" ]
+    cat "$d/events.log"
+    [ "$(wc -l < "$d/events.log")" -eq 6 ]
+    grep -qE '^20[0-9]{2}-[0-9]{2}-[0-9]{2}T[0-9:]{8}\.[0-9]{3}Z\|1\|wan-apply\|poor-broadband@a\|0$' "$d/events.log"
+    grep -qE '\|3\|exec\|a\|echo hi\|0$' "$d/events.log"
+    grep -q 'ip link set dev lab-tap1 down' "$STUB_LOG"; grep -q 'ip link set dev lab-tap1 up' "$STUB_LOG"
+    grep -q 'docker exec .* sh -c echo hi' "$STUB_LOG"
+    grep -q "^events=$BATS_TEST_TMPDIR/ev.txt$" "$d/run.conf"
+    grep -q '^impair=poor-broadband@a:lab-tap0$' "$d/run.conf"
+    cmp "$BATS_TEST_TMPDIR/ev.txt" "$d/events.txt"
+    printf '0|teleport|x\n' > "$BATS_TEST_TMPDIR/bad.txt"
+    run scenario record demo --events "$BATS_TEST_TMPDIR/bad.txt"; echo "$output"; [ "$status" -eq 1 ]; [[ "$output" == *"teleport"* ]]
+    printf '2|note|x\n1|note|y\n' > "$BATS_TEST_TMPDIR/back.txt"
+    run scenario record demo --events "$BATS_TEST_TMPDIR/back.txt"; [ "$status" -eq 1 ]; [[ "$output" == *"must not decrease"* ]]
+    printf '0|note|x\n9|note|late\n' > "$BATS_TEST_TMPDIR/late.txt"   # demo: traffic 5 s + idle 3 s
+    run scenario record demo --events "$BATS_TEST_TMPDIR/late.txt"; [ "$status" -eq 1 ]; [[ "$output" == *"past this run's window"* ]]
+    [ "$(find "$CASES/demo" -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 1 ]
+}
+
+@test "record --dry-run with --impair and --events says what it would shape and schedule, and writes nothing" {
+    record_env; scenario up demo --bundle "$BUNDLE" >/dev/null
+    stub tc 'echo "tc $*" >> "$STUB_LOG"'
+    printf '0|note|go\n' > "$BATS_TEST_TMPDIR/ev.txt"
+    run scenario record demo --impair branch-wan@a --events "$BATS_TEST_TMPDIR/ev.txt" --dry-run; echo "$output"; [ "$status" -eq 0 ]
+    [[ "$output" == *"DRY-RUN: r770-wan.sh apply branch-wan lab-tap0"* ]]
+    [[ "$output" == *"DRY-RUN: events from $BATS_TEST_TMPDIR/ev.txt"* ]]
+    ! grep -q '^tc ' "$STUB_LOG"; ! grep -q '^tcpdump' "$STUB_LOG"
+    [ ! -d "$CASES/demo" ]
+}
+
+@test "record interrupted mid-events stops the scheduler at once, clears the shaping, brings the link back up" {
+    record_env; scenario up demo --bundle "$BUNDLE" >/dev/null
+    stub tc 'echo "tc $*" >> "$STUB_LOG"'; stub ip 'echo "ip $*" >> "$STUB_LOG"'
+    printf '1|wan-apply|branch-wan@b\n1|link-down|b\n8|note|never reached\n' > "$BATS_TEST_TMPDIR/ev.txt"
+    PATH="$KIT_PATH" "$SCRIPT" record demo --events "$BATS_TEST_TMPDIR/ev.txt" > "$BATS_TEST_TMPDIR/out" 2>&1 &
+    rpid=$!
+    for _ in $(seq 100); do grep -qs '|link-down|' "$CASES"/demo/*/events.log && break; command sleep 0.1; done
+    # SIGTERM, not SIGINT: a background job of this non-interactive shell starts
+    # with SIGINT ignored. bash runs the EXIT trap, then dies of the signal: 143
+    t0=$(date +%s); kill -TERM "$rpid"; rc=0; wait "$rpid" || rc=$?; cat "$BATS_TEST_TMPDIR/out"
+    echo "exit: $rc"; [ "$rc" -eq 143 ]
+    [ $(( $(date +%s) - t0 )) -lt 6 ]
+    d=$(find "$CASES/demo" -mindepth 1 -maxdepth 1 -type d | head -1)
+    ! grep -q 'never reached' "$d/events.log"
+    grep -q '^impair=branch-wan@b:lab-tap1$' "$d/run.conf"; grep -q 'tc qdisc del dev lab-tap1 root' "$STUB_LOG"
+    grep -q 'ip link set dev lab-tap1 up' "$STUB_LOG"
+    grep -q '^end=interrupted ' "$d/run.conf"
+    # both TAPs of a run with --events are cleared and brought up, logged or not
+    grep -q 'ip link set dev lab-tap0 up' "$STUB_LOG"   # (lab-tap0 was never shaped: r770-wan.sh clear finds it clean, no tc)
+    command sleep 0.3; ! pgrep -f "$CASES" >/dev/null; ! pgrep -f "$BATS_TEST_TMPDIR/ev.txt" >/dev/null
+}
+
+@test "record --events: a failed event is a WARN naming it, and the run exits 2" {
+    record_env; scenario up demo --bundle "$BUNDLE" >/dev/null
+    sed -i '1a case "$*" in *"sh -c boom"*) echo "docker $*" >> "$STUB_LOG"; exit 1 ;; esac' "$BIN/docker"
+    printf '0|note|go\n1|exec|a|boom | x\n' > "$BATS_TEST_TMPDIR/ev.txt"
+    run scenario record demo --events "$BATS_TEST_TMPDIR/ev.txt"; echo "$output"; [ "$status" -eq 2 ]
+    [[ "$output" == *"WARN  event t=1 exec a|boom | x exited 1"* ]]
+    [ "$(grep -c '^WARN  event' <<< "$output")" -eq 1 ]
+}
+
+# ── verify — tshark over a run directory ────────────────────────────────────
+make_run_dir() {  # make_run_dir <scenario> — a finished run under cases/, keys absent
+    RD="$CASES/$1/$1-20261001T1400Z"; mkdir -p "$RD"
+    printf 'scenario=%s\nrun_id=%s-20261001T1400Z\ntap_a=lab-tap0\nouter=outer-lab-tap0.pcapng:lab-tap0\ninner=inner-a.pcapng:a:eth0\nidle_start=1759327440\nkeys=absent\nend=2026-10-01T14:05:00Z\n' "$1" "$1" > "$RD/run.conf"
+    printf pcap > "$RD/outer-lab-tap0.pcapng"; printf pcap > "$RD/inner-a.pcapng"
+    printf 'outer-lab-tap0: 7 packets captured; 0 packets dropped by kernel\ninner-a: 7 packets captured; 0 packets dropped by kernel\n' > "$RD/capture-stats.txt"
+}
+@test "verify judges every pcap-expect.txt row with tshark, renders __IDLE_START__, SKIPs decryption without keys, checks drops" {
+    record_env; make_run_dir demo
+    printf 'outer|count|isakmp|>0|X1 ike seen\nouter|count|udp.port==4500|0|X2 nothing on 4500\nouter|distinct esp.spi|esp|>=4|X5 two SPI pairs\nouter|count|isakmp && frame.time_epoch >= __IDLE_START__|>0|X6 dpd in tail\n' > "$SCENARIO_DIR/demo/pcap-expect.txt"
+    # tshark: count = lines printed; -T fields prints the field per packet
+    stub tshark 'echo "tshark $*" >> "$STUB_LOG"
+case "$*" in
+  *"isakmp && frame.time_epoch >= 1759327440"*) printf "1\n2\n" ;;
+  *isakmp*) printf "1\n2\n3\n" ;;
+  *4500*) : ;;
+  *"-e esp.spi"*) printf "0x1\n0x2\n0x3\n0x4\n0x1\n" ;;
+esac'
+    run scenario verify "$RD"; echo "$output"; [ "$status" -eq 0 ]   # a SKIP does not change the exit (footer)
+    [[ "$output" == *"PASS  X1"* && "$output" == *"PASS  X2"* && "$output" == *"PASS  X5"*"4 distinct"* && "$output" == *"PASS  X6"* ]]
+    [[ "$output" == *"SKIP  X7"*"keys=absent"* && "$output" == *"PASS  X8"* ]]
+    grep -q -- '-r .*/outer-lab-tap0.pcapng -Y isakmp' "$STUB_LOG"
+    [ -f "$RD/expected.md" ]; grep -q 'X1' "$RD/expected.md"
+}
+@test "verify FAILs a row whose expectation does not hold, and a capture with kernel drops" {
+    record_env; make_run_dir demo
+    printf 'outer|count|udp.port==4500|0|X2 nothing on 4500\n' > "$SCENARIO_DIR/demo/pcap-expect.txt"
+    stub tshark 'printf "1\n"'
+    sed -i 's/inner-a: .*/inner-a: 7 packets captured; 3 packets dropped by kernel/' "$RD/capture-stats.txt"
+    run scenario verify "$RD"; [ "$status" -eq 1 ]
+    [[ "$output" == *"FAIL  X2"*"1 packet"* && "$output" == *"FAIL  X8"*"inner-a"* ]]
+}
+@test "verify refuses a directory that is not a run, and a row it cannot parse" {
+    record_env; run scenario verify "$BATS_TEST_TMPDIR"; [ "$status" -eq 1 ]; [[ "$output" == *"run.conf"* ]]
+    make_run_dir demo; printf 'outer|weird|x|0|bad\n' > "$SCENARIO_DIR/demo/pcap-expect.txt"
+    run scenario verify "$RD"; [ "$status" -eq 1 ]; [[ "$output" == *"weird"* ]]
+}
+@test "verify: a failing tshark is a FAIL naming it, never a false PASS on a must-be-absent row; an empty pcap-expect.txt SKIPs" {
+    record_env; make_run_dir demo
+    printf 'outer|count|udp.port==4500|0|X2 nothing on 4500\n' > "$SCENARIO_DIR/demo/pcap-expect.txt"
+    stub tshark 'echo "tshark: bad filter" >&2; exit 2'
+    run scenario verify "$RD"; echo "$output"; [ "$status" -eq 1 ]
+    [[ "$output" == *"FAIL  X2"*"tshark failed: tshark: bad filter"* ]]; [[ "$output" != *"PASS  X2"* ]]
+    printf '# nothing\n\n' > "$SCENARIO_DIR/demo/pcap-expect.txt"
+    run scenario verify "$RD"; echo "$output"; [ "$status" -eq 0 ]; [[ "$output" == *"SKIP"*"no rows"* ]]
+}
+
+# ── ingest — into Malcolm's upload drop-off, never gt/ ──────────────────────
+@test "ingest copies outer and inner captures with the run id as a tag, never anything under gt/" {
+    record_env; make_run_dir demo
+    mkdir -p "$RD/gt/a/keys"; echo k > "$RD/gt/a/keys/esp_sa"
+    up="$ROOT/opt/malcolm/malcolm/pcap/upload"; mkdir -p "$up"
+    stub chown 'echo "chown $*" >> "$STUB_LOG"'
+    run scenario ingest "$RD"; echo "$output"; [ "$status" -eq 0 ]
+    [ -f "$up/demo-20261001T1400Z,outer.pcapng" ]; [ -f "$up/demo-20261001T1400Z,inner-a.pcapng" ]
+    [ "$(find "$up" -type f | wc -l)" -eq 2 ]
+    ! find "$up" -name 'esp_sa' | grep -q .
+    grep -q 'chown 1000:1000' "$STUB_LOG"; grep -q '^ingest=20' "$RD/run.conf"
+}
+@test "ingest refuses an empty capture or a run with no captures, copying nothing; and a host without Malcolm" {
+    record_env; make_run_dir demo; up="$ROOT/opt/malcolm/malcolm/pcap/upload"; mkdir -p "$up"
+    : > "$RD/outer-lab-tap0.pcapng"
+    run scenario ingest "$RD"; [ "$status" -eq 1 ]; [[ "$output" == *"outer-lab-tap0.pcapng"*"empty"* ]]
+    [ "$(find "$up" -type f | wc -l)" -eq 0 ]
+    rm -rf "$up"; printf pcap > "$RD/outer-lab-tap0.pcapng"
+    run scenario ingest "$RD"; [ "$status" -eq 1 ]; [[ "$output" == *"pcap/upload"* ]]
+    mkdir -p "$up"; grep -v '^\(outer\|inner\)=' "$RD/run.conf" > "$RD/rc" && mv "$RD/rc" "$RD/run.conf"
+    run scenario ingest "$RD"; [ "$status" -eq 1 ]; [[ "$output" == *"names no capture"* ]]
+    rm "$RD/run.conf"; run scenario ingest "$RD"; [ "$status" -eq 1 ]; [[ "$output" == *"no run.conf"* ]]
+    [ "$(find "$up" -type f | wc -l)" -eq 0 ]
+}
+
+# ── final-review fixes: TAP sides by Cloud name, captures that die, result= ─
+@test "record takes TAP_A from the Cloud named tap-a, whatever order GNS3 lists the nodes in; refuses a project without one" {
+    record_env; sed -i '/^inner_capture=/d' "$SCENARIO_DIR/demo/scenario.conf"
+    scenario up demo --bundle "$BUNDLE" >/dev/null
+    python3 -c 'import json, sys; f = sys.argv[1]; p = json.load(open(f)); [x["topology"]["nodes"].reverse() for x in p]; json.dump(p, open(f, "w"))' "$FAKE_GNS3/projects.json"
+    run scenario record demo; echo "$output"; [ "$status" -eq 0 ]
+    d=$(find "$CASES/demo" -mindepth 1 -maxdepth 1 -type d | head -1)
+    grep -q '^tap_a=lab-tap0$' "$d/run.conf"; grep -q '^tap_b=lab-tap1$' "$d/run.conf"
+    python3 -c 'import json, sys; f = sys.argv[1]; p = json.load(open(f)); [n.update(name="edge") for x in p for n in x["topology"]["nodes"] if n["name"] == "tap-a"]; json.dump(p, open(f, "w"))' "$FAKE_GNS3/projects.json"
+    run scenario record demo; echo "$output"; [ "$status" -eq 1 ]; [[ "$output" == *"no Cloud named tap-a"* ]]
+}
+@test "record FAILs a capture that exits mid-run, naming it in capture-stats.txt as exited early" {
+    record_env; scenario up demo --bundle "$BUNDLE" >/dev/null
+    # traffic.sh arms it: the outer tcpdump then writes its bytes and dies, as libpcap does when its TAP goes down
+    sed -i '1a case "$*" in *"exec -i"*) touch "$BATS_TEST_TMPDIR/kill-cap" ;; esac' "$BIN/docker"
+    stub tcpdump 'echo "tcpdump $*" >> "$STUB_LOG"
+exec python3 -c "
+import os, signal, sys, time
+out = sys.argv[sys.argv.index(\"-w\") + 1]; arm = os.environ[\"BATS_TEST_TMPDIR\"] + \"/kill-cap\"
+def stop(*_):
+    sys.stderr.write(\"7 packets captured\n0 packets dropped by kernel\n\"); sys.exit(0)
+signal.signal(signal.SIGINT, stop); signal.signal(signal.SIGTERM, stop)
+# the real tcpdump announces itself on stderr first; its error, then its counts, come after
+sys.stderr.write(\"tcpdump: listening on x, link-type EN10MB (Ethernet), snapshot length 262144 bytes\n\"); sys.stderr.flush()
+open(out, \"w\").write(\"pcap\")
+while True:
+    time.sleep(0.1)
+    if \"outer\" in out and os.path.exists(arm):
+        sys.stderr.write(\"tcpdump: pcap_loop: The interface disappeared\n7 packets captured\n0 packets dropped by kernel\n\"); sys.exit(1)
+" "$@"'
+    run scenario record demo; echo "$output"; [ "$status" -eq 1 ]
+    d=$(find "$CASES/demo" -mindepth 1 -maxdepth 1 -type d | head -1)
+    grep -q '^outer-lab-tap0: exited early (rc 1) — tcpdump: pcap_loop: The interface disappeared$' "$d/capture-stats.txt"
+    [[ "$output" == *"FAIL"*"outer-lab-tap0"* ]]; grep -q '^result=FAIL$' "$d/run.conf"
+}
+@test "record writes result= into run.conf and the .run record, before end=" {
+    record_env; scenario up demo --bundle "$BUNDLE" >/dev/null
+    run scenario record demo; [ "$status" -eq 0 ]
+    d=$(find "$CASES/demo" -mindepth 1 -maxdepth 1 -type d | head -1)
+    [ "$(grep -n '^result=PASS$' "$d/run.conf" | cut -d: -f1)" -lt "$(grep -n '^end=20' "$d/run.conf" | cut -d: -f1)" ]
+    grep -q '^result=PASS$' "$KIT_EVIDENCE_DIR"/scenario-demo-*.run
+}
+@test "record: a ground-truth snapshot that fails inside the event scheduler is a WARN, and the run exits 2" {
+    record_env; scenario up demo --bundle "$BUNDLE" >/dev/null
+    printf 'gt=a|swanctl --list-sas\n' >> "$SCENARIO_DIR/demo/scenario.conf"
+    # only the snapshot after the t=1 event fails: arm sets it, disarm (t=2) clears it before its own snapshot
+    sed -i '1a case "$*" in *"sh -c arm"*) touch "$BATS_TEST_TMPDIR/armed" ;; *"sh -c disarm"*) rm -f "$BATS_TEST_TMPDIR/armed" ;; *list-sas*) [ ! -e "$BATS_TEST_TMPDIR/armed" ] || exit 1 ;; esac' "$BIN/docker"
+    printf '1|exec|a|arm\n2|exec|a|disarm\n' > "$BATS_TEST_TMPDIR/ev.txt"
+    run scenario record demo --events "$BATS_TEST_TMPDIR/ev.txt"; echo "$output"; [ "$status" -eq 2 ]
+    [[ "$output" == *"WARN  ground truth: 'swanctl --list-sas' in a failed"*"t1-exec"* ]]
+    [ "$(grep -c '^WARN  ground truth' <<< "$output")" -eq 1 ]
+    d=$(find "$CASES/demo" -mindepth 1 -maxdepth 1 -type d | head -1); [ ! -e "$d/.gt-warnings" ]
+}
+@test "verify: a capture that exited early is X8 ended abnormally, a capture with no stats line is X8 no stats" {
+    record_env; make_run_dir demo; stub tshark ':'
+    printf 'outer-lab-tap0: exited early (rc 1) — tcpdump: pcap_loop: The interface disappeared\n' > "$RD/capture-stats.txt"
+    run scenario verify "$RD"; echo "$output"; [ "$status" -eq 1 ]
+    [[ "$output" == *"FAIL  X8"*"ended abnormally"*"outer-lab-tap0"* ]]; [[ "$output" == *"FAIL  X8"*"no stats"*"inner-a"* ]]
+    [[ "$output" != *"kernel drops on"* ]]
+}
+@test "verify dies when it cannot write expected.md, never judging a run it cannot record" {
+    record_env; make_run_dir demo; mkdir "$RD/expected.md"
+    run scenario verify "$RD"; echo "$output"; [ "$status" -eq 1 ]; [[ "$output" == *"cannot write"*"expected.md"* ]]
+}
+@test "ingest refuses an interrupted run, copying nothing; WARNs (exit 2) on a result=FAIL run but copies it; --dry-run claims no PASS" {
+    record_env; make_run_dir demo; up="$ROOT/opt/malcolm/malcolm/pcap/upload"; mkdir -p "$up"; stub chown ':'
+    sed -i 's/^end=.*/end=interrupted 2026-10-01T14:03:00Z/' "$RD/run.conf"
+    run scenario ingest "$RD"; echo "$output"; [ "$status" -eq 1 ]; [[ "$output" == *"interrupted run"* ]]
+    [ "$(find "$up" -type f | wc -l)" -eq 0 ]
+    sed -i 's/^end=.*/result=FAIL\nend=2026-10-01T14:05:00Z/' "$RD/run.conf"
+    run scenario ingest "$RD" --dry-run; echo "$output"; [ "$status" -ne 1 ]
+    [[ "$output" != *"PASS"* ]]; [[ "$output" == *"DRY-RUN"* ]]; [ "$(find "$up" -type f | wc -l)" -eq 0 ]
+    run scenario ingest "$RD"; echo "$output"; [ "$status" -eq 2 ]
+    [[ "$output" == *"WARN"*"result=FAIL"* ]]; [ "$(find "$up" -type f | wc -l)" -eq 2 ]
+}

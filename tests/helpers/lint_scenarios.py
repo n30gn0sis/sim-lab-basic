@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Lint the kit's scenario pack (scenarios/<name>/...). Usage: lint_scenarios.py <check>
 
-Checks: layout json topology images addresses expect. Prints one line per
+Checks: layout json topology images addresses expect events. Prints one line per
 problem and exits 1 if there are any. Run from the repo root.
 """
 import ipaddress
@@ -15,6 +15,17 @@ KEYS = ["name", "description", "range", "images", "traffic_secs", "ready", "traf
 UPSTREAM_PENDING = {"strongswan"}  # added to the build repo's pin block, not yet in a bundle
 PROTOS = {"tcp", "udp", "icmp", "esp", "ospf"}
 NODE_SUFFIXES = (".sh", ".frr.conf", ".swanctl.conf")  # the only kinds r770-scenario.sh applies
+WAN_PROFILES = os.environ.get("WAN_PROFILE_DIR", os.path.join("config", "wan", "profiles"))
+EVENT_ACTIONS = {"note", "exec", "wan-apply", "wan-clear", "link-down", "link-up"}  # r770-scenario.sh events_check
+
+
+def ranges_of(c):
+    """range= is a space-separated list of CIDRs; one is the common case."""
+    return [ipaddress.ip_network(r) for r in c["range"].split()]
+
+
+def in_ranges(ip, nets):
+    return any(ip in n for n in nets)
 
 
 def scenarios():
@@ -109,6 +120,18 @@ def check_topology(s, c, errs):
     if tap_ports != ["__TAP_A__", "__TAP_B__"]:
         errs.append(f"{s}: Cloud ports must be exactly __TAP_A__ and __TAP_B__ (got {tap_ports})")
 
+    # The Clouds are told apart by name, never by order: r770-scenario.sh record
+    # takes TAP_A (the gateway side, the outer capture) from the Cloud named
+    # tap-a and TAP_B (the ISP side) from tap-b, whatever order GNS3 lists them in
+    names = sorted(n["name"] for n in clouds)
+    if names != ["tap-a", "tap-b"]:
+        errs.append(f"{s}: Clouds must be named exactly tap-a and tap-b (got {names})")
+    for n in clouds:
+        want = {"tap-a": "__TAP_A__", "tap-b": "__TAP_B__"}.get(n["name"])
+        got = [m.get("interface") for m in n["properties"].get("ports_mapping", [])]
+        if want and got != [want]:
+            errs.append(f"{s}: Cloud {n['name']} must carry {want} (got {got})")
+
     # Verify each Cloud node is an endpoint of exactly one link
     ids = {n["node_id"] for n in nodes}
     cloud_ids = {n["node_id"] for n in clouds}
@@ -150,7 +173,7 @@ def check_images(s, c, errs):
 
 
 def check_addresses(s, c, errs):
-    net = ipaddress.ip_network(c["range"])
+    nets = ranges_of(c)
     files = ["traffic.sh", "expect.txt", "scenario.conf"]
     nd = os.path.join(ROOT, s, "nodes")
     if os.path.isdir(nd):
@@ -160,13 +183,13 @@ def check_addresses(s, c, errs):
             text = fh.read()
         for a in re.findall(r"\b\d{1,3}(?:\.\d{1,3}){3}\b", text):
             ip = ipaddress.ip_address(a)
-            if ip in net or ip.is_multicast or ip == ipaddress.ip_address("0.0.0.0"):
+            if in_ranges(ip, nets) or ip.is_multicast or ip == ipaddress.ip_address("0.0.0.0"):
                 continue
-            errs.append(f"{s}: {f} names {a}, outside {net}")
+            errs.append(f"{s}: {f} names {a}, outside {c['range']}")
 
 
 def check_expect(s, c, errs):
-    net = ipaddress.ip_network(c["range"])
+    nets = ranges_of(c)
     with open(os.path.join(ROOT, s, "expect.txt")) as f:
         lines = [line.strip() for line in f if line.strip() and not line.startswith("#")]
     if not lines:
@@ -183,8 +206,81 @@ def check_expect(s, c, errs):
             errs.append(f"{s}: expect.txt port {port!r} is not a number")
         for r in (src, dst):
             n = ipaddress.ip_network(r)
-            if not (n.subnet_of(net) or n.is_multicast):
-                errs.append(f"{s}: expect.txt range {r} is outside {net}")
+            if not (any(n.subnet_of(net) for net in nets) or n.is_multicast):
+                errs.append(f"{s}: expect.txt range {r} is outside {c['range']}")
+
+
+def check_events(s, c, errs):
+    """events/*.txt: the rules r770-scenario.sh's events_check applies before a run."""
+    ed = os.path.join(ROOT, s, "events")
+    for name in sorted(os.listdir(ed)) if os.path.isdir(ed) else []:
+        where = f"{s}: events/{name}"
+        if not name.endswith(".txt"):
+            errs.append(f"{where} is not .txt — record --events files are events/*.txt")
+            continue
+        prev = -1
+        window = int(c.get("traffic_secs") or 0) + int(c.get("idle_secs") or 0)
+        with open(os.path.join(ed, name)) as f:
+            for n, line in enumerate(f, 1):
+                line = line.rstrip("\n")
+                if not line or line.startswith("#"):
+                    continue
+                t, act, arg = (line.split("|", 2) + ["", ""])[:3]
+                if not t.isdigit():
+                    errs.append(f"{where} line {n}: t must be whole seconds (got {t!r})")
+                    continue
+                if int(t) < prev:
+                    errs.append(f"{where} line {n}: times must not decrease")
+                prev = int(t)
+                if prev > window:
+                    errs.append(f"{where} line {n}: t={t} is past traffic_secs + idle_secs = {window}")
+                if act not in EVENT_ACTIONS:
+                    errs.append(f"{where} line {n}: unknown action {act!r} (known: {sorted(EVENT_ACTIONS)})")
+                elif act == "note" and not arg:
+                    errs.append(f"{where} line {n}: note needs an argument")
+                elif act == "exec" and not re.fullmatch(r"[^|]+\|.+", arg):
+                    errs.append(f"{where} line {n}: exec takes <node>|<command>")
+                elif act == "wan-apply":
+                    prof, _, role = arg.rpartition("@")
+                    if not prof or role not in ("a", "b"):
+                        errs.append(f"{where} line {n}: wan-apply takes <profile>@a or <profile>@b (got {arg!r})")
+                    elif not os.path.isfile(os.path.join(WAN_PROFILES, prof + ".conf")):
+                        errs.append(f"{where} line {n}: no WAN profile {prof!r} under {WAN_PROFILES}")
+                elif act in ("wan-clear", "link-down", "link-up") and arg not in ("a", "b"):
+                    errs.append(f"{where} line {n}: {act} takes a or b (got {arg!r})")
+
+
+def check_pcap_expect(s, c, errs):
+    """pcap-expect.txt: the rules r770-scenario.sh verify applies to each row (optional file)."""
+    path = os.path.join(ROOT, s, "pcap-expect.txt")
+    if not os.path.isfile(path):
+        return
+    docker = {n["name"] for n in project(s)["topology"]["nodes"] if n["node_type"] == "docker"}
+    with open(path) as f:
+        for n, line in enumerate(f, 1):
+            line = line.rstrip("\n")
+            if not line or line.startswith("#"):
+                continue
+            where = f"{s}: pcap-expect.txt line {n}"
+            parts = line.split("|")
+            if len(parts) != 5:
+                errs.append(f"{where} is not file|mode|filter|expectation|label (got {len(parts)} fields)")
+                continue
+            file, mode, filt, want, label = parts
+            if file != "outer" and not (file.startswith("inner-") and file[6:] in docker):
+                errs.append(f"{where}: file {file!r} is not outer or inner-<docker node> (nodes: {sorted(docker)})")
+            if mode == "count":
+                if want not in ("0", ">0"):
+                    errs.append(f"{where}: count expects 0 or >0 (got {want!r})")
+            elif re.fullmatch(r"distinct \S+", mode):
+                if not re.fullmatch(r">=[0-9]+", want):
+                    errs.append(f"{where}: distinct expects >=N (got {want!r})")
+            else:
+                errs.append(f"{where}: mode {mode!r} is not count or distinct <field>")
+            if not filt.strip():
+                errs.append(f"{where}: empty filter")
+            if not label.strip():
+                errs.append(f"{where}: empty label")
 
 
 def main():
@@ -193,17 +289,18 @@ def main():
     names = scenarios()
     if check == "layout" and not names:
         errs.append("no scenarios under scenarios/")
-    ranges = {}
+    owned = []  # (scenario, network)
     for s in names:
         c = conf(s)
         if check == "layout":
             check_layout(s, c, errs)
-            ranges.setdefault(c.get("range"), []).append(s)
+            for n in ranges_of(c) if c.get("range") else []:
+                for (s2, n2) in owned:
+                    if s2 != s and n.overlaps(n2):
+                        errs.append(f"range {n} of {s} overlaps {n2} of {s2}")
+                owned.append((s, n))
         else:
-            globals()["check_" + check](s, c, errs)
-    for r, ss in ranges.items():
-        if len(ss) > 1:
-            errs.append(f"range {r} is shared by {ss}")
+            globals()["check_" + check.replace("-", "_")](s, c, errs)
     for e in errs:
         print(e)
     return 1 if errs else 0

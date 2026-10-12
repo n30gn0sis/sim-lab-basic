@@ -28,3 +28,6 @@ r770-bundle-builder.sh
 # Editor / OS noise
 *.swp
 .DS_Store
+
+# Reference-run ground truth (SA dumps, ESP/IKE keys) — lab-only, never in git
+**/gt/
