@@ -37,11 +37,12 @@ setup() { cd "$BATS_TEST_DIRNAME/.."; }
 }
 
 # a simlab-build-shaped checkout: --pack now embeds a git archive of that
-# repo's scripts/, config/ and docs/analyst-wiki/ as the bundle's site/
+# repo's scripts/, config/, docs/analyst-wiki/, scenarios/ and images/ as the bundle's site/
 fake_build_repo() {
     local r="$BATS_TEST_TMPDIR/simlab-build"
-    mkdir -p "$r/scripts" "$r/config" "$r/docs/analyst-wiki"
+    mkdir -p "$r/scripts" "$r/config" "$r/docs/analyst-wiki" "$r/scenarios" "$r/images"
     echo '#!/bin/sh' > "$r/scripts/r770-offline-fetch.sh"
+    echo 'x' > "$r/scenarios/x.conf"; echo 'x' > "$r/images/x"
     echo 'x' > "$r/config/x.conf"; echo '# wiki' > "$r/docs/analyst-wiki/index.md"
     git -C "$r" init -q && git -C "$r" add -A && git -C "$r" -c user.email=t@t -c user.name=t commit -qm fixture
     printf '%s' "$r"
@@ -69,11 +70,15 @@ fake_build_repo() {
     make_bundle "$B"; stage_manual "$B"
     rm "$B/r770-bundle.sh" "$B/MANIFEST.sha256"          # the fixture's stub verifier and fake manifest
     cp staging/r770-bundle.sh "$B/"                       # what the fetch does: the verifier travels in the root
-    # what the fetch's site stage ships: simlab-build's own scripts, which the verifier now requires
+    # what the fetch's site stage ships: simlab-build's own scripts and scenario profiles, which the verifier now requires
     for sc in $(sed -n 's/^SITE_REQUIRED_SCRIPTS=(\(.*\))$/\1/p' staging/r770-bundle.sh); do
         mkdir -p "$B/site/$(dirname "$sc")"; echo '#!/bin/sh' > "$B/site/$sc"
     done
     [ -s "$B/site/scripts/r770-bundle.sh" ]
+    for f in $(sed -n 's/^SITE_REQUIRED_FILES=(\(.*\))$/\1/p' staging/r770-bundle.sh); do
+        mkdir -p "$B/site/$(dirname "$f")"; echo 'x' > "$B/site/$f"
+    done
+    [ -s "$B/site/scenarios/profiles/branch-wan.conf" ]
     # and what its kit stage ships: this kit, which the verifier also requires
     for f in $(sed -n 's/^KIT_REQUIRED_FILES=(\(.*\))$/\1/p' staging/r770-bundle.sh); do
         mkdir -p "$B/kit/$(dirname "$f")"; echo '#!/bin/sh' > "$B/kit/$f"
