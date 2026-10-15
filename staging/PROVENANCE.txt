@@ -2,10 +2,10 @@
 # build repo. tests/staging.bats fails if a file here no longer matches its hash: a change
 # is made in the build repo, then resynced (docs/kit-sync.md), never edited here.
 source: https://github.com/n30gn0sis/simlab-build scripts/
-commit: 480f34930f7f23d9d4b0545863e7052f7cbb9f48
-# Resynced 2026-10-15 from that commit (simlab-build branch claude/kit-in-bundle,
-# PR #18 pending; it carries main through #19 — the labimages stage and the
-# GNS3 appliance images). r770-build-bundle.sh, r770-bundle.sh
+commit: 796d3de5ae07a22daeba803c83f722359d532aad
+# Resynced 2026-10-15 from that commit (simlab-build main, the merge of PR #18:
+# the kit stage plus main through #19 — the labimages stage and the GNS3
+# appliance images). r770-build-bundle.sh, r770-bundle.sh
 # and r770-staging-preflight.sh are that commit byte for byte.
 # r770-offline-fetch.sh is that commit plus the kit's one local divergence,
 # reapplied: the monitoring trim (MONITOR_IMAGES = mkdocs-material only), seed()
