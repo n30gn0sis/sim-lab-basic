@@ -2,18 +2,19 @@
 # build repo. tests/staging.bats fails if a file here no longer matches its hash: a change
 # is made in the build repo, then resynced (docs/kit-sync.md), never edited here.
 source: https://github.com/n30gn0sis/simlab-build scripts/
-commit: 4e13d82a891de3fcd8c50b72c0600a30b933f2e5
-# Resynced 2026-10-03 from that commit (simlab-build branch claude/kit-in-bundle,
-# PR pending; it also carries main's #16). r770-build-bundle.sh, r770-bundle.sh
+commit: 480f34930f7f23d9d4b0545863e7052f7cbb9f48
+# Resynced 2026-10-15 from that commit (simlab-build branch claude/kit-in-bundle,
+# PR #18 pending; it carries main through #19 — the labimages stage and the
+# GNS3 appliance images). r770-build-bundle.sh, r770-bundle.sh
 # and r770-staging-preflight.sh are that commit byte for byte.
 # r770-offline-fetch.sh is that commit plus the kit's one local divergence,
 # reapplied: the monitoring trim (MONITOR_IMAGES = mkdocs-material only), seed()
 # never reusing a prior monitoring tarball, and stage 4 relabelled — see its
 # header and docs/kit-sync.md. The fetch has a "site" stage that ships
 # simlab-build's own tree (SITE_SRC_ROOT at a simlab-build checkout) and, since
-# this commit, a "kit" stage that ships THIS repo as bundle-*/kit/ — a real
+# 4e13d82, a "kit" stage that ships THIS repo as bundle-*/kit/ — a real
 # run needs KIT_SRC_ROOT at a checkout of this kit (docs/kit-sync.md).
-2835d0e362e1e7d1c120e1589950f9ec8f1d6ec67ab39ca8534f54aa614fc121  r770-build-bundle.sh
-312b41cc9c0cd0d3d3f07124adb049a4cd11a365742f4e23fdca37e5ef9339a4  r770-bundle.sh
-ffe7d2a8a9ef4143a37f37dfd95bef8d4ee351e9147b2786b8f05da2eca96e55  r770-offline-fetch.sh
+a2b67ef7f8d7e4f8b4482ac3a991a1056049c7f30ab23b341f13982e0f648a5d  r770-build-bundle.sh
+e103af3390766aaffcb4d8092a3eba58ed256b7bd66985420a7891fb23070c79  r770-bundle.sh
+e0bfff091b497a7de71c8fe445c7816d4d721942124b9d7907575f00c1866cf1  r770-offline-fetch.sh
 6667ba671bfea53783801e3a9457ff84bbf1686f541b6349fdcdaa59617d1b08  r770-staging-preflight.sh
