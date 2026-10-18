@@ -54,8 +54,8 @@ monitoring tarball (it may predate the trim), and stage 4 is labelled "Docs
 build image".
 
 **How a resync handles it** (last done 2026-10-15, from `simlab-build`
-`480f349` on branch `claude/kit-in-bundle` — the kit stage plus main through
-#19, PR #18 pending; 2026-10-03 from `4e13d82`; before
+`796d3de` on `main` — the merge of #18, the kit stage plus main through
+#19; 2026-10-03 from `4e13d82` on #18's branch; before
 that 2026-09-27 from `6ee96d2` — the stage-4 relabel reads `[4/11]`; the diff
 is taken against the previously recorded commit and `patch`ed onto the new one): copy all four scripts from the build repo's commit, then reapply
 exactly this divergence to `r770-offline-fetch.sh` — its header says so, and
