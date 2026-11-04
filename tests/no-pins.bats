@@ -1,17 +1,15 @@
 #!/usr/bin/env bats
 #
-# The kit carries NO version pins outside their one owner. That owner is
-# staging/r770-offline-fetch.sh -- the build repo's fetch script, carried
-# byte-identical (tests/staging.bats) with its pin block -- exactly as the
-# build repo's OWNERS.md says. Everywhere else a pin would be a copy nothing
-# updates on the next bump, which is the drift that registry was written to
-# stop. Fixtures use 0.0.0-fixture, IPs are not versions, and the clean build
-# image `ubuntu:24.04` the preflight names is a decision of record, not a pin.
+# The kit carries NO version pins outside their one owner,
+# staging/r770-offline-fetch.sh and its pin block. Everywhere else a pin would
+# be a copy nothing updates on the next bump. Fixtures use 0.0.0-fixture, IPs
+# are not versions, and the clean build image `ubuntu:24.04` the preflight
+# names is a decision of record, not a pin.
 
 setup() { cd "$BATS_TEST_DIRNAME/.."; }
 
 OWNER='staging/r770-offline-fetch.sh'
-EXCL=(--exclude-dir=.git --exclude-dir=r770-evidence --exclude=r770-offline-fetch.sh --exclude=PROVENANCE.txt)
+EXCL=(--exclude-dir=.git --exclude-dir=r770-evidence --exclude=r770-offline-fetch.sh)
 
 # tokens <regex> — every match across the tracked tree minus the owner, one per line
 tokens() {
