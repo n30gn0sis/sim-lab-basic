@@ -108,3 +108,30 @@ real_bundle() {
     run env GIT_CONFIG_GLOBAL=/dev/null git -c core.excludesFile=/dev/null check-ignore -q r770-bundle-builder.sh
     [ "$status" -eq 0 ]
 }
+
+@test "the fetch's --list runs from this kit's tree and names no site or labimages stage" {
+    BUNDLE_DIR="$BATS_TEST_TMPDIR/b" run ./staging/r770-offline-fetch.sh --list
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"  kit "* ]]
+    [[ "$output" != *"site"* ]]
+    [[ "$output" != *"labimages"* ]]
+}
+
+@test "the fetch's --dry-run plans no lab image build, and the old stage names are unknown" {
+    BUNDLE_DIR="$BATS_TEST_TMPDIR/b" run ./staging/r770-offline-fetch.sh --dry-run
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"lab-images"* ]]
+    for s in site labimages; do
+        run ./staging/r770-offline-fetch.sh --only "$s" --dry-run
+        [ "$status" -eq 1 ]
+        [[ "$output" == *"unknown stage '$s'"* ]]
+    done
+}
+
+@test "the fetch's help names no SITE_ variable" {
+    run ./staging/r770-offline-fetch.sh --help
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"SITE_"* ]]
+}

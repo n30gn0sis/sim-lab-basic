@@ -2,16 +2,14 @@
 #
 # r770-offline-fetch.sh — build the air-gap supply bundle for the R770 lab server.
 #
-# [sim-lab-basic local divergence, NOT from simlab-build — reapplied at every
-#   resync, see docs/kit-sync.md]: monitoring cut (first applied 2026-09-21).
-#   The R770 kit no longer deploys Prometheus/Alertmanager/blackbox-exporter/
-#   Grafana/cAdvisor, so MONITOR_IMAGES keeps only mkdocs-material (the offline
-#   analyst wiki still needs it); the unused stock nginx and docker-registry v2
-#   images went with them. The array name and the two output filenames
-#   (docker/monitoring-image-list.txt, docker/monitoring-images.tar.gz) are
-#   deliberately NOT renamed — see the comment above MONITOR_IMAGES. seed()
-#   also never reuses a prior bundle's monitoring tarball (it may predate the
-#   trim). Everything else in this file is simlab-build's, byte for byte.
+# Monitoring trim (2026-09-21): the kit deploys no Prometheus/Alertmanager/
+#   blackbox-exporter/Grafana/cAdvisor, so MONITOR_IMAGES keeps only
+#   mkdocs-material (the offline analyst wiki still needs it); the stock
+#   nginx and docker-registry v2 images went with them. The array name and the
+#   two output filenames (docker/monitoring-image-list.txt,
+#   docker/monitoring-images.tar.gz) are deliberately NOT renamed -- see the
+#   comment above MONITOR_IMAGES. seed() never reuses a prior bundle's
+#   monitoring tarball (it may predate the trim).
 #
 # v3.6 (2026-09-14): sections, and any container runtime.
 #   Every stage is now a function run by a driver, so the fetch can be run a
@@ -26,7 +24,7 @@
 #   existing does NOT mean an image was published at that tag -- pin review
 #   must verify the image REFERENCE (docker manifest inspect), not the version.
 #
-# Earlier versions (v3 - v3.5): see `git log --follow -p -- scripts/r770-offline-fetch.sh`.
+# Earlier versions (v3 - v3.5): see `git log --follow -p -- staging/r770-offline-fetch.sh`.
 # Some older entries describe behaviour a later version replaced (e.g. v3's
 # original staging-host line named the OS since replaced by v3.4's move to
 # Ubuntu 24.04 + Docker CE) — git log gives the accurate, ordered history
@@ -47,9 +45,7 @@
 #   - Dell firmware downloads (dell.com, per service tag)
 #   - Licensed GNS3 vendor appliance images (see gns3/appliances/README.txt)
 #
-# Companion docs: r770-dependency-manifest.md (authoritative dependency list),
-#                 r770-staging-runbook.md, r770-offline-supply.md,
-#                 r770-network-lab-buildout.md
+# Companion docs: staging/README.md, docs/deployment-runbook.md
 
 set -euo pipefail
 
@@ -68,7 +64,7 @@ OPNSENSE_MIRROR="${OPNSENSE_MIRROR:-https://pkg.opnsense.org/releases/mirror}"  
 FRR_IMG="${FRR_IMG:-quay.io/frrouting/frr:10.7.1}"    # check https://quay.io/repository/frrouting/frr?tab=tags
 STRONGSWAN_IMG="${STRONGSWAN_IMG:-docker.io/strongx509/strongswan:6.0.6}"  # check https://hub.docker.com/r/strongx509/strongswan/tags (the strongSwan project's own image; IKEv2 gateways for the kit's ipsec-ike scenario)
 
-# Trimmed (sim-lab-basic local divergence, see header above): this kit no
+# Trimmed (see the monitoring note in the header): this kit no
 # longer deploys monitoring, so Prometheus/Alertmanager/blackbox-exporter/
 # Grafana/cAdvisor are gone, with the stock nginx and docker-registry v2
 # images. Only mkdocs-material remains — it builds docs.lab, the offline
@@ -108,14 +104,14 @@ PYTHON_BUILD_IMG="docker.io/library/python:3.12-slim"
 
 # ── stages: run all, or a selection ──────────────────────────────────────────
 # Fixed order. --only picks from it (given in any order), --skip removes from it.
-STAGES=(preflight apt iso malcolm monitoring gns3 labimages appliances enrichment docs manual site kit manifest)
+STAGES=(preflight apt iso malcolm monitoring gns3 appliances enrichment docs manual kit manifest)
 ONLY=""; SKIP=""; LIST=0; DRY_RUN=0
 usage() {
     cat <<'USAGE'
 usage: r770-offline-fetch.sh [--only s1,s2,...] [--skip s1,s2,...] [--list] [--dry-run] [-h]
 
 Runs every stage in order unless told otherwise. The stages, in run order:
-  preflight apt iso malcolm monitoring gns3 labimages appliances enrichment docs manual site kit manifest
+  preflight apt iso malcolm monitoring gns3 appliances enrichment docs manual kit manifest
 
   --only s,s   run just these (fixed order applies). NEVER implies manifest:
                finish with  --only manifest  or let r770-build-bundle.sh do it
@@ -124,7 +120,6 @@ Runs every stage in order unless told otherwise. The stages, in run order:
   --dry-run    show which stages this command line would run, then exit
 
 Environment: BUNDLE_DIR  FORCE=1  SEED_FROM=<dir|none>  STAGING_CTR=<runtime>  HTTP(S)_PROXY
-             SITE_SRC_ROOT=<dir>  (a git checkout of this repo the "site" stage copies from; default: this script's own repo. Refused if it isn't one.)
              KIT_SRC_ROOT=<dir>   (a sim-lab-basic checkout the "kit" stage copies the R770 installer from. No default: a real run refuses without it, or without KIT_ARCHIVE + KIT_COMMIT.)
 A sectioned run appends to BUNDLE_NOTES.md; a full run starts it over.
 USAGE
@@ -168,46 +163,8 @@ BUNDLE_TOOL="$SCRIPT_DIR/r770-bundle.sh"
     exit 1
 }
 
-# Same idea, for the "site" stage: confirm it has something real to ship from
-# before any stage runs, not after hours of downloading (2026-09-26 review --
-# see stage_site()'s comment for the defect this closes). site_validate_source
-# is defined here, ahead of its call, rather than down by stage_site() in its
-# usual numbered section, purely so it exists by the time this runs.
-SITE_MODE=""
-site_validate_source() {  # EITHER a git work tree OR SITE_ARCHIVE+SITE_COMMIT
-    if [ -n "${SITE_ARCHIVE:-}" ]; then
-        [ -s "$SITE_ARCHIVE" ] || {
-            echo "FATAL: SITE_ARCHIVE ($SITE_ARCHIVE) is missing or empty" >&2
-            exit 1
-        }
-        [ -n "${SITE_COMMIT:-}" ] || {
-            echo "FATAL: SITE_ARCHIVE is set but SITE_COMMIT is empty -- both travel together" >&2
-            exit 1
-        }
-        SITE_MODE="archive"
-    else
-        # Canonical (cd && pwd -P): git matches safe.directory against the
-        # repo's real path, so a "scripts/.." or symlinked spelling would not
-        # match it and git would still refuse with "dubious ownership".
-        local raw="${SITE_SRC_ROOT:-$SCRIPT_DIR/..}"
-        SITE_SRC_ROOT="$(cd -- "$raw" 2>/dev/null && pwd -P)" || {
-            echo "FATAL: SITE_SRC_ROOT ($raw) is not a directory that can be entered -- refusing. (Or set SITE_ARCHIVE + SITE_COMMIT instead.)" >&2
-            exit 1
-        }
-        [ -f "$SITE_SRC_ROOT/scripts/r770-offline-fetch.sh" ] || {
-            echo "FATAL: SITE_SRC_ROOT ($SITE_SRC_ROOT) doesn't look like this repo -- scripts/r770-offline-fetch.sh not found there. Refusing to guess what belongs in site/. (Or set SITE_ARCHIVE + SITE_COMMIT instead -- see a packed builder's cmd_pack.)" >&2
-            exit 1
-        }
-        git -c safe.directory="$SITE_SRC_ROOT" -C "$SITE_SRC_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
-            echo "FATAL: SITE_SRC_ROOT ($SITE_SRC_ROOT) is not a git work tree -- site/ ships tracked, committed content only, and there is nothing to track it against. (Or set SITE_ARCHIVE + SITE_COMMIT instead.)" >&2
-            exit 1
-        }
-        SITE_MODE="worktree"
-    fi
-}
-want site && site_validate_source
 # The "kit" stage ships sim-lab-basic (the R770 installer) as bundle-*/kit/.
-# Unlike site/, it has NO default source: which kit checkout ships is a
+# It has NO default source: which kit checkout ships is a
 # release decision, so a real run refuses rather than guess (2026-10-03).
 # --list/--dry-run touch nothing, so there it is only a note.
 KIT_MODE=""
@@ -253,21 +210,6 @@ else
 fi
 note() { echo "- $*" >> "$NOTES"; echo ">> $*"; }
 
-# Lab scenario images (stage_labimages, below; --dry-run prints its plan before any runtime exists)
-LAB_IMAGES=(ipsec-ss wan-emu svc-targets)
-# labimages_root -- the checkout the images build from: the same one the site
-# stage uses (SITE_SRC_ROOT, set when "site" is selected), else this script's repo.
-labimages_root() { (cd -- "${SITE_SRC_ROOT:-$SCRIPT_DIR/..}" 2>/dev/null && pwd -P) || echo "${SITE_SRC_ROOT:-$SCRIPT_DIR/..}"; }
-# labimages_plan -- what --dry-run says stage_labimages would do (no runtime needed)
-labimages_plan() {
-    local img root; root="$(labimages_root)"
-    for img in "${LAB_IMAGES[@]}"; do
-        # archive mode builds from the extracted SITE_ARCHIVE, which a dry run does not open
-        [ -n "${SITE_ARCHIVE:-}" ] || [ -f "$root/images/$img/Dockerfile" ] || { echo "  WARN: images/$img/Dockerfile missing -- would skip"; continue; }
-        echo "  ${CTR:-docker} build -f images/$img/Dockerfile -t localhost/lab/$img:$TS ."
-    done
-    echo "  save -> gns3/docker-nodes/lab-images.tar.gz (+ lab-images.list)"
-}
 # ── --list / --dry-run answer here, before any runtime is needed ─────────────
 # node_list_matches — the GNS3 docker-node archive's image-list.txt names exactly
 # GNS3_NODE_IMAGES, in order. The archive's filename carries no versions, so a
@@ -286,13 +228,11 @@ stage_marker() {  # stage_marker <stage> — a coarse "looks complete" marker fo
         malcolm)    ls "$B/malcolm"/malcolm-images-*.tar.gz >/dev/null 2>&1 ;;
         monitoring) [ -s "$B/docker/monitoring-images.tar.gz" ] ;;
         gns3)       [ -f "$B/.stamps/05-wheelhouse.done" ] && [ -s "$B/images/noble-server-cloudimg-amd64.img" ] ;;
-        labimages)  [ -s "$B/gns3/docker-nodes/lab-images.tar.gz" ] ;;
         appliances) [ -s "$B/gns3/docker-nodes/gns3-node-images.tar.gz" ] && node_list_matches ;;
         enrichment) [ -s "$B/enrichment/oui.txt" ] ;;
         docs)       [ "$(ls "$B/.stamps"/08-docs-*.done 2>/dev/null | wc -l)" -ge 3 ] ;;
         manual)     [ -s "$B/dell/README.txt" ] ;;
-        site)       return 1 ;;   # always refreshed — never "done", see stage_site()
-        kit)        return 1 ;;   # always refreshed, like site
+        kit)        return 1 ;;   # always refreshed -- never "done", see ship_trees()
         manifest)   [ -s "$B/MANIFEST.sha256" ] ;;
         *)          return 1 ;;
     esac
@@ -300,7 +240,7 @@ stage_marker() {  # stage_marker <stage> — a coarse "looks complete" marker fo
 if [ "$LIST" = "1" ]; then
     echo "== stages in $B  (marker = looks complete; proof is r770-bundle.sh verify) =="
     for s in "${STAGES[@]}"; do
-        if stage_marker "$s"; then m="done"; elif [ "$s" = "preflight" ] || [ "$s" = "site" ] || [ "$s" = "kit" ]; then m="runs every time"; else m="-"; fi
+        if stage_marker "$s"; then m="done"; elif [ "$s" = "preflight" ] || [ "$s" = "kit" ]; then m="runs every time"; else m="-"; fi
         printf '  %-11s %s\n' "$s" "$m"
     done
     exit 0
@@ -308,7 +248,6 @@ fi
 if [ "$DRY_RUN" = "1" ]; then
     echo "== dry run: stages this command line would run, in order =="
     for s in "${STAGES[@]}"; do want "$s" && printf '  would run  %s\n' "$s"; done
-    want labimages && labimages_plan
     exit 0
 fi
 
@@ -789,42 +728,6 @@ note "VM base images: noble cloud image + cirros (validation-suite test VM)"
 }
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 5b. Lab scenario images, built from this checkout (not pulled)
-# ═════════════════════════════════════════════════════════════════════════════
-stage_labimages() {
-echo "==== [5b/11] Lab scenario images ===="
-local img root out="$B/gns3/docker-nodes/lab-images.tar.gz" tags=() xtmp=""
-mkdir -p "$B/gns3/docker-nodes"
-if [ -n "${SITE_ARCHIVE:-}" ]; then
-    # packed builder: no checkout. The archive's extracted trees (scripts, images,
-    # scenarios, ...) ARE the build context -- nothing else is in it, so no
-    # .dockerignore is needed there; a checkout's own .dockerignore trims the rest.
-    xtmp="$(mktemp -d)" || { note "WARN: mktemp failed -- no lab images built"; return 0; }
-    tar xf "$SITE_ARCHIVE" -C "$xtmp" || { rm -rf "$xtmp"; note "WARN: could not extract SITE_ARCHIVE -- no lab images built"; return 0; }
-    root="$xtmp"
-else
-    root="$(labimages_root)"
-fi
-if [ ! -d "$root/images" ]; then
-    note "WARN: images/ tree missing at $root -- no lab images built"
-    [ -z "$xtmp" ] || rm -rf "$xtmp"
-    return 0
-fi
-for img in "${LAB_IMAGES[@]}"; do
-    [ -f "$root/images/$img/Dockerfile" ] || { note "WARN: images/$img/Dockerfile missing -- skipped"; continue; }
-    # localhost/ prefix: podman stores unqualified names there; docker accepts it,
-    # so RepoTags in the archive match lab-images.list on either runtime
-    "$CTR" build -f "$root/images/$img/Dockerfile" -t "localhost/lab/$img:$TS" "$root" || { note "WARN: build of lab/$img failed -- skipped"; continue; }
-    tags+=("localhost/lab/$img:$TS")
-done
-[ -z "$xtmp" ] || rm -rf "$xtmp"
-[ "${#tags[@]}" -gt 0 ] || return 0
-ctr_save "$out" "${tags[@]}"
-printf '%s\n' "${tags[@]}" > "${out%.tar.gz}.list"
-note "Lab images saved: ${tags[*]}"
-}
-
-# ═════════════════════════════════════════════════════════════════════════════
 # 6. GNS3 appliances — definitions + free images + docker-node images
 # ═════════════════════════════════════════════════════════════════════════════
 stage_appliances() {
@@ -1053,42 +956,27 @@ note "Dell firmware: not a bundle item — handled on the R770 directly (dell/RE
 }
 
 # ═════════════════════════════════════════════════════════════════════════════
-# 10. site/ — this repo's reviewed scripts/, config/ and docs/analyst-wiki/,
-#     copied into the bundle so the R770 deploy runs exactly this checkout's
-#     TRACKED, COMMITTED code from bundle-*/site/, never a stale copy, an
-#     uncommitted edit, or a symlink/submodule that could point outside the
-#     manifest. Two sources are accepted, resolved once by
-#     site_validate_source() at startup (see ~l.148, next to the BUNDLE_TOOL
-#     check) so a doomed run fails in seconds, not after hours of downloads:
-#       worktree  SITE_SRC_ROOT (default: this script's own repo) is a real
-#                 git work tree that looks like this repo.
-#       archive   SITE_ARCHIVE (a `git archive --format=tar HEAD scripts
-#                 config docs/analyst-wiki`) plus SITE_COMMIT (the commit it
-#                 was archived at) -- the path r770-build-bundle.sh --pack's
-#                 cmd_pack() uses, since a packed builder unpacks flat into a
-#                 mktemp -d with NO checkout at all, and the old
-#                 find-and-cp implementation shipped whatever a stray
-#                 /tmp/scripts happened to hold, or silently "0 files, exit
-#                 0", instead of refusing (2026-09-26 review).
-#     Either way, content and mode come from the committed tree -- HEAD via
-#     `git ls-tree -r -z --full-tree` + `cat-file blob` for the worktree path
-#     (never the working tree or a merely-staged index: a staged-but-
-#     uncommitted NEW file is not shipped, only noted as a dirty-tree WARN;
-#     see B2, 2026-09-26), or the archive's own tar entries for the packed
-#     path. A tracked symlink (mode 120000) or submodule (mode 160000) under
-#     any of the three trees REFUSES outright and names the path -- a
-#     symlink in site/ could point somewhere the manifest never covers. The
-#     whole stage builds into $B/site.tmp and only replaces $B/site with an
-#     atomic `mv` on full success; any refusal removes site.tmp and leaves a
-#     previous, good site/ untouched. Always refreshed (never
-#     stamp-skipped): it is small, and it must always match the checkout (or
-#     archive) it was cut from.
+# 10. kit/ — this repo (sim-lab-basic, the R770 installer), copied into the
+#     bundle so the R770 runs exactly this checkout's TRACKED, COMMITTED
+#     scripts/, config/, scenarios/ and docs/ from bundle-*/kit/ -- never a
+#     stale copy, an uncommitted edit, or a symlink/submodule that could point
+#     outside the manifest. Two sources, resolved once by kit_validate_source()
+#     at startup so a doomed run fails in seconds, not after hours of downloads:
+#       worktree  KIT_SRC_ROOT is a git work tree with scripts/r770-install.sh.
+#       archive   KIT_ARCHIVE (a `git archive --format=tar HEAD` of those
+#                 trees) plus KIT_COMMIT -- what r770-build-bundle.sh --pack
+#                 embeds, since a packed builder unpacks into a mktemp -d with
+#                 no checkout of its own.
+#     Content and mode come from the committed tree (ls-tree + cat-file) or
+#     the archive's own entries; a tracked symlink or submodule REFUSES and
+#     names the path; secret-looking files are excluded. The stage builds into
+#     $B/kit.tmp and replaces $B/kit with an atomic mv only on full success.
+#     Always refreshed (never stamp-skipped).
 # ═════════════════════════════════════════════════════════════════════════════
-SITE_TREES=(scripts config docs/analyst-wiki scenarios images)
 
-site_excluded() {  # site_excluded <path relative to the site source root>
+tree_excluded() {  # tree_excluded <path relative to the shipped tree's root>
     # Defence in depth on top of tracked-file enumeration: anything secret-
-    # looking is excluded wherever it lives under the trees this stage ships,
+    # looking is excluded wherever it lives under the trees the kit stage ships,
     # not only under config/ -- a *.pem or htpasswd sitting under scripts/ or
     # docs/ is just as much a credential as one under config/.
     local rel="$1" base
@@ -1102,24 +990,20 @@ site_excluded() {  # site_excluded <path relative to the site source root>
     return 1
 }
 
-# sitegit <src> <git-args...> -- every git call the site stage makes against a
+# treegit <src> <git-args...> -- every git call the kit stage makes against a
 # work tree goes through here so it always carries safe.directory for $src.
 # The documented run is `sudo -E ./r770-offline-fetch.sh` against a checkout
 # owned by another (unprivileged) user; without safe.directory, git refuses
 # with "detected dubious ownership" instead of doing anything useful.
-sitegit() {
+treegit() {
     local s="$1"; shift
     git -c safe.directory="$s" -C "$s" "$@"
 }
 
-# site_validate_source() itself lives up near the BUNDLE_TOOL check (~l.148),
-# ahead of its own call -- see the comment there. It sets SITE_MODE and
-# normalizes SITE_SRC_ROOT so stage_site() below never repeats that work.
-
 # ship_trees <name> <mode> <src-root> <archive> <commit> <tree...> — the one
-# implementation behind site/ and kit/: committed content only (HEAD via
+# implementation behind kit/: committed content only (HEAD via
 # ls-tree + cat-file, or the archive's own entries), symlinks and submodules
-# refused, secret-looking files excluded (site_excluded), built in
+# refused, secret-looking files excluded (tree_excluded), built in
 # $B/<name>.tmp and moved into place only on full success. Sets SHIPPED_COMMIT.
 SHIPPED_COMMIT=""
 tree_refuse() {  # tree_refuse <name> <message...>
@@ -1131,7 +1015,7 @@ tree_refuse() {  # tree_refuse <name> <message...>
 ship_trees() {
     local name=$1 mode=$2 src=$3 archive=$4 commit=$5; shift 5
     local trees=("$@") top rel dest fmode oid n=0 dirty="" tmp meta shown label
-    label="$(printf '%s' "$name" | tr '[:lower:]' '[:upper:]')_ARCHIVE"   # SITE_ARCHIVE / KIT_ARCHIVE, as the operator set it
+    label="$(printf '%s' "$name" | tr '[:lower:]' '[:upper:]')_ARCHIVE"   # KIT_ARCHIVE, as the operator set it
     shown="$commit"
     rm -rf "$B/$name.tmp"; mkdir -p "$B/$name.tmp"
     if [ "$mode" = "archive" ]; then
@@ -1143,14 +1027,14 @@ ship_trees() {
         while IFS= read -r -d '' rel; do
             rel="${rel#./}"
             if [ -L "$tmp/$rel" ]; then rm -rf "$tmp"; tree_refuse "$name" "$rel is a symlink in $label -- refusing; a symlink in $name/ could point outside the manifest"; fi
-            site_excluded "$rel" && continue
+            tree_excluded "$rel" && continue
             dest="$B/$name.tmp/$rel"; mkdir -p "$(dirname "$dest")"; cp -p "$tmp/$rel" "$dest"; n=$((n + 1))
         done < <(cd "$tmp" && find . \( -type f -o -type l \) -print0)
         rm -rf "$tmp"
     else
-        commit="$(sitegit "$src" rev-parse HEAD 2>/dev/null || echo unknown)"
-        shown="$(sitegit "$src" rev-parse --short HEAD 2>/dev/null || echo unknown)"
-        [ -n "$(sitegit "$src" status --porcelain -- "${trees[@]}" 2>/dev/null)" ] && dirty=1
+        commit="$(treegit "$src" rev-parse HEAD 2>/dev/null || echo unknown)"
+        shown="$(treegit "$src" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+        [ -n "$(treegit "$src" status --porcelain -- "${trees[@]}" 2>/dev/null)" ] && dirty=1
         for top in "${trees[@]}"; do
             [ -d "$src/$top" ] || tree_refuse "$name" "$src/$top is missing -- $name/ needs all of: ${trees[*]}"
         done
@@ -1160,13 +1044,13 @@ ship_trees() {
                 120000) tree_refuse "$name" "$rel is a symlink (mode 120000) -- refusing; a symlink in $name/ could point outside the manifest" ;;
                 160000) tree_refuse "$name" "$rel is a submodule (mode 160000) -- refusing; $name/ ships plain tracked files only" ;;
             esac
-            site_excluded "$rel" && continue
+            tree_excluded "$rel" && continue
             dest="$B/$name.tmp/$rel"; mkdir -p "$(dirname "$dest")"
             oid="${meta##* }"
-            sitegit "$src" cat-file blob "$oid" > "$dest" || tree_refuse "$name" "$rel ($oid) is tracked but unreadable via cat-file -- committed content only ships"
+            treegit "$src" cat-file blob "$oid" > "$dest" || tree_refuse "$name" "$rel ($oid) is tracked but unreadable via cat-file -- committed content only ships"
             [ "$fmode" = "100755" ] && chmod +x "$dest"
             n=$((n + 1))
-        done < <(sitegit "$src" ls-tree -r -z --full-tree HEAD -- "${trees[@]}")
+        done < <(treegit "$src" ls-tree -r -z --full-tree HEAD -- "${trees[@]}")
     fi
     [ "$n" -gt 0 ] || tree_refuse "$name" "$name/ would ship 0 files -- refusing an empty $name/"
     rm -rf "${B:?}/${name:?}"; mv "$B/$name.tmp" "$B/$name"
@@ -1175,14 +1059,9 @@ ship_trees() {
     SHIPPED_COMMIT="$commit"
 }
 
-stage_site() {
-echo "==== [10/11] site/ (this repo's scripts, config, docs/analyst-wiki) ===="
-ship_trees site "$SITE_MODE" "${SITE_SRC_ROOT:-}" "${SITE_ARCHIVE:-}" "${SITE_COMMIT:-}" "${SITE_TREES[@]}"
-}
-
 KIT_TREES=(scripts config scenarios docs)
 stage_kit() {
-echo "==== [10b/11] kit/ (sim-lab-basic: the R770 installer) ===="
+echo "==== [10/11] kit/ (sim-lab-basic: the R770 installer) ===="
 ship_trees kit "$KIT_MODE" "${KIT_SRC_ROOT:-}" "${KIT_ARCHIVE:-}" "${KIT_COMMIT:-}" "${KIT_TREES[@]}"
 printf '%s\n' "$SHIPPED_COMMIT" > "$B/kit/KIT_COMMIT"
 }
@@ -1212,7 +1091,7 @@ echo "==== [11/11] Manifest ===="
     echo "2. Site AV/content scan per policy"
     echo "3. apt/ -> local repo dir; point sources.list at it; apt update"
     echo "4. docker load -i malcolm/malcolm-images-*.tar.gz && docker load -i docker/monitoring-images.tar.gz && docker load -i gns3/docker-nodes/gns3-node-images.tar.gz"
-    echo "5. gns3 wheelhouse, definitions/, appliances/, images/, enrichment/, docs/ into place per buildout doc"
+    echo "5. gns3 wheelhouse, definitions/, appliances/, images/, enrichment/, docs/ into place per kit/docs/deployment-runbook.md"
     echo "6. Keep previous bundle until this one validates"
     if [ "$CTR" != "docker" ]; then
         echo; echo "## Non-Docker-built bundle note (${CTR})"
@@ -1247,7 +1126,7 @@ echo "If this run was interrupted, just rerun it — completed items are skipped
 echo "(same-day runs resume automatically; otherwise BUNDLE_DIR=$B; FORCE=1 redoes all)."
 echo "Review $NOTES, complete the MANUAL items (dell/, gns3/appliances/), then"
 echo "regenerate the manifest after adding manual files:"
-echo "  ./scripts/r770-bundle.sh manifest $B"
+echo "  $BUNDLE_TOOL manifest $B"
 echo "then gate it before the media leaves staging:"
-echo "  ./scripts/r770-bundle.sh verify $B --strict"
+echo "  $BUNDLE_TOOL verify $B --strict"
 echo "Then transfer per the supply plan (ext4 drive; verify MANIFEST.sha256 on the R770)."
