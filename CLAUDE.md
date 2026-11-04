@@ -36,7 +36,7 @@ sudo ./scripts/r770-gns3-deploy.sh full \
 sudo ./scripts/r770-docs-deploy.sh full \
     --bundle <dir> --media <mnt> --device /dev/<discovered> --dry-run # the analyst wiki's pipeline, same contract, independent of both
 sudo ./scripts/r770-portal-deploy.sh nginx --dry-run          # the optional front door, one step at a time, run after Malcolm is up
-./staging/r770-offline-fetch.sh --dry-run   # the staging side's stage plan; touches nothing
+./staging/r770-offline-fetch.sh --dry-run   # prints the stage plan; downloads nothing
 ```
 
 ## Architecture
@@ -84,8 +84,8 @@ sudo ./scripts/r770-portal-deploy.sh nginx --dry-run          # the optional fro
   downstream reads them back out of what the bundle itself carries
   (`*/image-list.txt`, filenames, `BUNDLE_NOTES.md`) — enforced by
   `tests/no-pins.bats`.
-- **`config/` holds templates, not config.** How each file differs from the upstream
-  default, and why, is tracked in `config/README.md`; each `__TOKEN__` is
+- **`config/` holds templates, not config.** How each file differs from its proven
+  copy, and why, is tracked in `config/README.md`; each `__TOKEN__` is
   rendered by exactly one script from exactly one source (also tabulated
   there), and `render()` refuses a partial substitution rather than ship one.
 - **Evidence and vocabulary are uniform across the kit.** `kit_init()` tees

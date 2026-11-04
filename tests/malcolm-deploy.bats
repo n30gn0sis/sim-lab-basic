@@ -154,7 +154,7 @@ STUB
     grep -qx "install.py cwd $ROOT/opt/malcolm" "$MALCOLM_STUB_LOG"
     r="$ROOT/opt/malcolm/malcolm-config.rendered.json"
     ! grep -q '__[A-Z_]*__' "$r"
-    grep -q '"osMemory": "24g"' "$r"                # 128 GB host -> 24g (buildout §8)
+    grep -q '"osMemory": "24g"' "$r"                # 128 GB host -> 24g (3/16 of RAM)
     grep -q '"lsMemory": "4096m"' "$r"
     grep -q "\"pcapNodeName\": \"$(hostname -s)\"" "$r"
     grep -q '"version": "0.0.0-fixture"' "$r"        # from the fixture zip's name

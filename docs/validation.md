@@ -3,7 +3,7 @@
 **Companion to:** `docs/deployment-runbook.md`
 **Date:** 2026-09-14
 
-`scripts/r770-validate.sh` is the R770 side of the success criteria: a
+`scripts/r770-validate.sh` is the R770 side of the lab's capability checks: a
 read-only or self-cleaning suite that writes one row per check —
 **check · expected · observed · verdict · evidence** — to
 `r770-evidence/validation-<host>-<ts>.md`, followed by the SKIPPED list and a
@@ -60,7 +60,7 @@ Two verdicts deserve a note:
 - **A capture port with an address is a FAIL** whatever else is true. Capture
   ports never get an IP and never join the lab fabric.
 
-## Mapping to the success criteria
+## Mapping areas to capabilities
 
 Host · CPU/RAM · Storage · Network · Virtualization · GNS3 · WAN · Capture ·
 Backup map one-to-one onto the areas above; `airgap` and `portal`

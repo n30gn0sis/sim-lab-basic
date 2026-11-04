@@ -541,7 +541,8 @@ Malcolm, so this section is rewritten "as measured" after that rehearsal.
 
 **What changes against the pack as it stands.** The spec assumes a
 two-bridge fabric (`br-lab-tNN` outer, `br-lab-iNN` inner) and host tools
-(`lab-transit.sh`, `wan-apply`) that the kit does not have.
+of those names (`lab-transit.sh`, a `wan-apply` binary) that the kit does not
+have; the kit's `wan-apply` event action drives `scripts/r770-wan.sh` instead.
 The kit keeps its one mirrored hub: the **outer** view is a gateway's uplink
 on `br-lab` through two kit TAPs, as every pack scenario already does; the
 **inner** view is the host's `tcpdump` run *inside the gateway container's

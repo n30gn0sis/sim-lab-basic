@@ -231,7 +231,7 @@ heap_sizes() {  # prints "<os-g> <ls-m>" from the host's memory, unless overridd
     local total os ls
     total=$(free -g | awk '/^Mem:/{print $2}')
     [ -n "$total" ] || total=8
-    os=$(( total * 3 / 16 ))                  # buildout §8: 24 GB on 128 GB
+    os=$(( total * 3 / 16 ))                  # 3/16 of RAM: 24 GB on 128 GB
     [ "$os" -lt 2 ]  && os=2
     [ "$os" -gt 31 ] && os=31                 # never above 31g: compressed oops
     ls=$(( os * 1024 / 6 ))

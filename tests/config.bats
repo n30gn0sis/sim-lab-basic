@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 #
-# The carried config must stay deployable on the R770 as measured, not as
+# The config must stay deployable on the R770 as measured, not as
 # remembered: the directive form nginx 1.24 accepts, no staging leftovers,
 # only tokens the kit knows how to render, and a compose file whose images
 # all come from the bundle-derived .env.

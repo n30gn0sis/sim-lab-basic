@@ -1,7 +1,8 @@
 # config/ — what the kit installs onto the R770
 
-Every file here was proven on the staging rehearsal of 2026-09-12 and altered
-only where a value was staging-specific. The kit renders `__TOKEN__`
+Files not marked `new` are as proven on the staging rehearsal of 2026-09-12;
+the Delta column says how each differs from that proven copy (or `new` for a
+file the kit added). The kit renders `__TOKEN__`
 placeholders at deploy time; `.lab` names stay literal because they are a
 decision of record, not a variable.
 
