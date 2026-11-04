@@ -24,33 +24,44 @@ setup() { cd "$BATS_TEST_DIRNAME/.."; }
     [[ "$output" == *"one command, one verified bundle"* ]]
 }
 
-# a simlab-build-shaped checkout: --pack now embeds a git archive of that
-# repo's scripts/, config/, docs/analyst-wiki/, scenarios/ and images/ as the bundle's site/
-fake_build_repo() {
-    local r="$BATS_TEST_TMPDIR/simlab-build"
-    mkdir -p "$r/scripts" "$r/config" "$r/docs/analyst-wiki" "$r/scenarios" "$r/images"
-    echo '#!/bin/sh' > "$r/scripts/r770-offline-fetch.sh"
-    echo 'x' > "$r/scenarios/x.conf"; echo 'x' > "$r/images/x"
-    echo 'x' > "$r/config/x.conf"; echo '# wiki' > "$r/docs/analyst-wiki/index.md"
+# a kit-shaped checkout: what KIT_SRC_ROOT names when --pack embeds the kit
+fake_kit() {
+    local r="$BATS_TEST_TMPDIR/kit"
+    mkdir -p "$r/scripts/lib" "$r/config" "$r/scenarios" "$r/docs"
+    echo '#!/bin/sh' > "$r/scripts/r770-install.sh"; echo '#!/bin/sh' > "$r/scripts/lib/common.sh"
+    echo 'x' > "$r/config/x.conf"; echo 'x' > "$r/scenarios/x.conf"; echo '# doc' > "$r/docs/index.md"
     git -C "$r" init -q && git -C "$r" add -A && git -C "$r" -c user.email=t@t -c user.name=t commit -qm fixture
     printf '%s' "$r"
 }
 
-@test "--pack refuses the kit's own tree: site/ must come from a simlab-build checkout, never from this kit" {
-    run ./staging/r770-build-bundle.sh --pack
-    [ "$status" -ne 0 ]
-    [[ "$output" == *"docs/analyst-wiki"* ]]
+# payload_list <packed builder> -- the file names inside its base64 payload
+payload_list() {
+    sed -n "/^base64 -d <<'R770_PAYLOAD'/,/^R770_PAYLOAD$/p" "$1" | sed '1d;$d' | base64 -d | tar tz
 }
 
-@test "--pack emits a valid self-extracting builder carrying all four scripts" {
-    BUILD_PACK_ROOT=$(fake_build_repo) run ./staging/r770-build-bundle.sh --pack
+@test "--pack with a kit checkout emits a valid builder: the four scripts and kit.tar, no site/" {
+    KIT_SRC_ROOT=$(fake_kit) run ./staging/r770-build-bundle.sh --pack
     [ "$status" -eq 0 ]
-    printf '%s' "$output" > "$BATS_TEST_TMPDIR/packed.sh"
-    for s in r770-build-bundle.sh r770-staging-preflight.sh r770-offline-fetch.sh r770-bundle.sh; do
-        grep -q "$s" "$BATS_TEST_TMPDIR/packed.sh"
-    done
+    printf '%s\n' "$output" > "$BATS_TEST_TMPDIR/packed.sh"
     run bash -n "$BATS_TEST_TMPDIR/packed.sh"
     [ "$status" -eq 0 ]
+    run payload_list "$BATS_TEST_TMPDIR/packed.sh"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    for f in r770-build-bundle.sh r770-staging-preflight.sh r770-offline-fetch.sh r770-bundle.sh kit.tar; do
+        [[ $'\n'"$output"$'\n' == *$'\n'"$f"$'\n'* ]] || { echo "payload lacks $f"; false; }
+    done
+    [[ "$output" != *"site"* ]]
+    grep -q '^export KIT_ARCHIVE=' "$BATS_TEST_TMPDIR/packed.sh"
+    run grep -c 'SITE_' "$BATS_TEST_TMPDIR/packed.sh"
+    [ "$output" = "0" ]
+}
+
+@test "--pack from this kit's tree without KIT_SRC_ROOT packs the four scripts and says it carries no kit" {
+    run ./staging/r770-build-bundle.sh --pack
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"carries no kit"* ]]
+    [[ "$output" == *"R770_PAYLOAD"* ]]
 }
 
 # a fixture bundle as the fetch leaves it: the real verifier in the root and
