@@ -182,72 +182,11 @@ check_manual() {  # <dir>
     fi
 }
 
-# site/ carries this repo's reviewed scripts/, config/ and docs/analyst-wiki/, so the
-# R770 deploy runs exactly bundle-*/site/ (see r770-offline-fetch.sh's stage_site()
-# and docs/superpowers/specs/2026-09-26-analyst-stack-design.md). Listed here as a
-# list variable, not a single name, so later scripts land in this check as they ship.
-#
-# Both absence cases below are WARN here in cmd_verify -- but that is NOT the same
-# as "won't block a bundle build". r770-build-bundle.sh's gate (step 5/5) always
-# runs `verify --strict`, and --strict promotes every WARN to FAIL, so a real
-# build DOES stop on either case. WARN (rather than an unconditional FAIL, which
-# is what check_hashes/check_coverage give a tampered or truncated file) is the
-# right severity because "missing" is sometimes a legitimate, dispositionable
-# state rather than corruption this script must always refuse:
-#   - no site/ at all: this bundle predates the site/ delivery path.
-#   - site/ present but missing a required script: all those listed below
-#     exist in the repo and ship in site/ today, but a bundle cut before a
-#     given script landed (r770-install.sh and r770-install-adapters.sh are
-#     the latest) will legitimately lack it. In a bundle cut from the current
-#     repo, a missing script is a genuine defect to disposition.
-SITE_REQUIRED_SCRIPTS=(scripts/r770-bundle.sh scripts/r770-malcolm-deploy.sh scripts/r770-airgap-sim.sh scripts/r770-lab-ca.sh scripts/r770-portal.sh scripts/r770-ufw.sh scripts/r770-install.sh scripts/r770-install-adapters.sh scripts/scenarios/scen-lib.sh scripts/scenarios/scen-prep scripts/scenarios/scen-run scripts/scenarios/scen-events.sh scripts/scenarios/scen-check scripts/scenarios/scen-ingest scripts/scenarios/scen-clear scripts/scenarios/scen-bridges.sh)
-SITE_REQUIRED_FILES=(scenarios/profiles/branch-wan.conf)
-
-check_site() {  # <dir>
-    local dir="$1" s missing=()
-    if [ ! -d "$dir/site" ]; then
-        warn "site/ is missing — bundle predates the site/ delivery path (or the fetch's site stage was skipped)"
-        return 0
-    fi
-    for s in "${SITE_REQUIRED_SCRIPTS[@]}"; do
-        [ -s "$dir/site/$s" ] || missing+=("$s")
-    done
-    for s in "${SITE_REQUIRED_FILES[@]}"; do
-        [ -s "$dir/site/$s" ] || missing+=("$s")
-    done
-    if [ "${#missing[@]}" -gt 0 ]; then
-        printf '      site/%s\n' "${missing[@]}"
-        warn "site/ is missing expected script(s) above (a bundle cut before they shipped, or a defect — see comment above)"
-    else
-        pass "site/ has the expected deploy script(s)"
-    fi
-    check_lab_images "$dir"
-}
-
-# A site/ that ships images/ (the lab image build contexts) promises the built images
-# too: without lab-images.list naming each of them and lab-images.tar.gz, the scenario
-# harness has nothing to run on the R770. Missing any of it is a WARN (--strict fails).
-LAB_IMAGES_REQUIRED=(ipsec-ss wan-emu svc-targets)
-check_lab_images() {  # <dir>
-    local dir="$1" img missing=()
-    local list="$dir/gns3/docker-nodes/lab-images.list"
-    [ -d "$dir/site/images" ] || return 0
-    for img in "${LAB_IMAGES_REQUIRED[@]}"; do
-        if [ ! -s "$list" ] || ! grep -q "^localhost/lab/$img:" "$list"; then missing+=("$img"); fi
-    done
-    [ -s "$dir/gns3/docker-nodes/lab-images.tar.gz" ] || missing+=("lab-images.tar.gz")
-    if [ "${#missing[@]}" -gt 0 ]; then
-        printf '      %s\n' "${missing[@]}"
-        warn "site/ ships images/ but the built lab image(s) above are missing from gns3/docker-nodes/lab-images.list / lab-images.tar.gz"
-    else
-        pass "lab images listed and saved for the scenario harness"
-    fi
-}
-
 # kit/ carries sim-lab-basic, the R770 installer (r770-offline-fetch.sh's
-# stage_kit). Missing is a WARN here and a FAIL under --strict — the same
-# severity rule, and the same reasoning, as check_site above: a bundle cut
-# before 2026-10 legitimately has none, and the build gate refuses one cut now.
+# stage_kit). Missing is a WARN here and a FAIL under --strict:
+# r770-build-bundle.sh's gate (step 5/5) always runs `verify --strict`, so a
+# real build stops on it, while a bundle cut before 2026-10 that legitimately
+# has none can still be verified and its WARN dispositioned.
 KIT_REQUIRED_FILES=(scripts/r770-install.sh scripts/lib/common.sh KIT_COMMIT)
 check_kit() {  # <dir>
     local dir="$1" f missing=()
@@ -285,8 +224,7 @@ check_required() {  # <dir>
     for pair in \
         "malcolm/image-list.txt|malcolm/malcolm-images-*.tar.gz" \
         "docker/monitoring-image-list.txt|docker/monitoring-images.tar.gz" \
-        "gns3/docker-nodes/image-list.txt|gns3/docker-nodes/gns3-node-images.tar.gz" \
-        "gns3/docker-nodes/lab-images.list|gns3/docker-nodes/lab-images.tar.gz"
+        "gns3/docker-nodes/image-list.txt|gns3/docker-nodes/gns3-node-images.tar.gz"
     do
         list="${pair%%|*}"
         payload="${pair#*|}"
@@ -352,7 +290,6 @@ cmd_verify() {
     check_required "$dir"
     check_notes    "$dir"
     check_manual   "$dir"
-    check_site     "$dir"
     check_kit      "$dir"
     summary "$strict"
 }
