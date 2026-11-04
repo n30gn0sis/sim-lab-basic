@@ -23,8 +23,7 @@ STAGING HOST (internet)                     R770 (air-gapped, Ubuntu 24.04)
 ```
 
 `staging/` never runs on the R770, and `scripts/` never calls `staging/`
-(`tests/no-legacy-manifest.bats`). Byte-identity of the four carried files is
-guarded by `staging/PROVENANCE.txt` + `tests/staging.bats`.
+(`tests/no-legacy-manifest.bats`).
 
 ## Three layers on the R770 side
 

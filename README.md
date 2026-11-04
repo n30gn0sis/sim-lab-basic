@@ -1,15 +1,14 @@
 # sim-lab-basic — R770 offline deployment kit
 
-Both sides of the air gap, in one clone. The build repo (`simlab-build`)
-designs the lab and owns the bundle pipeline; this kit carries that pipeline
-**verbatim** under `staging/` for the internet-connected staging host, and
-**takes the bundle onto the air-gapped Dell PowerEdge R770 and stands the
-services up** with `scripts/` — verified, gated, idempotent, and with evidence
-for every step. Nothing under `scripts/` reaches the internet, and the only
-version pins in the kit are in the fetch script's pin block, their one owner.
+Both sides of the air gap, in one clone. `staging/` builds the bundle on the
+internet-connected staging host; `scripts/` **takes the bundle onto the
+air-gapped Dell PowerEdge R770 and stands the services up** — verified, gated,
+idempotent, and with evidence for every step. Nothing under `scripts/` reaches
+the internet, and the only version pins in the kit are in the fetch script's
+pin block, their one owner.
 
 ```
-Staging host (internet)      staging/r770-build-bundle.sh → bundle-YYYYMMDD/   (carried from simlab-build)
+Staging host (internet)      staging/r770-build-bundle.sh → bundle-YYYYMMDD/
         │  checksummed ext4 media, carrying the bundle AND this kit side by side
         ▼
 R770 (air-gapped, Ubuntu 24.04)   three independent entry points, each gated and evidenced:
@@ -18,21 +17,21 @@ R770 (air-gapped, Ubuntu 24.04)   three independent entry points, each gated and
                                      scripts/r770-docs-deploy.sh full
                                    plus the optional front door (portal-deploy), once Malcolm is up
         ▲
-iDRAC (out-of-band)               recovery path — verified before any networking phase, by the build repo's rules
+iDRAC (out-of-band)               recovery path — prove it before any change to management networking
 ```
 
 ## Cutting a bundle (staging host)
 
 ```bash
-SITE_SRC_ROOT=<simlab-build checkout> ./staging/r770-build-bundle.sh   # preflight → fetch → manual-items pause → manifest → verify --strict
+KIT_SRC_ROOT=<this kit's checkout> ./staging/r770-build-bundle.sh   # preflight → fetch → manual-items pause → manifest → verify --strict
 ```
 
-The fetch's `site` stage ships the build repo's own tree into the bundle, so
-it needs a simlab-build checkout to read it from (`staging/README.md`).
+The fetch's `kit` stage ships this kit's committed tree into the bundle as
+`kit/`, so it needs `KIT_SRC_ROOT` to name the checkout (`staging/README.md`).
 
 Exit **0** gated clean · **2** built with warnings to disposition · **1**
 failed, do not move the media. `staging/README.md` says what each of the four
-scripts does and why they are never edited here.
+scripts does and how to change them.
 
 ## Quick start
 
@@ -104,15 +103,14 @@ first gate on purpose: a gate is a question, and a run that cannot answer must
 not assume. `--dry-run` prints every command instead of executing it.
 
 Read `docs/deployment-runbook.md` before the first run; it shows which steps
-are ready today and which still wait on their own build-repo phase — iDRAC
-and the build repo's Phase 5 don't gate anything in this kit.
+need what on the box first — each step checks its own prerequisites and refuses by name.
 
 ## What's here
 
 | Path | What |
 |---|---|
 | `scripts/r770-import-bundle.sh` | Bundle in: preflight, gate (the verifier **that travels in the bundle**), copy, local APT repo, phone-home neutralised, Docker (then `storage`: where `docker load` will really write, and whether it fits — also runnable alone, read-only), the VM/GNS3/enrichment/docs payload into place. No generic image loading — Malcolm, GNS3 and docs each load their own |
-| `scripts/r770-malcolm-deploy.sh` | Malcolm: `full` runs its own bundle-in prep, then load/assert-tags (as in the build repo), unpack, configure by replaying the kit's config template through the installer, secrets, auth, the port rebind, start with Malcolm's own script; then `inventory` (read-only, what Dashboards holds), `dashboards` and `arkime-views` (the lab's IPsec saved searches and views, each asserted back after install) |
+| `scripts/r770-malcolm-deploy.sh` | Malcolm: `full` runs its own bundle-in prep, then load/assert-tags, unpack, configure by replaying the kit's config template through the installer, secrets, auth, the port rebind, start with Malcolm's own script; then `inventory` (read-only, what Dashboards holds), `dashboards` and `arkime-views` (the lab's IPsec saved searches and views, each asserted back after install) |
 | `scripts/r770-gns3-deploy.sh` | GNS3: `full` runs its own bundle-in prep, then load/assert-tags for the docker-node images, venv from the wheelhouse (`--no-index`), service user, config owned by that user, systemd unit on 127.0.0.1, then `labnet`: the hub-mode lab bridge whose mirror (`lab_mirror0`) Malcolm captures with `--capture-ifs` |
 | `scripts/r770-docs-deploy.sh` | The analyst wiki: `full` runs its own bundle-in prep, then load/assert-tags for the mkdocs image, then `build` (`--network none`) with an atomic publish to `/srv/www/docs` — a failed build never leaves `docs.lab` empty |
 | `scripts/r770-scenario.sh` | The scenario pack's driver: `list`, `up` (import into GNS3, start, configure each node, wait until ready), `traffic` (a bounded window and a run record under `r770-evidence/`), `record` (`traffic` with an outer capture on the TAP and inner captures inside node netns, an idle tail, and a run directory with `run.conf`, drop stats and `sha256sums` under `/data/pcap/cases`; `--impair <profile>@a` or `@b` shapes a TAP through `r770-wan.sh` for the run, `--events <file>` runs timed events, one per line, logged to `events.log`), `verify <run-dir>` (the run's `pcap-expect.txt` rows with `tshark`, decryption only with discovered keys, zero kernel drops, `expected.md` in the run directory; no GNS3 needed), `ingest <run-dir>` (the run's captures into Malcolm's upload drop-off as `<run-id>,<view>.pcapng`, by the names `run.conf` lists, never `gt/`), `down`, `status`. Not gated: it touches only the projects it imported |
@@ -123,19 +121,18 @@ and the build repo's Phase 5 don't gate anything in this kit.
 | `scripts/r770-portal-deploy.sh` | The optional front door, run after Malcolm: easy-rsa CA generated here, one three-SAN cert (`malcolm gns3 docs`.lab), vhosts (`nginx -t` before reload, probe after); serves the wiki the docs pipeline built |
 | `scripts/r770-airgap-check.sh` | Read-only posture report: no APT source, resolver, mirror, proxy, snap or pip index points outside |
 | `scripts/r770-validate.sh` | The success-criteria suite as a check · expected · observed · verdict · evidence table; SKIP with a reason, never silence |
-| `staging/` | The build repo's bundle pipeline, byte-identical (`staging/PROVENANCE.txt`): preflight, fetch (the pin owner), the one-command builder, and the verifier the fetch places inside every bundle. Runs on the staging host only |
+| `staging/` | The bundle pipeline: preflight, fetch (the pin owner), the one-command builder, and the verifier the fetch places inside every bundle. Runs on the staging host only |
 | `scripts/lib/common.sh` | The one set of seams (`KIT_ROOT`, `KIT_DRY_RUN`, `KIT_YES`, `KIT_NON_INTERACTIVE`, `KIT_EVIDENCE_DIR`), gates, rendering, image-list handling, `run_step`/`step_index` (what `full` uses to slice its step sequence), the call into the bundle's verifier |
 | `scripts/lib/expect.sh` | One scenario `expect.txt` row as the Arkime expression and the Dashboards (KQL) query that find it — the one translator behind the generated scenario searches and views and `r770-scenario.sh check`; refuses a protocol it does not know |
 | `scripts/lib/malcolm-api.sh` | Malcolm's Dashboards and Arkime APIs through 127.0.0.1:8443 only, the credential through a 0600 netrc and never argv — sourced by `r770-malcolm-deploy.sh` and `r770-scenario.sh` |
-| `config/` | nginx vhosts, GNS3 template + unit, Malcolm config template + saved objects, mkdocs — carried from the build repo with the deltas in `config/README.md` |
+| `config/` | nginx vhosts, GNS3 template + unit, Malcolm config template + saved objects, mkdocs — the deltas from upstream defaults are in `config/README.md` |
 | `docs/deployment-runbook.md` | The R770-side procedure: the Malcolm, GNS3 and docs pipelines, and the optional front door, with the gate you will see and the failure each step prevents |
 | `docs/rollback.md` | Per step: what changed, where the backup is, the exact undo, what is not reversible |
 | `docs/validation.md` | Areas, opt-in flags, what SKIPPED means, how a FAIL is handled |
-| `docs/kit-sync.md` | How this kit relates to the build repo: copied vs referenced, the sync checklist, the no-pins rule |
 | `docs/secrets-locations.md` | Where every generated credential lives, by location and mode only |
-| `docs/wiki/` | The analyst wiki source (copied from the build repo), built by `scripts/r770-docs-deploy.sh` and served at `docs.lab` on the R770 |
+| `docs/wiki/` | The analyst wiki source, built by `scripts/r770-docs-deploy.sh` and served at `docs.lab` on the R770 |
 | `docs/CODEMAPS/` | Token-lean maps for getting oriented fast: `architecture.md` (the two hosts, the three pipelines plus the front door, what `common.sh` owns), `stages.md` (pipeline → script → `full` step sequence → operator-invoked extras, and which steps are gated), `dependencies.md` (the bundle layout, packages required but never installed, the loopback port map). They name owners rather than restating them |
-| `tests/` | `./tests/run.sh` — shellcheck with no exclusions (one carried file keeps the build repo's accepted list), and bats suites that stub every host tool and write into a fake root. Offline, read-only, never a real bundle |
+| `tests/` | `./tests/run.sh` — shellcheck with no exclusions, and bats suites that stub every host tool and write into a fake root. Offline, read-only, never a real bundle |
 | `.claude/settings.json` | Agent guardrails for a session opened in this kit: destructive disk commands, `curl`/`wget`/`pip install`/`docker pull`/`snap` denied; every kit script is allowed by name |
 | `CLAUDE.md` | Operating rules for an agent working in this kit |
 
@@ -146,8 +143,8 @@ and the build repo's Phase 5 don't gate anything in this kit.
   and ships none of its own. A hand-rolled checksum gate cannot see files added
   after the manifest was written, and `tests/no-legacy-manifest.bats` refuses
   one.
-- **One pin owner.** `staging/r770-offline-fetch.sh` carries the pin block,
-  as it does in the build repo; nothing else in the kit may restate a version.
+- **One pin owner.** `staging/r770-offline-fetch.sh` carries the pin block;
+  nothing else in the kit may restate a version.
   Image tags on the R770 side are read from the bundle's `*/image-list.txt`,
   the Malcolm installer is found by glob and its version derived from its
   filename, the config templates carry tokens. `tests/no-pins.bats` fails on
@@ -158,9 +155,7 @@ and the build repo's Phase 5 don't gate anything in this kit.
 
 Every script tees its transcript to `./r770-evidence/<script>-<host>-<ts>.log`
 (`KIT_EVIDENCE_DIR` moves it); `r770-validate.sh` also writes
-`validation-<host>-<ts>.md`. Carry that directory back to the build repo's
-`state/inventory/` when the cycle is recorded — an assertion is not evidence,
-a transcript is.
+`validation-<host>-<ts>.md`. Archive that directory off the box, next to the bundle it ran against, when the cycle is recorded — an assertion is not evidence, a transcript is.
 
 ## Tests
 

@@ -85,10 +85,3 @@ The three `.lab` names — `malcolm.lab`, `gns3.lab`, `docs.lab` — are a
 decision of record, literal in `config/nginx/`, and are exactly the SANs on
 the one certificate (`portal-deploy --print-sans`, asserted by
 `tests/portal-deploy.bats`).
-
-## Cross-repo
-
-The build repo (`simlab-build`) owns the design, the hardware of record, the
-phase tracker, and the four files under `staging/`. `docs/kit-sync.md` has the
-sync checklist; `docs/wiki/` is carried verbatim and is changed there, never
-here.

@@ -7,10 +7,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 The deployment kit for an air-gapped Ubuntu 24.04 network-lab server (a Dell
 PowerEdge R770). `scripts/` is the **R770 side**: it takes a finished bundle
 onto the box and stands the services up. `staging/` is the **staging side**:
-the build repo's bundle pipeline, carried byte for byte, run only on the
-internet-connected staging host. The design, the hardware inventory and the
-phase tracker live in the build repo (`simlab-build`). Read `README.md` and
-`docs/deployment-runbook.md` before doing anything.
+the kit's bundle pipeline, run only on the internet-connected staging host.
+Read `README.md` and `docs/deployment-runbook.md` before doing anything.
 
 ## Commands
 
@@ -25,7 +23,6 @@ sudo apt-get install -y shellcheck bats   # once, on any Linux box (not the R770
 bats tests/common.bats                    # one suite
 bats tests/common.bats --filter '<name>'  # one test within a suite (bats-core >= 1.10)
 shellcheck scripts/*.sh scripts/lib/common.sh staging/*.sh   # lint alone, no exclusions
-                                           # (except the one carried file, staging/r770-offline-fetch.sh)
 ```
 
 Running the kit itself requires root and real (or `KIT_ROOT`-faked) hardware —
@@ -39,17 +36,17 @@ sudo ./scripts/r770-gns3-deploy.sh full \
 sudo ./scripts/r770-docs-deploy.sh full \
     --bundle <dir> --media <mnt> --device /dev/<discovered> --dry-run # the analyst wiki's pipeline, same contract, independent of both
 sudo ./scripts/r770-portal-deploy.sh nginx --dry-run          # the optional front door, one step at a time, run after Malcolm is up
-SITE_SRC_ROOT=<simlab-build checkout> ./staging/r770-build-bundle.sh --dry-run   # same, staging side (refuses without a simlab-build checkout)
+./staging/r770-offline-fetch.sh --dry-run   # the staging side's stage plan; touches nothing
 ```
 
 ## Architecture
 
 - **Two hosts, enforced.** `staging/` (preflight → fetch → build → verify) is
-  the build repo's pipeline copied byte for byte — identity guarded by
-  `staging/PROVENANCE.txt` and `tests/staging.bats`, never edited here.
-  `scripts/` is the R770 side: three independent pipelines plus an optional
-  front door. `tests/no-legacy-manifest.bats` and friends prove `scripts/`
-  never reaches into `staging/`.
+  the kit's own bundle pipeline, run only on the staging host; it ships this
+  repo into the bundle as `kit/`. `scripts/` is the R770 side: three
+  independent pipelines plus an optional front door.
+  `tests/no-legacy-manifest.bats` and friends prove `scripts/` never reaches
+  into `staging/`.
 - **Three independent pipelines, no orchestrator.** There is no
   `r770-deploy.sh` any more — it was deleted once each service could stand
   up its own pipeline. `scripts/r770-malcolm-deploy.sh full`,
@@ -87,8 +84,8 @@ SITE_SRC_ROOT=<simlab-build checkout> ./staging/r770-build-bundle.sh --dry-run  
   downstream reads them back out of what the bundle itself carries
   (`*/image-list.txt`, filenames, `BUNDLE_NOTES.md`) — enforced by
   `tests/no-pins.bats`.
-- **`config/` holds templates, not config.** Files are carried from the build
-  repo with deltas tracked in `config/README.md`; each `__TOKEN__` is
+- **`config/` holds templates, not config.** How each file differs from the upstream
+  default, and why, is tracked in `config/README.md`; each `__TOKEN__` is
   rendered by exactly one script from exactly one source (also tabulated
   there), and `render()` refuses a partial substitution rather than ship one.
 - **Evidence and vocabulary are uniform across the kit.** `kit_init()` tees
@@ -113,9 +110,9 @@ SITE_SRC_ROOT=<simlab-build checkout> ./staging/r770-build-bundle.sh --dry-run  
 - **Run the kit's scripts, not hand-typed commands.** Each subcommand encodes a
   trap the staging rehearsal hit. If a script refuses, the refusal is the
   finding — fix the cause, don't route around the script.
-- The build repo's phase tracker (`state/BUILD-STATE.md` there) decides what
-  may be deployed. Stages that need an unbuilt phase must SKIP or refuse, never
-  guess.
+- What a box is ready for is discovered, never assumed: a stage whose
+  prerequisite is not on the box SKIPs or refuses, naming what is missing —
+  never guesses.
 
 ## Non-negotiable rules
 
@@ -130,8 +127,7 @@ SITE_SRC_ROOT=<simlab-build checkout> ./staging/r770-build-bundle.sh --dry-run  
    to make a run "go".
 3. **The verifier is the bundle's** (`<bundle>/r770-bundle.sh verify`). Never
    add a checksum routine to this kit, never gate on a raw checksum command.
-4. **One pin owner.** `staging/r770-offline-fetch.sh` holds the pin block and
-   is edited only in the build repo, then resynced. Nothing else restates a
+4. **One pin owner.** `staging/r770-offline-fetch.sh` holds the pin block; a version moves there and nowhere else. Nothing else restates a
    version: tags come from the bundle's image lists, filenames by glob,
    config values by token. `tests/no-pins.bats` enforces it; do not weaken it.
 5. **No secrets in git.** Credentials are generated once under
@@ -155,11 +151,9 @@ SITE_SRC_ROOT=<simlab-build checkout> ./staging/r770-build-bundle.sh --dry-run  
 - A new script gets: the `KIT_*` seams via `scripts/lib/common.sh`, the
   `0 / 2 / 1` exit contract, `PASS  / WARN  / FAIL  / SKIP  ` vocabulary, a
   bats suite, a row in `README.md`, and an `allow` entry in `.claude/settings.json` beside its siblings.
-- Config changes go through `config/README.md`'s delta table and
-  `docs/kit-sync.md`; the build repo remains the source those files are synced
-  from. The four files under `staging/` are never edited here: change them in
-  the build repo, resync, and regenerate `staging/PROVENANCE.txt`
-  (`tests/staging.bats` fails on a local edit).
+- Config changes go through `config/README.md`'s delta table. `staging/`
+  follows every kit rule: shellcheck with no exclusions, behaviour tested in
+  `tests/staging.bats`.
 - Cite repo files as backticked bare paths; `tests/references.bats` checks
   that every kit path named in the docs exists.
 
