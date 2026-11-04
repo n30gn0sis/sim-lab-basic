@@ -1,12 +1,7 @@
 #!/usr/bin/env bats
 #
-# Lint gate. Every script written for this kit must be shellcheck-clean at
-# default severity with NO exclusions. The one exception is carried, not
-# written: staging/r770-offline-fetch.sh is the build repo's fetch script,
-# byte-identical to its source (tests/staging.bats), and it keeps the
-# exclusion list the build repo accepted for it. No other file may use it.
-
-LEGACY_EXCLUDE="SC2015,SC2012,SC2010,SC1091"   # build repo's tests/README.md explains each
+# Lint gate. Every script in the kit, staging/ included, must be
+# shellcheck-clean at default severity with NO exclusions.
 
 setup() { cd "$BATS_TEST_DIRNAME/.."; }
 
@@ -16,11 +11,8 @@ setup() { cd "$BATS_TEST_DIRNAME/.."; }
     [ "$status" -eq 0 ]
 }
 
-@test "the carried staging scripts lint: three clean, the fetch script with its accepted list only" {
-    run shellcheck staging/r770-staging-preflight.sh staging/r770-build-bundle.sh staging/r770-bundle.sh
-    echo "$output"
-    [ "$status" -eq 0 ]
-    run shellcheck -e "$LEGACY_EXCLUDE" staging/r770-offline-fetch.sh
+@test "every staging script is shellcheck-clean with no exclusions" {
+    run shellcheck staging/*.sh
     echo "$output"
     [ "$status" -eq 0 ]
 }

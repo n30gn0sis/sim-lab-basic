@@ -209,6 +209,13 @@ else
     echo "# R770 offline bundle ${TS}" > "$NOTES"
 fi
 note() { echo "- $*" >> "$NOTES"; echo ">> $*"; }
+# count_glob <paths...> -- how many of the (glob-expanded) paths exist. An
+# unmatched glob arrives as its literal pattern, which does not exist, so it
+# counts 0. Replaces `ls glob | wc -l`, which shellcheck (SC2012) rightly distrusts.
+count_glob() { local n=0 f; for f in "$@"; do if [ -e "$f" ]; then n=$((n + 1)); fi; done; echo "$n"; }
+# first_glob <paths...> -- the first (glob-expanded, so sorted) path that
+# exists, or nothing. Always returns 0. Replaces `ls glob | head -1`.
+first_glob() { local f; for f in "$@"; do if [ -e "$f" ]; then printf '%s\n' "$f"; return 0; fi; done; return 0; }
 
 # ── --list / --dry-run answer here, before any runtime is needed ─────────────
 # node_list_matches — the GNS3 docker-node archive's image-list.txt names exactly
@@ -230,7 +237,7 @@ stage_marker() {  # stage_marker <stage> — a coarse "looks complete" marker fo
         gns3)       [ -f "$B/.stamps/05-wheelhouse.done" ] && [ -s "$B/images/noble-server-cloudimg-amd64.img" ] ;;
         appliances) [ -s "$B/gns3/docker-nodes/gns3-node-images.tar.gz" ] && node_list_matches ;;
         enrichment) [ -s "$B/enrichment/oui.txt" ] ;;
-        docs)       [ "$(ls "$B/.stamps"/08-docs-*.done 2>/dev/null | wc -l)" -ge 3 ] ;;
+        docs)       [ "$(count_glob "$B/.stamps"/08-docs-*.done)" -ge 3 ] ;;
         manual)     [ -s "$B/dell/README.txt" ] ;;
         kit)        return 1 ;;   # always refreshed -- never "done", see ship_trees()
         manifest)   [ -s "$B/MANIFEST.sha256" ] ;;
@@ -566,7 +573,7 @@ PKGS=(
     linux-generic-hwe-24.04
 )
 if stamped 01-apt.done; then
-    note "APT bundle: skipped — complete in a previous run ($(ls "$B/apt"/*.deb 2>/dev/null | wc -l) debs cached; FORCE=1 to rebuild)"
+    note "APT bundle: skipped — complete in a previous run ($(count_glob "$B/apt"/*.deb) debs cached; FORCE=1 to rebuild)"
 else
 "$CTR" run --rm "${PROXY_ENV[@]}" -v "$B/apt:/out:Z" "$UBUNTU_BUILD_IMG" bash -ec "
     apt-get update -qq
@@ -602,7 +609,7 @@ else
     # Written outside /out and moved in, so it does not hash a half-written copy of itself.
     apt-ftparchive release . > /tmp/Release && mv /tmp/Release Release
 "
-note "APT bundle: $(ls "$B/apt"/*.deb 2>/dev/null | wc -l) debs incl. docker-ce, ubridge (GNS3 PPA) + dist-upgrade security debs; Packages, Packages.gz and Release generated (serve as a trivial repo)"
+note "APT bundle: $(count_glob "$B/apt"/*.deb) debs incl. docker-ce, ubridge (GNS3 PPA) + dist-upgrade security debs; Packages, Packages.gz and Release generated (serve as a trivial repo)"
 stamp_done 01-apt.done
 fi
 }
@@ -746,14 +753,14 @@ for a in "${GNS3A_DEFS[@]}"; do
         note "WARN: registry has no appliances/${a}.gns3a — browse https://github.com/GNS3/gns3-registry/tree/master/appliances for the actual name"
     fi
 done
-note "GNS3 definitions: $(ls "$B/gns3/definitions"/*.gns3a 2>/dev/null | wc -l) .gns3a files (definitions are free even for licensed appliances)"
+note "GNS3 definitions: $(count_glob "$B/gns3/definitions"/*.gns3a) .gns3a files (definitions are free even for licensed appliances)"
 
 # 6b. VyOS rolling — reuse an already-downloaded nightly (any tag) before
 # resolving the latest via the GitHub API, so a resume doesn't chase a newer
 # nightly than the one it already holds. Seed from the previous bundle first.
 seed_glob "gns3/appliances/vyos-*-generic-amd64.iso" || true            # a rejected cached
 seed_glob "gns3/appliances/vyos-*-generic-amd64.iso.minisig" || true    # file just means "not present" below
-VYOS_EXISTING=$(ls "$B/gns3/appliances"/vyos-*-generic-amd64.iso 2>/dev/null | head -1 || true)
+VYOS_EXISTING=$(first_glob "$B/gns3/appliances"/vyos-*-generic-amd64.iso)
 if [ -n "$VYOS_EXISTING" ] && [ "$FORCE" = "0" ]; then
     VYOS_TAG=$(basename "$VYOS_EXISTING" | sed -E 's/^vyos-(.*)-generic-amd64\.iso$/\1/')
     note "VyOS rolling ${VYOS_TAG}: already present — skipped"
@@ -761,22 +768,26 @@ else
     VYOS_TAG=$(resolve_latest_tag "https://api.github.com/repos/vyos/vyos-nightly-build/releases/latest")
     if [ -n "$VYOS_TAG" ]; then
         VYOS_ISO="vyos-${VYOS_TAG}-generic-amd64.iso"
-        fetch "$B/gns3/appliances/$VYOS_ISO" \
-            "https://github.com/vyos/vyos-nightly-build/releases/download/${VYOS_TAG}/${VYOS_ISO}" \
+        if fetch "$B/gns3/appliances/$VYOS_ISO" \
+                "https://github.com/vyos/vyos-nightly-build/releases/download/${VYOS_TAG}/${VYOS_ISO}" \
             && fetch "$B/gns3/appliances/${VYOS_ISO}.minisig" \
-                "https://github.com/vyos/vyos-nightly-build/releases/download/${VYOS_TAG}/${VYOS_ISO}.minisig" \
-            && note "VyOS rolling ${VYOS_TAG} ISO + minisig fetched" \
-            || note "WARN: VyOS ${VYOS_TAG} download failed — fetch manually from github.com/vyos/vyos-nightly-build/releases"
+                "https://github.com/vyos/vyos-nightly-build/releases/download/${VYOS_TAG}/${VYOS_ISO}.minisig"; then
+            note "VyOS rolling ${VYOS_TAG} ISO + minisig fetched"
+        else
+            note "WARN: VyOS ${VYOS_TAG} download failed — fetch manually from github.com/vyos/vyos-nightly-build/releases"
+        fi
     else
         note "WARN: could not resolve latest VyOS nightly tag (GitHub API) — fetch manually"
     fi
 fi
 
 # 6c. MikroTik CHR (free tier: 1 Mbps unlicensed — fine for lab control-plane work)
-fetch "$B/gns3/appliances/chr-${CHR_VER}.img.zip" \
-    "https://download.mikrotik.com/routeros/${CHR_VER}/chr-${CHR_VER}.img.zip" \
-    && note "MikroTik CHR ${CHR_VER} raw image fetched (unzip on the R770; GNS3/QEMU boots the raw .img directly)" \
-    || note "WARN: CHR ${CHR_VER} download failed — check https://mikrotik.com/download/chr"
+if fetch "$B/gns3/appliances/chr-${CHR_VER}.img.zip" \
+        "https://download.mikrotik.com/routeros/${CHR_VER}/chr-${CHR_VER}.img.zip"; then
+    note "MikroTik CHR ${CHR_VER} raw image fetched (unzip on the R770; GNS3/QEMU boots the raw .img directly)"
+else
+    note "WARN: CHR ${CHR_VER} download failed — check https://mikrotik.com/download/chr"
+fi
 
 # 6d. OPNsense (the no-account open firewall; pfSense CE now requires a Netgate account)
 for f in "OPNsense-${OPNSENSE_VER}-dvd-amd64.iso.bz2" \
@@ -787,11 +798,13 @@ for f in "OPNsense-${OPNSENSE_VER}-dvd-amd64.iso.bz2" \
 done
 if [ -f "$B/gns3/appliances/OPNsense-${OPNSENSE_VER}-dvd-amd64.iso.bz2" ] && \
    [ -f "$B/gns3/appliances/OPNsense-${OPNSENSE_VER}-checksums-amd64.sha256" ]; then
-    ( cd "$B/gns3/appliances" && \
-      grep "OPNsense-${OPNSENSE_VER}-dvd-amd64.iso.bz2" "OPNsense-${OPNSENSE_VER}-checksums-amd64.sha256" \
-        | sha256sum -c - ) \
-        && note "OPNsense ${OPNSENSE_VER} dvd ISO verified against its sha256 list" \
-        || note "WARN: OPNsense checksum verification FAILED — do not transfer this file"
+    if ( cd "$B/gns3/appliances" && \
+         grep "OPNsense-${OPNSENSE_VER}-dvd-amd64.iso.bz2" "OPNsense-${OPNSENSE_VER}-checksums-amd64.sha256" \
+           | sha256sum -c - ); then
+        note "OPNsense ${OPNSENSE_VER} dvd ISO verified against its sha256 list"
+    else
+        note "WARN: OPNsense checksum verification FAILED — do not transfer this file"
+    fi
 fi
 
 # 6e. Alpine virt ISO — reuse an already-downloaded copy (any version) before
@@ -799,21 +812,25 @@ fi
 ALPINE_BASE="https://dl-cdn.alpinelinux.org/alpine/latest-stable/releases/x86_64"
 seed_glob "gns3/appliances/alpine-virt-*-x86_64.iso" || true            # a rejected cached
 seed_glob "gns3/appliances/alpine-virt-*-x86_64.iso.sha256" || true     # file is re-verified below anyway
-ALPINE_EXISTING=$(ls "$B/gns3/appliances"/alpine-virt-*-x86_64.iso 2>/dev/null | head -1 || true)
+ALPINE_EXISTING=$(first_glob "$B/gns3/appliances"/alpine-virt-*-x86_64.iso)
 if [ -n "$ALPINE_EXISTING" ] && [ "$FORCE" = "0" ]; then
     ALPINE_ISO=$(basename "$ALPINE_EXISTING")
-    ( cd "$B/gns3/appliances" && sha256sum -c "${ALPINE_ISO}.sha256" ) \
-        && note "Alpine virt ISO ${ALPINE_ISO}: already present (re-verified) — skipped" \
-        || note "WARN: cached ${ALPINE_ISO} failed re-verification — delete it and rerun"
+    if ( cd "$B/gns3/appliances" && sha256sum -c "${ALPINE_ISO}.sha256" ); then
+        note "Alpine virt ISO ${ALPINE_ISO}: already present (re-verified) — skipped"
+    else
+        note "WARN: cached ${ALPINE_ISO} failed re-verification — delete it and rerun"
+    fi
 else
     ALPINE_ISO=$(curl -fsSL "${ALPINE_BASE}/latest-releases.yaml" \
         | grep -m1 -o 'alpine-virt-[0-9][^" ]*-x86_64\.iso' || true)
     if [ -n "$ALPINE_ISO" ]; then
-        fetch "$B/gns3/appliances/$ALPINE_ISO" "${ALPINE_BASE}/${ALPINE_ISO}" \
+        if fetch "$B/gns3/appliances/$ALPINE_ISO" "${ALPINE_BASE}/${ALPINE_ISO}" \
             && fetch "$B/gns3/appliances/${ALPINE_ISO}.sha256" "${ALPINE_BASE}/${ALPINE_ISO}.sha256" \
-            && ( cd "$B/gns3/appliances" && sha256sum -c "${ALPINE_ISO}.sha256" ) \
-            && note "Alpine virt ISO ${ALPINE_ISO} fetched + verified" \
-            || note "WARN: Alpine fetch/verify failed — see ${ALPINE_BASE}"
+            && ( cd "$B/gns3/appliances" && sha256sum -c "${ALPINE_ISO}.sha256" ); then
+            note "Alpine virt ISO ${ALPINE_ISO} fetched + verified"
+        else
+            note "WARN: Alpine fetch/verify failed — see ${ALPINE_BASE}"
+        fi
     else
         note "WARN: could not parse Alpine latest-releases.yaml — fetch the virt ISO manually from ${ALPINE_BASE}"
     fi
@@ -881,9 +898,11 @@ ET_URL="https://rules.emergingthreats.net/open/${ET_SURICATA_PATH}/emerging.rule
 if have "$B/enrichment/emerging.rules.tar.gz"; then
     note "ET Open rules: already present — skipped"
 elif ET_CODE=$(curl -sIL -o /dev/null -w '%{http_code}' "$ET_URL" || echo 000); [ "$ET_CODE" = "200" ]; then
-    fetch "$B/enrichment/emerging.rules.tar.gz" "$ET_URL" \
-        && note "ET Open rules (${ET_SURICATA_PATH}) fetched" \
-        || note "WARN: ET Open rules download failed (optional; Suricata disabled by default)"
+    if fetch "$B/enrichment/emerging.rules.tar.gz" "$ET_URL"; then
+        note "ET Open rules (${ET_SURICATA_PATH}) fetched"
+    else
+        note "WARN: ET Open rules download failed (optional; Suricata disabled by default)"
+    fi
 else
     note "WARN: ET Open ${ET_SURICATA_PATH} path returned HTTP ${ET_CODE} — branch may be retired; set ET_SURICATA_PATH (e.g. suricata-8.0) to match the target's Suricata version and rerun"
 fi
@@ -927,16 +946,20 @@ if command -v wget >/dev/null 2>&1; then
     # docs.zeek.org sits behind a Cloudflare JS challenge that no non-browser client
     # passes (HTTP 429 + cf-mitigated: challenge). Read the Docs serves the same docs
     # as an offline htmlzip from its own domain, which a plain client can fetch.
-    fetch "$B/docs/zeek-docs-htmlzip-current.zip" \
-        "https://app.readthedocs.org/projects/zeek-docs/downloads/htmlzip/current/" \
-        && note "docs: zeek offline htmlzip (Read the Docs build) fetched" \
-        || note "WARN: zeek docs htmlzip fetch failed (rerun resumes it)"
+    if fetch "$B/docs/zeek-docs-htmlzip-current.zip" \
+            "https://app.readthedocs.org/projects/zeek-docs/downloads/htmlzip/current/"; then
+        note "docs: zeek offline htmlzip (Read the Docs build) fetched"
+    else
+        note "WARN: zeek docs htmlzip fetch failed (rerun resumes it)"
+    fi
     docs_mirror wireshark "https://www.wireshark.org/docs/wsug_html_chunked/"
     # docs.gns3.com is JS-heavy and mirrors poorly — take the repo docs instead
-    fetch "$B/docs/gns3-server-docs.tar.gz" \
-        "https://github.com/GNS3/gns3-server/archive/refs/tags/v${GNS3_VER}.tar.gz" \
-        && note "docs: gns3-server v${GNS3_VER} source tarball (includes docs/) fetched" \
-        || note "WARN: gns3-server source tarball fetch failed"
+    if fetch "$B/docs/gns3-server-docs.tar.gz" \
+            "https://github.com/GNS3/gns3-server/archive/refs/tags/v${GNS3_VER}.tar.gz"; then
+        note "docs: gns3-server v${GNS3_VER} source tarball (includes docs/) fetched"
+    else
+        note "WARN: gns3-server source tarball fetch failed"
+    fi
 else
     note "WARN: wget not installed on staging host — docs mirrors SKIPPED (dnf -y install wget, then rerun)"
 fi
