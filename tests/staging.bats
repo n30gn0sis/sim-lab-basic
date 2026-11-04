@@ -58,11 +58,11 @@ payload_list() {
     [ "$output" = "0" ]
 }
 
-@test "--pack from this kit's tree without KIT_SRC_ROOT packs the four scripts and says it carries no kit" {
-    run ./staging/r770-build-bundle.sh --pack
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"carries no kit"* ]]
-    [[ "$output" == *"R770_PAYLOAD"* ]]
+@test "--pack refuses without KIT_SRC_ROOT: a pack with no kit cannot build a gated bundle" {
+    run env -u KIT_SRC_ROOT ./staging/r770-build-bundle.sh --pack
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"KIT_SRC_ROOT"* ]]
+    [[ "$output" != *"R770_PAYLOAD"* ]]
 }
 
 # a fixture bundle as the fetch leaves it: the real verifier in the root and

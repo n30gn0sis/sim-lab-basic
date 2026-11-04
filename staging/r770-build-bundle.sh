@@ -55,7 +55,7 @@ die()  { echo "r770-build-bundle: $*" >&2; exit 1; }
 step() { printf '\n== %s\n' "$*"; }
 
 # ── pack: emit a single file carrying all four scripts, plus a git archive of
-# the kit at the exact commit it was packed from (when KIT_SRC_ROOT is set) ──
+# the kit at the exact commit it was packed from (KIT_SRC_ROOT is required) ──
 # The payload rides in a quoted heredoc so the emitted file is inert to a
 # syntax check and cannot be mistaken for code. Note it is base64: a packed
 # builder must never be committed, because base64 hides the version pins from
@@ -63,29 +63,27 @@ step() { printf '\n== %s\n' "$*"; }
 # carries the name for that reason.
 #
 # A packed builder unpacks flat into a mktemp -d with no checkout of its own,
-# so the fetch's kit stage cannot read a work tree there. When KIT_SRC_ROOT
-# names a kit checkout at pack time, --pack embeds `git archive HEAD` of its
+# so the fetch's kit stage cannot read a work tree there. KIT_SRC_ROOT must
+# name a kit checkout at pack time: --pack embeds `git archive HEAD` of its
 # scripts/ config/ scenarios/ docs/ plus the commit, refusing a dirty tree: a
 # pack is a release artifact and must be traceable to one exact commit.
-# Without KIT_SRC_ROOT the pack carries no kit, and the packed builder's fetch
-# then needs KIT_SRC_ROOT (or --skip kit) like any other run.
+# Every bundle must carry kit/ (the verifier's --strict gate fails without it),
+# so --pack refuses without KIT_SRC_ROOT rather than emit a builder that could
+# not produce a gated bundle.
 cmd_pack() {
-    local tmp kit_commit="" payload=()
+    [ -n "${KIT_SRC_ROOT:-}" ] ||
+        die "--pack needs KIT_SRC_ROOT=<this kit's checkout> -- every bundle must carry kit/, and a packed builder has no checkout of its own to ship it from"
+    local tmp kit_commit payload=()
     tmp="$(mktemp -d)" || die "mktemp failed"
-    if [ -n "${KIT_SRC_ROOT:-}" ]; then
-        if [ -n "$(git -c safe.directory="$KIT_SRC_ROOT" -C "$KIT_SRC_ROOT" status --porcelain -- scripts config scenarios docs 2>/dev/null)" ]; then
-            rm -rf "$tmp"; die "--pack refuses a dirty kit tree at KIT_SRC_ROOT ($KIT_SRC_ROOT) -- commit or stash it first"
-        fi
-        kit_commit="$(git -c safe.directory="$KIT_SRC_ROOT" -C "$KIT_SRC_ROOT" rev-parse HEAD)" || { rm -rf "$tmp"; die "KIT_SRC_ROOT ($KIT_SRC_ROOT) is not a git checkout"; }
-        git -c safe.directory="$KIT_SRC_ROOT" -C "$KIT_SRC_ROOT" archive --format=tar HEAD -- scripts config scenarios docs > "$tmp/kit.tar" ||
-            { rm -rf "$tmp"; die "could not archive the kit at $kit_commit"; }
-    else
-        echo "r770-build-bundle: note: --pack without KIT_SRC_ROOT carries no kit; the packed builder's fetch will need KIT_SRC_ROOT (or --skip kit)" >&2
+    if [ -n "$(git -c safe.directory="$KIT_SRC_ROOT" -C "$KIT_SRC_ROOT" status --porcelain -- scripts config scenarios docs 2>/dev/null)" ]; then
+        rm -rf "$tmp"; die "--pack refuses a dirty kit tree at KIT_SRC_ROOT ($KIT_SRC_ROOT) -- commit or stash it first"
     fi
+    kit_commit="$(git -c safe.directory="$KIT_SRC_ROOT" -C "$KIT_SRC_ROOT" rev-parse HEAD)" || { rm -rf "$tmp"; die "KIT_SRC_ROOT ($KIT_SRC_ROOT) is not a git checkout"; }
+    git -c safe.directory="$KIT_SRC_ROOT" -C "$KIT_SRC_ROOT" archive --format=tar HEAD -- scripts config scenarios docs > "$tmp/kit.tar" ||
+        { rm -rf "$tmp"; die "could not archive the kit at $kit_commit"; }
 
     read -ra payload <<< "$CONTENTS"
-    payload=(-C "$HERE" "${payload[@]}")
-    if [ -n "$kit_commit" ]; then payload+=(-C "$tmp" kit.tar); fi
+    payload=(-C "$HERE" "${payload[@]}" -C "$tmp" kit.tar)
     if ! tar czf "$tmp/payload.tgz" "${payload[@]}"; then
         rm -rf "$tmp"
         die "could not pack: ${payload[*]}"
@@ -102,8 +100,8 @@ cmd_pack() {
 #   r770-offline-fetch.sh       the fetch (owner of every version pin)
 #   r770-bundle.sh              manifest + integrity gate
 #
-# Also carries sim-lab-basic (the R770 installer) as kit.tar when KIT_SRC_ROOT
-# was set at pack time.
+# Also carries sim-lab-basic (the R770 installer) as kit.tar, archived from
+# KIT_SRC_ROOT at pack time.
 #
 # Copy to a staging host and run it. On RHEL 8 use rootful podman:
 #   sudo -E bash ${PACKED_NAME}
@@ -120,10 +118,8 @@ HEADER
 R770_PAYLOAD
 chmod +x "$D"/*.sh
 FOOTER
-    if [ -n "$kit_commit" ]; then
-        # shellcheck disable=SC2016  # $D stays literal: it is the packed script's own variable
-        printf 'export KIT_ARCHIVE="$D/kit.tar"\nexport KIT_COMMIT="%s"\n' "$kit_commit"
-    fi
+    # shellcheck disable=SC2016  # $D stays literal: it is the packed script's own variable
+    printf 'export KIT_ARCHIVE="$D/kit.tar"\nexport KIT_COMMIT="%s"\n' "$kit_commit"
     cat <<'FOOTER2'
 exec "$D/r770-build-bundle.sh" "$@"
 FOOTER2
