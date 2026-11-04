@@ -1,9 +1,10 @@
 #!/usr/bin/env bats
 #
-# staging/ carries the build repo's four bundle-building scripts BYTE FOR
-# BYTE. Their behaviour is tested in the build repo; what this suite proves
-# is identity (the provenance hashes), that they still run as a set from this
-# directory, and that the R770 side never calls them.
+# staging/ is the kit's own bundle pipeline: preflight, fetch, the one-command
+# builder and the verifier. What this suite proves: they run as a set from this
+# directory, the fetch ships the kit as its one tree, --pack carries only
+# themselves and the kit, and the verifier gates a bundle as the fetch leaves it.
+# tests/no-legacy-manifest.bats proves the R770 side never calls them.
 
 load helpers/fixtures
 

@@ -1,9 +1,8 @@
-# staging/ — the bundle-building side, carried verbatim
+# staging/ — the bundle-building side
 
-These four scripts are the build repo's supply pipeline, copied byte for byte
-from `simlab-build/scripts/` (commit and hashes in `PROVENANCE.txt`, checked
-by `tests/staging.bats`). They run on the **internet-connected staging host**
-and **never on the R770**. Nothing under the kit's `scripts/` calls them.
+These four scripts are the kit's supply pipeline. They run on the
+**internet-connected staging host** and **never on the R770**. Nothing under
+the kit's `scripts/` calls them (`tests/no-legacy-manifest.bats`).
 
 | Script | Role |
 |---|---|
@@ -15,17 +14,15 @@ and **never on the R770**. Nothing under the kit's `scripts/` calls them.
 ## Use
 
 ```bash
-SITE_SRC_ROOT=<simlab-build checkout> ./staging/r770-build-bundle.sh      # here, on the staging host
-BUILD_PACK_ROOT=<simlab-build checkout> ./staging/r770-build-bundle.sh --pack > r770-bundle-builder.sh
+KIT_SRC_ROOT=<this kit's checkout> ./staging/r770-build-bundle.sh                      # here, on the staging host
+KIT_SRC_ROOT=<this kit's checkout> ./staging/r770-build-bundle.sh --pack > r770-bundle-builder.sh
 ```
 
-Since the 2026-09-27 resync the fetch has a `site` stage that ships the
-**build repo's** reviewed `simlab-build/scripts/`, `simlab-build/config/` and `simlab-build/docs/analyst-wiki/` as
-the bundle's `site/`, and the verifier expects it. It reads them from a
-simlab-build git checkout: from this kit's tree it refuses at startup, even
-for `--list` and `--dry-run`, rather than guess — so point `SITE_SRC_ROOT`
-(and, for `--pack`, `BUILD_PACK_ROOT`) at a clean simlab-build checkout.
-`--pack` embeds that checkout's exact commit, and refuses this kit's tree.
+The fetch's `kit` stage ships this repo's committed `scripts/`, `config/`,
+`scenarios/` and `docs/` as the bundle's `kit/`, which the verifier requires.
+`KIT_SRC_ROOT` names the checkout to ship; a real run refuses without it rather
+than guess, and refuses a tracked symlink or submodule. `--pack` embeds that
+checkout's exact commit as `kit.tar` and refuses a dirty tree.
 
 Exit **0** bundle built and gated clean · **2** built with warnings to
 disposition · **1** failed — do not move the media. The manual category
@@ -37,11 +34,9 @@ from the guard that keeps pins in one place.
 
 ## Changing them
 
-Don't, here. Edit in the build repo (its suite tests them), then resync per
-`docs/kit-sync.md` and regenerate `PROVENANCE.txt`. The kit's guards treat
-`r770-offline-fetch.sh` as the pin owner and `r770-bundle.sh` as the verifier
-that may exist only in this directory; every other rule of the kit applies.
-
-For the runbook that drives these — the staging host set-up, the proxy notes,
-the pin review before a cut — see the build repo's
-`simlab-build/docs/plans/r770-staging-runbook.md`.
+Edit them here, like any kit script: shellcheck with no exclusions, and
+`tests/staging.bats` for behaviour. Two roles are guarded:
+`r770-offline-fetch.sh` is the pin owner (`tests/no-pins.bats`), and
+`r770-bundle.sh` is the verifier, which may exist only in this directory
+(`tests/no-legacy-manifest.bats`). A pin moves in the fetch's pin block and
+nowhere else.

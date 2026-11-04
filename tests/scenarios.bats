@@ -206,3 +206,12 @@ PY
     SCENARIOS_ROOT="$d" run python3 tests/helpers/lint_scenarios.py topology; echo "$output"
     [ "$status" -eq 1 ]; [[ "$output" == *"Clouds must be named exactly tap-a and tap-b"* ]]
 }
+
+@test "every \$VAR entry in GNS3_NODE_IMAGES resolves through its own pin line (strongswan, not frr twice)" {
+    run python3 -c 'import sys; sys.path.insert(0, "tests/helpers"); import lint_scenarios as l; print(" ".join(sorted(l.bundled_images())))'
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ " $output " == *" strongswan "* ]]
+    [[ " $output " == *" frr "* ]]
+    [[ " $output " == *" netshoot "* ]]
+}
