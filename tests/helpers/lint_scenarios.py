@@ -12,7 +12,6 @@ import sys
 
 ROOT = os.environ.get("SCENARIOS_ROOT", "scenarios")
 KEYS = ["name", "description", "range", "images", "traffic_secs", "ready", "traffic_nodes"]
-UPSTREAM_PENDING = {"strongswan"}  # added to the build repo's pin block, not yet in a bundle
 PROTOS = {"tcp", "udp", "icmp", "esp", "ospf"}
 NODE_SUFFIXES = (".sh", ".frr.conf", ".swanctl.conf")  # the only kinds r770-scenario.sh applies
 WAN_PROFILES = os.environ.get("WAN_PROFILE_DIR", os.path.join("config", "wan", "profiles"))
@@ -54,7 +53,8 @@ def bundled_images():
     block = re.search(r"GNS3_NODE_IMAGES=\((.*?)\)", text, re.S).group(1)
     for ref in re.findall(r'"([^"]+)"', block):
         if ref.startswith("$"):
-            ref = re.search(r'FRR_IMG="\$\{FRR_IMG:-([^}]+)\}"', text).group(1)
+            var = ref.strip("${}")
+            ref = re.search(r"^" + var + r'="\$\{' + var + r":-([^}]+)\}\"", text, re.M).group(1)
         names.add(ref.split("/")[-1].split(":")[0])
     return names
 
@@ -161,11 +161,11 @@ def check_topology(s, c, errs):
 
 
 def check_images(s, c, errs):
-    known = bundled_images() | UPSTREAM_PENDING
+    known = bundled_images()
     listed = c.get("images", "").split()
     for i in listed:
         if i not in known:
-            errs.append(f"{s}: image {i} is neither bundled (GNS3_NODE_IMAGES) nor upstream-pending")
+            errs.append(f"{s}: image {i} is not bundled (GNS3_NODE_IMAGES in staging/r770-offline-fetch.sh)")
     want = {"__IMG_" + i.upper().replace("-", "_") + "__" for i in listed}
     for n in project(s)["topology"]["nodes"]:
         if n["node_type"] == "docker" and n["properties"].get("image") not in want:
