@@ -25,13 +25,13 @@ setup() {
 
 airgap() { kit_run "$SCRIPT" "$@"; }
 
-@test "an air-gapped host passes, with the unbuilt phases SKIPPED by name" {
+@test "an air-gapped host passes, with the missing prerequisites SKIPPED by name" {
     run airgap
     echo "$output"
     [ "$status" -eq 0 ]
     [[ "$output" == *"PASS  apt: every index target is file:"* ]]
     [[ "$output" == *"PASS  snapd not installed"* ]]
-    [[ "$output" == *"SKIP  dnsmasq: not installed (Phase 5 not built)"* ]]
+    [[ "$output" == *"SKIP  dnsmasq: not installed — .lab authority and no-resolv cannot be checked"* ]]
     [[ "$output" == *"SKIP  resolv.conf: no --mgmt-cidr given"* ]]
     [[ "$output" == *"READY —"* ]]
 }

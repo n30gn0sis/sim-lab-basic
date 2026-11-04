@@ -23,7 +23,7 @@ setup() {
     stub ss 'echo'
     stub ip 'echo'
     export VALIDATE_AIRGAP_CMD="$BIN/airgap-stub"
-    stub airgap-stub 'echo "PASS  apt: every index target is file: (1 target(s))"; echo "SKIP  dnsmasq: not installed (Phase 5 not built)"; exit 0'
+    stub airgap-stub 'echo "PASS  apt: every index target is file: (1 target(s))"; echo "SKIP  dnsmasq: not installed — .lab authority and no-resolv cannot be checked"; exit 0'
 }
 
 validate() { kit_run "$SCRIPT" --out "$OUT" "$@"; }
@@ -41,16 +41,23 @@ report() { cat "$OUT"/validation-*.md; }
     run validate --area host --area cpu-ram --area gns3 --area wan --area backup --area portal
     echo "$output"
     [ "$status" -eq 0 ]
-    [[ "$output" == *"SKIP  host/chrony: chronyc not installed (Phase 5 not built)"* ]]
+    [[ "$output" == *"SKIP  host/chrony: chronyc not installed (needs chrony)"* ]]
     [[ "$output" == *"SKIP  cpu-ram/threads: 64 (--expect-threads not given)"* ]]
-    [[ "$output" == *"SKIP  gns3/unit: inactive (Phase 8 not built"* ]]
+    [[ "$output" == *"SKIP  gns3/unit: inactive (needs the gns3 unit: r770-gns3-deploy.sh service)"* ]]
     [[ "$output" == *"SKIP  wan/impairment: not opted in"* ]]
-    [[ "$output" == *"SKIP  backup/restore: restic not installed (Phase 15 not built)"* ]]
-    [[ "$output" == *"SKIP  portal/vhosts: no /etc/nginx/ssl/ca.crt (Phase 13 not built)"* ]]
+    [[ "$output" == *"SKIP  backup/restore: restic not installed (needs restic)"* ]]
+    [[ "$output" == *"SKIP  portal/vhosts: no /etc/nginx/ssl/ca.crt (needs the lab CA: r770-portal-deploy.sh ca)"* ]]
     run report
     [[ "$output" == *"## SKIPPED"* ]]
     [[ "$output" == *"- gns3 / unit"* ]]
-    [[ "$output" == *"| chrony | Leap status Normal | chronyc not installed | SKIP | Phase 5 not built |"* ]]
+    [[ "$output" == *"| chrony | Leap status Normal | chronyc not installed | SKIP | needs chrony |"* ]]
+}
+
+@test "an opted-in wan area SKIPs as not automated, pointing at r770-wan.sh" {
+    run validate --area wan --allow-wan
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"SKIP  wan/impairment: not automated by this suite (impair with r770-wan.sh and measure by hand)"* ]]
 }
 
 @test "the report has one five-column row per check and a summary" {
@@ -185,7 +192,7 @@ report() { cat "$OUT"/validation-*.md; }
     echo "$output"
     [ "$status" -eq 0 ]
     [[ "$output" == *"PASS  airgap/apt: every index target is file:"* ]]
-    [[ "$output" == *"SKIP  airgap/dnsmasq: not installed (Phase 5 not built)"* ]]
+    [[ "$output" == *"SKIP  airgap/dnsmasq: not installed — .lab authority"* ]]
     stub airgap-stub 'echo "FAIL  snapd is installed — it phones home"; exit 1'
     run validate --area airgap
     [ "$status" -eq 1 ]
