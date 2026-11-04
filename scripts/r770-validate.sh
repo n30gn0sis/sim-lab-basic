@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 #
-# r770-validate.sh — prove capabilities, do not assume them. The R770 side
-# of the success criteria (build repo PRD §10 / buildout §13), as a
-# read-only or self-cleaning suite that writes a check · expected ·
-# observed · verdict · evidence table.
+# r770-validate.sh — prove capabilities, do not assume them: a read-only or
+# self-cleaning suite that writes a check · expected · observed · verdict ·
+# evidence table.
 #
 #   r770-validate.sh [--area A]... [--list] [options]
 #
@@ -14,17 +13,17 @@
 #   --mgmt-if IF          --capture-ifs "a b"   interfaces, given — never guessed
 #   --mgmt-cidr a.b.c.d/n                       for the air-gap resolver checks
 #   --allow-vm --lab-bridge BR                  boot and destroy a throwaway VM
-#   --allow-wan                                 (Phase 12 tooling lives outside this kit)
+#   --allow-wan                                 (not automated: impair with r770-wan.sh, measure by hand)
 #   --feed IF --pcap FILE                       tcpreplay a reference PCAP into a feed
 #   --out DIR                                   where the report lands
 #
 #   0  every executed check passed · 2  warnings · 1  at least one FAIL
 #   SKIPPED checks never change the exit code — but they are always listed.
 #
-# A check that cannot run (tool missing, phase not built, opt-in not given)
+# A check that cannot run (tool missing, prerequisite not set up, opt-in not given)
 # is SKIPPED with its reason; it is never omitted and never counted as a
 # pass. A FAIL gets a diagnosis and the single most likely next step, not a
-# fix attempt: fixing happens under the phase protocol.
+# fix attempt: fixing happens one change at a time, then the suite is rerun.
 set -uo pipefail
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=lib/common.sh
@@ -70,12 +69,12 @@ area_host() {
     if command -v chronyc >/dev/null 2>&1; then
         local leap; leap=$(chronyc tracking 2>/dev/null | awk -F': *' '/^Leap status/{print $2}')
         if [ "$leap" = "Normal" ]; then row "chrony" "Leap status Normal" "$leap" PASS "chronyc tracking"; else row "chrony" "Leap status Normal" "${leap:-unreadable}" WARN "chronyc tracking"; fi
-    else row "chrony" "Leap status Normal" "chronyc not installed" SKIP "Phase 5 not built"; fi
+    else row "chrony" "Leap status Normal" "chronyc not installed" SKIP "needs chrony"; fi
     if dpkg -s dnsmasq >/dev/null 2>&1; then
         local n miss=""
         for n in $SANS; do getent hosts "$n" >/dev/null 2>&1 || miss="$miss $n"; done
         if [ -z "$miss" ]; then row "lab-dns" "three .lab names resolve" "all resolve" PASS "getent hosts <name>"; else row "lab-dns" "three .lab names resolve" "unresolved:$miss" FAIL "getent hosts <name>"; diag lab-dns "dnsmasq is installed but not authoritative for these names — check its .lab address records"; fi
-    else row "lab-dns" "three .lab names resolve" "dnsmasq not installed" SKIP "Phase 5 not built"; fi
+    else row "lab-dns" "three .lab names resolve" "dnsmasq not installed" SKIP "needs dnsmasq, the .lab resolver"; fi
     local uris bad
     uris=$(apt-get indextargets --format '$''(URI)' 2>/dev/null | sort -u || true)
     bad=$(printf '%s\n' "$uris" | grep -v '^file:' | grep -c . || true)
@@ -88,7 +87,7 @@ area_host() {
 area_cpu_ram() {
     AREA=cpu-ram
     if command -v kvm-ok >/dev/null 2>&1; then
-        if kvm-ok >/dev/null 2>&1; then row "kvm-ok" "KVM acceleration can be used" "ok" PASS "kvm-ok"; else row "kvm-ok" "KVM acceleration can be used" "$(kvm-ok 2>&1 | tail -1)" FAIL "kvm-ok"; diag kvm-ok "VT-x/VT-d disabled in BIOS or the kvm module is missing (Phase 2)"; fi
+        if kvm-ok >/dev/null 2>&1; then row "kvm-ok" "KVM acceleration can be used" "ok" PASS "kvm-ok"; else row "kvm-ok" "KVM acceleration can be used" "$(kvm-ok 2>&1 | tail -1)" FAIL "kvm-ok"; diag kvm-ok "VT-x/VT-d disabled in BIOS or the kvm module is missing"; fi
     else row "kvm-ok" "KVM acceleration can be used" "cpu-checker not installed" SKIP "package not installed yet"; fi
     local t; t=$(nproc 2>/dev/null || echo 0)
     if [ -n "$EXPECT_THREADS" ]; then
@@ -114,7 +113,7 @@ area_storage() {
     for lv in $LVS; do
         mp=$(findmnt -n -o TARGET -T "$lv" 2>/dev/null || true)
         size=$(findmnt -n -o SIZE -T "$lv" 2>/dev/null || true)
-        if [ "$mp" = "$lv" ]; then row "mount $lv" "own mount point" "mounted, $size" PASS "findmnt -T $lv"; else row "mount $lv" "own mount point" "on '${mp:-nothing}'" FAIL "findmnt -T $lv"; diag "mount $lv" "the LV is not mounted here — Phase 3 layout incomplete; nothing may be imported onto it"; fi
+        if [ "$mp" = "$lv" ]; then row "mount $lv" "own mount point" "mounted, $size" PASS "findmnt -T $lv"; else row "mount $lv" "own mount point" "on '${mp:-nothing}'" FAIL "findmnt -T $lv"; diag "mount $lv" "the LV is not mounted here — the storage layout is incomplete; nothing may be imported onto it"; fi
     done
     if command -v nvme >/dev/null 2>&1 && command -v smartctl >/dev/null 2>&1; then
         local dev ok
@@ -131,7 +130,7 @@ area_storage() {
 }
 
 # ── network ──────────────────────────────────────────────────────────────────
-# The lab bridge (Phase 11 live mirror): hub mode, no physical port, and a
+# The lab bridge (the live mirror, r770-gns3-deploy.sh labnet): hub mode, no physical port, and a
 # veth port whose peer is one of --capture-ifs. A veth's iflink is its peer's
 # ifindex; a port is physical if it, or a lower device under it (VLAN, bond),
 # has a device link in sysfs -- bridge_physical_ports in lib/common.sh.
@@ -192,10 +191,10 @@ area_network() {
         if [ -e "$master" ] || [ -L "$master" ]; then row "capture $i master" "none" "$(basename "$(readlink "$master" 2>/dev/null || echo "$master")")" FAIL "readlink /sys/class/net/$i/master"; diag "capture $i master" "rule 8: a capture port is never bridged to the lab fabric (lab_mirror0 is fed BY br-lab through its veth peer, never a port of it) — remove $i from its bridge or bond"
         else row "capture $i master" "none" "none" PASS "readlink /sys/class/net/$i/master"; fi
         link=$(ip -o link show "$i" 2>/dev/null | head -1)
-        if printf '%s' "$link" | grep -q PROMISC; then row "capture $i promisc" "PROMISC" "PROMISC" PASS "ip -o link show $i"; else row "capture $i promisc" "PROMISC" "not promiscuous" FAIL "ip -o link show $i"; diag "capture $i promisc" "capture-prep has not run on this port (Phase 9)"; fi
+        if printf '%s' "$link" | grep -q PROMISC; then row "capture $i promisc" "PROMISC" "PROMISC" PASS "ip -o link show $i"; else row "capture $i promisc" "PROMISC" "not promiscuous" FAIL "ip -o link show $i"; diag "capture $i promisc" "not promiscuous: capture-port prep has not run on this port"; fi
         if command -v ethtool >/dev/null 2>&1; then
             offl=$(ethtool -k "$i" 2>/dev/null | grep -E '^(generic-receive-offload|large-receive-offload|tcp-segmentation-offload):' | grep -c ': on' || true)
-            if [ "$offl" -eq 0 ]; then row "capture $i offloads" "gro/lro/tso off" "off" PASS "ethtool -k $i"; else row "capture $i offloads" "gro/lro/tso off" "$offl still on" FAIL "ethtool -k $i"; diag "capture $i offloads" "offloads merge packets before capture sees them — capture-prep (Phase 9) turns them off; on lab_mirror0, r770-gns3-deploy.sh labnet does (05-lab_mirror0.link + ethtool -K)"; fi
+            if [ "$offl" -eq 0 ]; then row "capture $i offloads" "gro/lro/tso off" "off" PASS "ethtool -k $i"; else row "capture $i offloads" "gro/lro/tso off" "$offl still on" FAIL "ethtool -k $i"; diag "capture $i offloads" "offloads merge packets before capture sees them — capture-port prep turns them off; on lab_mirror0, r770-gns3-deploy.sh labnet does (05-lab_mirror0.link + ethtool -K)"; fi
         else row "capture $i offloads" "gro/lro/tso off" "ethtool not installed" SKIP "package not installed yet"; fi
     done
 }
@@ -207,7 +206,7 @@ area_virtualization() {
     AREA=virtualization
     if [ "$ALLOW_VM" != "1" ]; then row "throwaway-vm" "create, boot, destroy" "not opted in (--allow-vm --lab-bridge BR)" SKIP "self-cleaning but not read-only"; return; fi
     [ -n "$LAB_BRIDGE" ] || { row "throwaway-vm" "create, boot, destroy" "--lab-bridge not given" SKIP "bridges are never guessed"; return; }
-    { command -v virt-install >/dev/null 2>&1 && command -v virsh >/dev/null 2>&1; } || { row "throwaway-vm" "create, boot, destroy" "virt-install/virsh not installed" SKIP "Phase 7 not built"; return; }
+    { command -v virt-install >/dev/null 2>&1 && command -v virsh >/dev/null 2>&1; } || { row "throwaway-vm" "create, boot, destroy" "virt-install/virsh not installed" SKIP "needs libvirt: virt-install and virsh"; return; }
     local base; base=$(find "$(p /srv/vms/base)" -maxdepth 1 -name 'cirros-*disk.img' 2>/dev/null | head -1)
     [ -n "$base" ] || { row "throwaway-vm" "create, boot, destroy" "no cirros image under /srv/vms/base" SKIP "files stage not run"; return; }
     VM_NAME="kit-validate-$(date +%s)"; trap vm_cleanup EXIT
@@ -227,7 +226,7 @@ area_virtualization() {
 area_gns3() {
     AREA=gns3
     local st; st=$(systemctl is-active gns3 2>/dev/null || echo inactive)
-    if [ "$st" != "active" ]; then row "unit" "active" "$st" SKIP "Phase 8 not built (systemctl is-active gns3)"; return; fi
+    if [ "$st" != "active" ]; then row "unit" "active" "$st" SKIP "needs the gns3 unit: r770-gns3-deploy.sh service"; return; fi
     row "unit" "active" "$st" PASS "systemctl is-active gns3"
     local v; v=$(curl -s --max-time 5 http://127.0.0.1:3080/v3/version 2>/dev/null || true)
     if printf '%s' "$v" | grep -q '"version"'; then row "api" "/v3/version answers" "$(printf '%s' "$v" | tr -d '\n' | cut -c1-60)" PASS "curl 127.0.0.1:3080/v3/version"; else row "api" "/v3/version answers" "${v:-no answer}" FAIL "curl 127.0.0.1:3080/v3/version"; diag api "the unit is active but the API does not answer on 127.0.0.1:3080 — journalctl -u gns3 (a root-owned /etc/gns3 is the usual cause)"; return; fi
@@ -242,7 +241,7 @@ area_gns3() {
 area_wan() {
     AREA=wan
     if [ "$ALLOW_WAN" != "1" ]; then row "impairment" "+40 ms then baseline" "not opted in (--allow-wan)" SKIP "applies and clears an impairment"; return; fi
-    if command -v wan-apply >/dev/null 2>&1; then row "impairment" "+40 ms then baseline" "wan-apply present but not driven by this kit" SKIP "Phase 12 tooling lives in the config repo"; else row "impairment" "+40 ms then baseline" "wan-apply not installed" SKIP "Phase 12 not built"; fi
+    row "impairment" "+40 ms then baseline" "not automated by this suite" SKIP "impair with r770-wan.sh and measure by hand"
 }
 
 # ── capture ──────────────────────────────────────────────────────────────────
@@ -273,9 +272,9 @@ area_capture() {
 # ── backup ───────────────────────────────────────────────────────────────────
 area_backup() {
     AREA=backup
-    command -v restic >/dev/null 2>&1 || { row "restore" "one file restored and identical" "restic not installed" SKIP "Phase 15 not built"; return; }
+    command -v restic >/dev/null 2>&1 || { row "restore" "one file restored and identical" "restic not installed" SKIP "needs restic"; return; }
     local pf; pf="$(p /etc/lab/secrets/restic.pw)"
-    { [ -s "$pf" ] && [ -d "$(p /srv/backup)" ]; } || { row "restore" "one file restored and identical" "no repo password file / repo" SKIP "Phase 15 not built"; return; }
+    { [ -s "$pf" ] && [ -d "$(p /srv/backup)" ]; } || { row "restore" "one file restored and identical" "no repo password file / repo" SKIP "needs a restic repo under /srv/backup and /etc/lab/secrets/restic.pw"; return; }
     local tmp; tmp=$(mktemp -d)
     if RESTIC_PASSWORD_FILE="$pf" restic -r "$(p /srv/backup)" restore latest --target "$tmp" --include /etc/hostname >/dev/null 2>&1 && cmp -s "$tmp/etc/hostname" /etc/hostname; then
         row "restore" "/etc/hostname restored and identical" "identical" PASS "restic restore latest --include /etc/hostname"
@@ -303,7 +302,7 @@ area_airgap() {
 area_portal() {
     AREA=portal
     local ca; ca="$(p /etc/nginx/ssl/ca.crt)"
-    [ -s "$ca" ] || { row "vhosts" "three names answer with the lab CA" "no /etc/nginx/ssl/ca.crt" SKIP "Phase 13 not built"; return; }
+    [ -s "$ca" ] || { row "vhosts" "three names answer with the lab CA" "no /etc/nginx/ssl/ca.crt" SKIP "needs the lab CA: r770-portal-deploy.sh ca"; return; }
     local n hdr code loc
     for n in $SANS; do
         hdr=$(curl -s --max-time 10 --cacert "$ca" --resolve "$n:443:127.0.0.1" -o /dev/null -D - "https://$n/" 2>/dev/null || true)
@@ -328,7 +327,7 @@ write_report() {
     {
         echo "# Validation — $(hostname -s 2>/dev/null || echo host) — $(date -Is)"
         echo
-        echo "Format per the build repo's validation-runner: check · expected · observed · verdict · evidence. Areas: ${AREAS}."
+        echo "Format: check · expected · observed · verdict · evidence. Areas: ${AREAS}."
         echo "SKIPPED checks are listed, never omitted, and never counted as passed."
         for a in $AREAS; do
             echo; echo "## $a"; echo; echo "| Check | Expected | Observed | Verdict | Evidence |"; echo "|---|---|---|---|---|"

@@ -107,7 +107,7 @@ check_docker() {
 }
 
 check_dns() {
-    if ! dpkg -s dnsmasq >/dev/null 2>&1; then skip "dnsmasq: not installed (Phase 5 not built) — .lab authority and no-resolv cannot be checked"; return; fi
+    if ! dpkg -s dnsmasq >/dev/null 2>&1; then skip "dnsmasq: not installed — .lab authority and no-resolv cannot be checked"; return; fi
     local conf; conf=$(cat "$(p /etc/dnsmasq.conf)" "$(p /etc/dnsmasq.d)"/* 2>/dev/null || true)
     if printf '%s\n' "$conf" | grep -qE '^no-resolv'; then pass "dnsmasq: no-resolv set"; else fail "dnsmasq: no-resolv not set — it would forward to /etc/resolv.conf"; fi
     local up; up=$(printf '%s\n' "$conf" | grep -E '^server=' | grep -v '^server=/' || true)

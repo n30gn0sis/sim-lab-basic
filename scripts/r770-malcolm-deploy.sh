@@ -36,7 +36,7 @@
 #   --from STEP / --to STEP    restrict `full` to a slice of its steps
 #   --only STEP                sugar for --from STEP --to STEP
 #   --arkime-free-space-g N    let Arkime delete oldest raw PCAP below N GB free
-#                              (Phase 10 sets this from measured feed rates;
+#                              (set it from measured feed rates;
 #                              default: no automatic deletion)
 #   --index-pattern <id|title> which Dashboards index pattern the saved objects
 #                              attach to. Needed only when the stack carries
@@ -108,7 +108,7 @@ local_bundle() {  # after copy, the bundle lives under /srv/bundles
     if [ -d "$l" ]; then printf '%s' "$l"; else printf '%s' "$BUNDLE"; fi
 }
 
-# ── load / assert-tags (behaviour-identical to the build repo's script) ─────
+# ── load / assert-tags ─────────────────────────────────────────────────────
 cmd_assert_tags() {
     local b; b=$(bundle_dir "$BUNDLE") || exit 1
     assert_image_tags "$b/malcolm/image-list.txt" || die "image(s) missing after load — the tarball is incomplete or the load failed"
@@ -231,7 +231,7 @@ heap_sizes() {  # prints "<os-g> <ls-m>" from the host's memory, unless overridd
     local total os ls
     total=$(free -g | awk '/^Mem:/{print $2}')
     [ -n "$total" ] || total=8
-    os=$(( total * 3 / 16 ))                  # buildout §8: 24 GB on 128 GB
+    os=$(( total * 3 / 16 ))                  # 3/16 of RAM: 24 GB on 128 GB
     [ "$os" -lt 2 ]  && os=2
     [ "$os" -gt 31 ] && os=31                 # never above 31g: compressed oops
     ls=$(( os * 1024 / 6 ))
@@ -402,7 +402,7 @@ own_stack() {  # give the stack to its recorded owner (after every installer run
     run chown -R "$uid:$gid" "$(stack)" || die "could not give $(stack) to $user"
     [ "$DRY" = "1" ] || pass "$(stack) owned by $user ($uid:$gid, from config/process.env) — Malcolm's control scripts run as this user"
     # Malcolm writes its indexes and PCAP as that user too, and those live on
-    # root-owned mount points (Phase 3). The directories are the ones the
+    # root-owned mount points. The directories are the ones the
     # installer's exported config names -- read back, never restated.
     local x k d dirs=""
     x="$(home)/malcolm-config.exported.json"
@@ -929,7 +929,7 @@ while [ $# -gt 0 ]; do
         -h|--help)             usage ;;
         *)
             if common_flag "$1"; then :
-            elif [ -z "$BUNDLE" ] && [ -d "$1" ]; then BUNDLE="$1"   # bare <bundle-dir>, as the build repo's script took it
+            elif [ -z "$BUNDLE" ] && [ -d "$1" ]; then BUNDLE="$1"   # bare <bundle-dir>, kept for older call sites
             else die "unknown option: $1 (try --help)"
             fi ;;
     esac

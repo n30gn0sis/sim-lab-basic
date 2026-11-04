@@ -23,8 +23,7 @@ STAGING HOST (internet)                     R770 (air-gapped, Ubuntu 24.04)
 ```
 
 `staging/` never runs on the R770, and `scripts/` never calls `staging/`
-(`tests/no-legacy-manifest.bats`). Byte-identity of the four carried files is
-guarded by `staging/PROVENANCE.txt` + `tests/staging.bats`.
+(`tests/no-legacy-manifest.bats`).
 
 ## Three layers on the R770 side
 
@@ -87,8 +86,8 @@ builds it — `r770-docs-deploy.sh build` does.
 `0` clean · `2` done with warnings to disposition · `1` refused or failed.
 Check lines are `PASS` / `WARN` / `FAIL` / `SKIP`; `footer()` turns the tally
 into the exit. `kit_init()` tees every transcript to
-`r770-evidence/<script>-<host>-<ts>.log` — gitignored, carried back to the
-build repo's `state/inventory/` by hand.
+`r770-evidence/<script>-<host>-<ts>.log` — gitignored, archived off the box
+next to its bundle by hand.
 
 A step that refused names the `--from <step>` to resume `full` with. Every
 step is idempotent: copies stamped, loads skip present tags, secrets
@@ -98,5 +97,4 @@ generated once, the rebind recognises itself, the CA and certificate reused.
 
 Version pins → `staging/r770-offline-fetch.sh` · config deltas and tokens →
 `config/README.md` · test suites → `tests/README.md` · procedure →
-`docs/deployment-runbook.md` · phase status → build repo's
-`state/BUILD-STATE.md`.
+`docs/deployment-runbook.md`.

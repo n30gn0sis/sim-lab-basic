@@ -9,7 +9,7 @@ the kit's `scripts/` calls them (`tests/no-legacy-manifest.bats`).
 | `r770-staging-preflight.sh` | may THIS host build a bundle? (Ubuntu 24.04 + Docker CE, or RHEL 8 + rootful podman; never LXC; room; egress) |
 | `r770-offline-fetch.sh` | the download — **the one owner of every version pin** (its `# ── pins:` block); resumable, proxy-aware, seeds from a previous bundle |
 | `r770-build-bundle.sh` | one command, one verified bundle: preflight → fetch → pause for the manual items → manifest → `verify --strict` |
-| `r770-bundle.sh` | manifest generation and integrity verification; the fetch copies it **into the bundle root**, and that copy is what the R770 side runs |
+| `r770-bundle.sh` | manifest generation and integrity verification; the fetch copies it **into the bundle root**, and that copy is what the R770 side runs (`<bundle>/r770-bundle.sh verify`) |
 
 ## Use
 

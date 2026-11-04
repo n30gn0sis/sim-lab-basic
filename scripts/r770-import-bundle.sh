@@ -63,7 +63,7 @@ cmd_preflight() {
         if [ "$mp" = "$lv" ]; then
             pass "$lv is its own mount point"
         else
-            fail "$lv is NOT a mount point (it is on '${mp:-nothing}') — imports would land on the wrong filesystem; mount the LV first (Phase 3)"
+            fail "$lv is NOT a mount point (it is on '${mp:-nothing}') — imports would land on the wrong filesystem; mount the LV first"
         fi
     done
 
@@ -441,7 +441,7 @@ cmd_files() {
                 [ -e "$img" ] && { note "$(basename "$img"): $(qemu-img info "$img" 2>&1 | grep -E '^(file format|virtual size)' | tr '\n' ' ')"; }
             done
         else
-            note "qemu-img not available yet — image formats will be confirmed after Phase 7"
+            note "qemu-img not installed — image formats are not confirmed"
         fi
     fi
 

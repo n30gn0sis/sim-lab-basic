@@ -12,7 +12,7 @@ setup() { cd "$BATS_TEST_DIRNAME/.."; }
 }
 
 @test "the verifier is referenced by name from every operator-facing route" {
-    for f in README.md CLAUDE.md docs/deployment-runbook.md docs/kit-sync.md; do
+    for f in README.md CLAUDE.md docs/deployment-runbook.md staging/README.md; do
         grep -q 'r770-bundle\.sh verify' "$f" || { echo "$f does not name the verifier"; false; }
     done
 }

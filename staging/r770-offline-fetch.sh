@@ -166,7 +166,7 @@ BUNDLE_TOOL="$SCRIPT_DIR/r770-bundle.sh"
 # The "kit" stage ships sim-lab-basic (the R770 installer) as bundle-*/kit/.
 # It has NO default source: which kit checkout ships is a
 # release decision, so a real run refuses rather than guess (2026-10-03).
-# --list/--dry-run touch nothing, so there it is only a note.
+# --list/--dry-run download nothing, so there it is only a note.
 KIT_MODE=""
 kit_validate_source() {
     if [ -n "${KIT_ARCHIVE:-}" ]; then
@@ -1152,4 +1152,4 @@ echo "regenerate the manifest after adding manual files:"
 echo "  $BUNDLE_TOOL manifest $B"
 echo "then gate it before the media leaves staging:"
 echo "  $BUNDLE_TOOL verify $B --strict"
-echo "Then transfer per the supply plan (ext4 drive; verify MANIFEST.sha256 on the R770)."
+echo "Then transfer per kit/docs/deployment-runbook.md (ext4 drive; verify MANIFEST.sha256 on the R770)."

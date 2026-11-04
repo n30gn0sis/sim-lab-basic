@@ -1,6 +1,6 @@
 # R770 Deployment Runbook — from verified bundle to running lab
 
-**Companion to:** the build repo's `simlab-build/docs/plans/r770-install-runbook.md` (the hand-typed procedure this kit automates) · `docs/rollback.md` · `docs/validation.md`
+**Companion to:** `docs/rollback.md` · `docs/validation.md`
 **Date:** 2026-09-21
 **Runs on:** the air-gapped R770, as root, from a copy of this kit sitting beside the bundle on the transfer media.
 
@@ -8,8 +8,9 @@
 the step is wrong — stop and fix the bundle, not the box.
 
 **Owned facts are not restated here.** What the bundle carries is in its own
-`BUNDLE_NOTES.md`; the hardware of record and the phase status are in the build
-repo's `state/BUILD-STATE.md`. This runbook names no version and no measurement.
+`BUNDLE_NOTES.md`; the hardware of record arrives as arguments
+(`--expect-threads`, `--capture-ifs`, …), and what a box is ready for is
+discovered by each step. This runbook names no version and no measurement.
 
 Malcolm, GNS3 and the offline analyst wiki are **three independent
 pipelines**, each its own `... full` entry point in its own script — there
@@ -27,25 +28,25 @@ pipeline published at `docs.lab`.
 
 The install is **not** a single sitting.
 
-| Steps | Build-repo phase | Blocked by |
-|---|---|---|
-| Bundle-in prep: `preflight` `gate` `copy` `apt` `phone-home` `docker` `files` (shared by all three pipelines) | 4, 6 | — ready (needs the Phase 3 volumes mounted) |
-| GNS3 pipeline: `load` `venv` `secrets` `config` `service` `labnet` | 8 | needs Phase 8 built |
-| Malcolm pipeline: `load` `unpack` `configure` `secrets` `auth` `rebind` `start` | 10 | needs Phase 10 built, capture-port prep (Phase 9) |
-| Docs pipeline: `load` `build` | 13 | needs Phase 13 built (the docs site is part of it) |
-| Front door: `ca` `cert` `htpasswd` `nginx` | 13 | needs Phase 13 built, and Malcolm's `auth` step already run |
-| validate | 16 | runs at any point; SKIPs what is not built |
+| Steps | Needs on the box |
+|---|---|
+| Bundle-in prep: `preflight` `gate` `copy` `apt` `phone-home` `docker` `files` (shared by all three pipelines) | the storage layout's volumes mounted — `preflight` refuses otherwise |
+| GNS3 pipeline: `load` `venv` `secrets` `config` `service` `labnet` | bundle-in prep done; `python3-venv`, `python3-pip-whl` and `ubridge` installed from the local repo |
+| Malcolm pipeline: `load` `unpack` `configure` `secrets` `auth` `rebind` `start` | bundle-in prep done; `python3-ruamel.yaml` and `python3-dotenv` from the local repo; capture ports prepared (no address, promiscuous, offloads off) before `configure --capture-ifs` |
+| Docs pipeline: `load` `build` | bundle-in prep done |
+| Front door: `ca` `cert` `htpasswd` `nginx` | `easy-rsa` and `nginx` from the local repo, and Malcolm's `auth` step already run |
+| validate | runs at any point; SKIPs what is not set up, naming it |
 
 None of these steps touch a network interface, an IP address, or SSH — GNS3
 and Malcolm bind to `127.0.0.1` only, the docs pipeline's build runs with
 `--network none`, and the front door's nginx answers on `0.0.0.0:443` (from
 the moment the package installs, with its stock default site until the
 portal's `nginx` step removes it). Proving iDRAC as a recovery path is a
-prerequisite for the build repo's **own** management-networking work, not for
+prerequisite for management-networking work outside this kit, not for
 anything these steps do — it does not gate the GNS3, Malcolm, docs or
-front-door steps here. What still gates them is whether their own build-repo
-phase (8, 9, 10, 13) is built; check `state/BUILD-STATE.md` in the build repo
-before assuming one is ready. The shared bundle-prep steps can run now
+front-door steps here. What gates them is what the box has: each step checks
+its own prerequisites and refuses by name when one is missing (the table
+above). The shared bundle-prep steps can run now
 regardless:
 they are the long ones, and they prove the bundle before anything else
 begins. Run any pipeline with `--to files` to stop there.
@@ -183,9 +184,9 @@ proxy. There is no registry to reach.
 steps need — `python3-venv` and `python3-pip-whl` (GNS3 `venv`),
 `python3-ruamel.yaml` and `python3-dotenv` (Malcolm `unpack`/`configure`),
 `ubridge` (GNS3 `service`), `easy-rsa` and `nginx` (front door) — are
-installed from that repo by the build repo's base-OS phase, and each step
-refuses by name when its package is absent. The 2026-09-26 staging rehearsal
-installed them by hand from `/srv/repo/apt` to stand in for that phase.
+installed by hand from that repo (`apt-get install` against the local source,
+the only one there is), and each step
+refuses by name when its package is absent.
 
 ### Step M7 — files
 
@@ -195,7 +196,7 @@ sudo ./scripts/r770-import-bundle.sh files --bundle /srv/bundles/bundle-YYYYMMDD
 
 | From the bundle | To | Note |
 |---|---|---|
-| `images/` | `/srv/vms/base` | `qemu-img info` once Phase 7 tools exist |
+| `images/` | `/srv/vms/base` | `qemu-img info` when `qemu-img` is installed |
 | `gns3/definitions/*.gns3a` | `/srv/gns3/appliances` | definitions are free even where images are licensed |
 | `gns3/appliances/` | `/srv/gns3/images` (+ `checksums/`) | `README.txt` skipped; a definition with no image WARNs — it would appear in the GUI and fail at boot |
 | `enrichment/` | `/opt/enrichment` (+ `rules/`) | staged only: Suricata is disabled by decision, GeoIP descoped |
@@ -205,9 +206,9 @@ The GNS3 wheelhouse and the Malcolm/GNS3 image tarballs stay in the bundle;
 each pipeline's own `load` step reads its list/payload pair straight off the
 bundle root — `r770-import-bundle.sh` does no generic image loading.
 
-**Stop here (`--to files`) until the GNS3, Malcolm and front-door steps' own
-build-repo phases (8, 9, 10, 13) are built — none of them need iDRAC or
-Phase 5 proven first.**
+**Stop here (`--to files`) until the GNS3, Malcolm and front-door steps'
+prerequisites are on the box (the table at the top) — none of them need iDRAC
+proven first.**
 
 ### Step M8 — load
 
@@ -241,8 +242,8 @@ surprise. The template pins PCAP to `/data/pcap/raw` and indexes to
 `/data/index` (left at defaults, both land on the Docker volume and fill
 `/var/lib/docker`), sizes the JVM heaps from this host, turns Suricata and the
 Zeek feed pulls off. `--arkime-free-space-g N` turns on oldest-first deletion
-of raw PCAP below N GB free; Phase 10 sets that from measured feed rates, so
-the default is off. `--capture-ifs "<if ...>"` turns on live Arkime and Zeek
+of raw PCAP below N GB free; set it from measured feed rates; the
+default is off. `--capture-ifs "<if ...>"` turns on live Arkime and Zeek
 capture on those interfaces (each must exist, carry no address, and be a
 shell identifier — Malcolm's `pcap-capture` exports each name as a variable,
 so `lab-mirror0` would crash it), together with Zeek's `capture_loss.log`
@@ -528,7 +529,7 @@ is a FAIL.
 
 ## IPsec & simulated-WAN scenarios (built, staging rehearsal pending)
 
-The build repo's IPsec & WAN scenario spec is filed in the kit as
+The IPsec & WAN scenario spec is filed as
 `docs/superpowers/specs/2026-09-24-ipsec-scenarios-spec.md`; how the kit as
 built carries it out is `docs/superpowers/specs/2026-10-07-ipsec-wan-scenarios-kit-design.md`,
 and the work is sequenced in `docs/superpowers/plans/2026-10-07-ipsec-wan-scenarios.md`.
@@ -540,7 +541,8 @@ Malcolm, so this section is rewritten "as measured" after that rehearsal.
 
 **What changes against the pack as it stands.** The spec assumes a
 two-bridge fabric (`br-lab-tNN` outer, `br-lab-iNN` inner) and host tools
-(`lab-transit.sh`, `wan-apply`) that live in the build repo's unbuilt phases.
+of those names (`lab-transit.sh`, a `wan-apply` binary) that the kit does not
+have; the kit's `wan-apply` event action drives `scripts/r770-wan.sh` instead.
 The kit keeps its one mirrored hub: the **outer** view is a gateway's uplink
 on `br-lab` through two kit TAPs, as every pack scenario already does; the
 **inner** view is the host's `tcpdump` run *inside the gateway container's
@@ -780,11 +782,9 @@ reused. `--force` redoes a stamped or generated step.
 
 ## Record the cycle
 
-- [ ] Copy `r770-evidence/` back to the build repo's `state/inventory/` (the transcripts and the validation report are the evidence)
-- [ ] Append the cycle row in the build repo's `state/inventory/bundles.md`: verifier exit code and `RESULT:` line, WARN dispositions, courier, whether it imported
-- [ ] Update the phase rows in the build repo's `state/BUILD-STATE.md`
+- [ ] Copy `r770-evidence/` off the box and archive it next to the bundle it ran against (the transcripts and the validation report are the evidence)
+- [ ] Record the cycle with it: verifier exit code and `RESULT:` line, WARN dispositions, courier, whether it imported
 - [ ] Keep the previous bundle under `/srv/bundles` until this one has validated end to end
-- [ ] Commit, in the build repo
 
 ## If it goes wrong
 
@@ -801,7 +801,7 @@ reused. `--force` redoes a stamped or generated step.
 | `nginx -t` rejects | Nothing was reloaded; the previous config is live. Fix the vhost, rerun |
 | `htpasswd` refuses, no source file | Malcolm's `auth` step has not run yet — run it, then rerun `htpasswd` |
 | a vhost probes 502 | Its backend is down — Malcolm or GNS3 |
-| SSH lost during a networking step | iDRAC is the recovery path — which is why Phase 5 is gated on proving it first (build repo) |
+| SSH lost during a networking step | iDRAC is the recovery path — prove it before any networking change |
 
 One change at a time: reproduce, read the transcript, one hypothesis, one
 controlled change, `--from <step>`, then keep or revert.

@@ -58,6 +58,7 @@ software reaches the box through the bundle and nowhere else.
 | `python3-ruamel.yaml`, `python3-dotenv` | `malcolm-deploy unpack` / `configure` (Malcolm's installer) |
 | `easy-rsa` | `portal-deploy ca` / `cert` |
 | `nginx` | `portal-deploy nginx` |
+| `ubridge` | `gns3-deploy service` (without it no GNS3 project opens) |
 
 ## Runtime the kit itself assumes
 
@@ -85,10 +86,3 @@ The three `.lab` names — `malcolm.lab`, `gns3.lab`, `docs.lab` — are a
 decision of record, literal in `config/nginx/`, and are exactly the SANs on
 the one certificate (`portal-deploy --print-sans`, asserted by
 `tests/portal-deploy.bats`).
-
-## Cross-repo
-
-The build repo (`simlab-build`) owns the design, the hardware of record, the
-phase tracker, and the four files under `staging/`. `docs/kit-sync.md` has the
-sync checklist; `docs/wiki/` is carried verbatim and is changed there, never
-here.

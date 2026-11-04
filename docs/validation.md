@@ -1,9 +1,9 @@
 # Validation — proving capabilities
 
-**Companion to:** the build repo's success criteria (`PRD.md` §10) and `.claude/agents/validation-runner.md` there · `docs/deployment-runbook.md`
+**Companion to:** `docs/deployment-runbook.md`
 **Date:** 2026-09-14
 
-`scripts/r770-validate.sh` is the R770 side of the success criteria: a
+`scripts/r770-validate.sh` is the R770 side of the lab's capability checks: a
 read-only or self-cleaning suite that writes one row per check —
 **check · expected · observed · verdict · evidence** — to
 `r770-evidence/validation-<host>-<ts>.md`, followed by the SKIPPED list and a
@@ -16,17 +16,17 @@ FAIL. SKIPPED checks never change the exit code, and are never omitted.
 
 | Area | Checks | Needs | Opt-in | Touches the host? |
 |---|---|---|---|---|
-| `host` | sshd active, or `ssh.socket` listening (Ubuntu 24.04 starts sshd on the first connection) · chrony leap status Normal · the three `.lab` names resolve · APT sources are `file:` only | chrony and dnsmasq installed (else SKIP: Phase 5) | — | no |
+| `host` | sshd active, or `ssh.socket` listening (Ubuntu 24.04 starts sshd on the first connection) · chrony leap status Normal · the three `.lab` names resolve · APT sources are `file:` only | chrony and dnsmasq installed (else SKIP, naming the package) | — | no |
 | `cpu-ram` | `kvm-ok` · thread count · memory · EDAC error counters zero | `--expect-threads N --expect-ram-gb N` (else SKIP: expectations are arguments, never hard-coded) | — | no |
 | `storage` | every layout volume is its own mount point, with its size · SMART health per NVMe · PERC virtual disk optimal | `nvme-cli`, `smartmontools`; `perccli2` from the bundle's `dell/` (else SKIP) | — | no |
 | `network` | management interface up with an address · each capture port: **no address**, no master (never a port of a bridge or bond), PROMISC, gro/lro/tso off · with --lab-bridge: bridge in hub mode (ageing_time 0), no multicast snooping, no physical port (directly or through a VLAN or bond), a --capture-ifs interface fed by a bridge port, and that mirror end address-less (link-local included) | `--mgmt-if IF --capture-ifs "a b c"` (else SKIP: interfaces are never guessed) ; --lab-bridge BR (else SKIP: bridges are never guessed) | — | no |
-| `virtualization` | a throwaway cirros guest: overlay, define, boot to `running`, destroy, undefine, overlay removed | libvirt (Phase 7), a cirros image under `/srv/vms/base` | `--allow-vm --lab-bridge BR` | self-cleaning (creates and destroys a guest) |
-| `gns3` | unit active · `/v3/version` answers · admin login issues a token | Phase 8, the admin secret | — | no |
-| `wan` | apply a 40 ms profile, measure, clear | Phase 12 tooling, which lives in the build repo's config repo, not this kit | `--allow-wan` | SKIPs with that reason today |
+| `virtualization` | a throwaway cirros guest: overlay, define, boot to `running`, destroy, undefine, overlay removed | libvirt (`virt-install`, `virsh`), a cirros image under `/srv/vms/base` | `--allow-vm --lab-bridge BR` | self-cleaning (creates and destroys a guest) |
+| `gns3` | unit active · `/v3/version` answers · admin login issues a token | the gns3 unit (`r770-gns3-deploy.sh service`), the admin secret | — | no |
+| `wan` | apply a 40 ms profile, measure, clear | not automated by this suite: impair with `scripts/r770-wan.sh` and measure by hand | `--allow-wan` | SKIPs with that reason |
 | `capture` | Zeek `capture_loss` below 0.5 % · optional replay: packets sent by `tcpreplay` into a feed | Malcolm running with live capture on (`configure --capture-ifs`, which turns Zeek's stats on — the check SKIPs naming `ZEEK_DISABLE_STATS` otherwise); a reference PCAP for the replay | `--feed IF --pcap FILE` | injects traffic into a capture feed |
-| `backup` | restore one file from the latest restic snapshot and compare | Phase 15, `/etc/lab/secrets/restic.pw` | — | writes to a temp dir only |
+| `backup` | restore one file from the latest restic snapshot and compare | restic, a repo under `/srv/backup`, `/etc/lab/secrets/restic.pw` | — | writes to a temp dir only |
 | `airgap` | the posture report from `scripts/r770-airgap-check.sh`, folded in row by row | — | `--mgmt-cidr` judges resolvers | no |
-| `portal` | each of the 3 `.lab` names answers over TLS with the lab CA · no redirect escapes to a loopback port · only nginx owns `0.0.0.0:443` | Phase 13 | — | no |
+| `portal` | each of the 3 `.lab` names answers over TLS with the lab CA · no redirect escapes to a loopback port · only nginx owns `0.0.0.0:443` | the lab CA (`r770-portal-deploy.sh ca`) | — | no |
 
 `--allow-vm --lab-bridge br-lab` boots the throwaway guest onto the mirrored
 hub, so its DHCP and ARP chatter appears in Malcolm (Arkime sessions, Zeek
@@ -38,17 +38,17 @@ for the network area's lab-bridge rows too, so run the two areas separately.
 ## What SKIPPED means
 
 A check that cannot run reports SKIP with the reason — a tool not installed, a
-phase not built, an opt-in flag not given, an interface not named. It is
+prerequisite not set up, an opt-in flag not given, an interface not named. It is
 listed in the report under its area and again under "SKIPPED". It is never
 counted as a pass and never affects the exit code. A report with many SKIPs is
-honest about an unfinished build; a report with none on a half-built box would
-be lying.
+honest about a box that is not fully set up yet; a report with none on a box
+that is not fully set up would be lying.
 
 ## What a FAIL means
 
 A FAIL drives exit 1 and carries a one-line diagnosis with the single most
 likely next step. The suite never attempts a fix: fixing happens one change at
-a time under the build repo's phase protocol, and the suite is rerun.
+a time (reproduce, one hypothesis, one change), and the suite is rerun.
 
 Two verdicts deserve a note:
 
@@ -60,14 +60,14 @@ Two verdicts deserve a note:
 - **A capture port with an address is a FAIL** whatever else is true. Capture
   ports never get an IP and never join the lab fabric.
 
-## Mapping to the success criteria
+## Mapping areas to capabilities
 
 Host · CPU/RAM · Storage · Network · Virtualization · GNS3 · WAN · Capture ·
 Backup map one-to-one onto the areas above; `airgap` and `portal`
 add the two properties the air gap and the portal integration introduced. The
 GNS3 "one QEMU node + one Docker node pass traffic" check and the WAN
 measurement are not automated by this kit and are SKIPPED with that reason;
-run them by hand and record the result in the build repo's `state/inventory/`.
+run them by hand and record the result with the cycle's evidence (`docs/deployment-runbook.md`, Record the cycle).
 
 ## Reading a report
 
