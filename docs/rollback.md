@@ -33,6 +33,6 @@ during an import.
 ## What the kit never touches
 
 RAID, partitions, filesystems, the bootloader, firmware, SSH configuration,
-Netplan, the default route, the firewall policy. Those are build-repo phases
-with their own gates; if a kit script appears to need one of them, the script
+Netplan, the default route, the firewall policy. Those are outside this kit,
+with their own procedures; if a kit script appears to need one of them, the script
 is wrong.

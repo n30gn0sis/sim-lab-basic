@@ -12,7 +12,7 @@ complete list.
 |---|---|---|---|
 | `/etc/lab/secrets/malcolm-admin.pw` | `r770-malcolm-deploy.sh secrets` | `auth` (hashed with `openssl passwd -1` and bcrypt via the bundled nginx-proxy image; only the hashes reach `auth_setup`) | the analyst login for Malcolm — and, through `r770-portal-deploy.sh htpasswd`, for the portal, docs |
 | `/etc/lab/secrets/gns3-admin.pw` | `r770-gns3-deploy.sh secrets` | `config` (rendered into `/etc/gns3/gns3_server.conf`, mode 0600, owner `gns3`) · `r770-validate.sh --area gns3` (login test) | the GNS3 `admin` password |
-| `/etc/lab/secrets/restic.pw` | Phase 15 (not this kit) | `r770-validate.sh --area backup` | the restic repository password |
+| `/etc/lab/secrets/restic.pw` | the backup setup (not this kit) | `r770-validate.sh --area backup` | the restic repository password |
 
 Derived material that is also secret and also never in git:
 

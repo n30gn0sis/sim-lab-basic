@@ -41,7 +41,7 @@ exit 0'
 }
 
 malcolm() { kit_run "$SCRIPT" "$@"; }
-stub_docker_reporting() {  # the build repo's helper: docker image ls prints the given tags
+stub_docker_reporting() {  # docker image ls prints the given tags
     printf '%s\n' "$@" > "$BATS_TEST_TMPDIR/present.txt"
 }
 
@@ -63,7 +63,7 @@ STUB
     : > "$IMPORT_LOG"
 }
 
-# ── load / assert-tags — ported from the build repo's suite ─────────────────
+# ── load / assert-tags ──────────────────────────────────────────────────────
 
 @test "assert-tags passes when every listed tag is present" {
     stub_docker_reporting ghcr.io/idaholab/malcolm/arkime:0.0.0-fixture ghcr.io/idaholab/malcolm/nginx-proxy:0.0.0-fixture
@@ -105,7 +105,7 @@ STUB
     [[ "$output" != *"all images present"* ]]
 }
 
-@test "a bare bundle path still works, as the build repo's script took it" {
+@test "a bare bundle path still works, as older call sites pass it" {
     stub_docker_reporting ghcr.io/idaholab/malcolm/arkime:0.0.0-fixture ghcr.io/idaholab/malcolm/nginx-proxy:0.0.0-fixture
     run malcolm assert-tags "$BUNDLE"
     [ "$status" -eq 0 ]

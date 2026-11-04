@@ -55,7 +55,7 @@ install) · `gns3 service` (the unit) · `gns3 labnet` (the lab bridge) ·
 ## Config each pipeline installs
 
 Config files are templates; `config/README.md` owns the token table and the
-deltas from the build repo. Renderer → destination:
+deltas from upstream defaults. Renderer → destination:
 
 | Config | Installed by |
 |---|---|

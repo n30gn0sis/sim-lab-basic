@@ -1,6 +1,6 @@
 # Evidence written on the R770 by every kit script (transcripts, validation
-# reports). It travels back to the build repo's state/inventory/ by hand; a
-# copy here would be a second evidence tree nothing keeps in step.
+# reports). It is archived off the box next to its bundle by hand; a copy here
+# would be a second evidence tree nothing keeps in step.
 r770-evidence/
 
 # Anything a `secrets` subcommand could ever write, should a KIT_ROOT ever be

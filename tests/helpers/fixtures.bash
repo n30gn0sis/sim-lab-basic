@@ -69,8 +69,8 @@ LIST
 NOTES
     printf '%064d  ./BUNDLE_NOTES.md\n' 0 > "$d/MANIFEST.sha256"
 
-    # The verifier that ships inside a real bundle is scripts/r770-bundle.sh
-    # from the build repo. Here it is a stub: it records that it was called,
+    # The verifier that ships inside a real bundle is staging/r770-bundle.sh,
+    # copied in by the fetch. Here it is a stub: it records that it was called,
     # with what, and answers with the contract's RESULT line and exit code.
     cat > "$d/r770-bundle.sh" <<'STUB'
 #!/usr/bin/env bash

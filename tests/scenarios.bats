@@ -42,7 +42,7 @@ PY
 @test "every scenario has its files and a complete scenario.conf, and ranges are unique" { lint layout; }
 @test "every project parses as JSON and carries the kit's name, id and marker tokens" { lint json; }
 @test "every project has exactly two TAP-type Cloud ports and the nodes the scenario names" { lint topology; }
-@test "every image is bundled or upstream-pending, and nodes use only the scenario's image tokens" { lint images; }
+@test "every image is bundled, and nodes use only the scenario's image tokens" { lint images; }
 @test "every address a scenario names lies in its own range" { lint addresses; }
 @test "every expect.txt line is proto|port|src|dst inside the scenario's range" { lint expect; }
 @test "every events/*.txt line is t|action|arg, a known action, t non-decreasing, profiles that exist" { lint events; }
@@ -208,7 +208,7 @@ PY
 }
 
 @test "every \$VAR entry in GNS3_NODE_IMAGES resolves through its own pin line (strongswan, not frr twice)" {
-    run python3 -c 'import sys; sys.path.insert(0, "tests/helpers"); import lint_scenarios as l; print(" ".join(sorted(l.bundled_images())))'
+    run python3 -B -c 'import sys; sys.path.insert(0, "tests/helpers"); import lint_scenarios as l; print(" ".join(sorted(l.bundled_images())))'
     echo "$output"
     [ "$status" -eq 0 ]
     [[ " $output " == *" strongswan "* ]]
