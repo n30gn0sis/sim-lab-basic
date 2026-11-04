@@ -58,6 +58,7 @@ software reaches the box through the bundle and nowhere else.
 | `python3-ruamel.yaml`, `python3-dotenv` | `malcolm-deploy unpack` / `configure` (Malcolm's installer) |
 | `easy-rsa` | `portal-deploy ca` / `cert` |
 | `nginx` | `portal-deploy nginx` |
+| `ubridge` | `gns3-deploy service` (without it no GNS3 project opens) |
 
 ## Runtime the kit itself assumes
 

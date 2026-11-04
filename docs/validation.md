@@ -38,10 +38,10 @@ for the network area's lab-bridge rows too, so run the two areas separately.
 ## What SKIPPED means
 
 A check that cannot run reports SKIP with the reason — a tool not installed, a
-phase not built, an opt-in flag not given, an interface not named. It is
+prerequisite not set up, an opt-in flag not given, an interface not named. It is
 listed in the report under its area and again under "SKIPPED". It is never
 counted as a pass and never affects the exit code. A report with many SKIPs is
-honest about an unfinished build; a report with none on a half-built box would
+honest about a box that is not fully set up yet; a report with none on a half-built box would
 be lying.
 
 ## What a FAIL means

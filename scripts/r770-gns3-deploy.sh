@@ -134,7 +134,7 @@ cmd_config() {
         if getent group "$g" >/dev/null 2>&1; then
             run usermod -aG "$g" "$GNS3_USER" && note "$GNS3_USER in group $g"
         else
-            warn "group $g does not exist yet — add $GNS3_USER to it once that phase is built (usermod -aG $g $GNS3_USER)"
+            warn "group $g does not exist yet — add $GNS3_USER to it once the package that creates it is installed (usermod -aG $g $GNS3_USER)"
         fi
     done
     run mkdir -p "$etc"
