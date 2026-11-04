@@ -125,7 +125,7 @@ need what on the box first — each step checks its own prerequisites and refuse
 | `scripts/lib/common.sh` | The one set of seams (`KIT_ROOT`, `KIT_DRY_RUN`, `KIT_YES`, `KIT_NON_INTERACTIVE`, `KIT_EVIDENCE_DIR`), gates, rendering, image-list handling, `run_step`/`step_index` (what `full` uses to slice its step sequence), the call into the bundle's verifier |
 | `scripts/lib/expect.sh` | One scenario `expect.txt` row as the Arkime expression and the Dashboards (KQL) query that find it — the one translator behind the generated scenario searches and views and `r770-scenario.sh check`; refuses a protocol it does not know |
 | `scripts/lib/malcolm-api.sh` | Malcolm's Dashboards and Arkime APIs through 127.0.0.1:8443 only, the credential through a 0600 netrc and never argv — sourced by `r770-malcolm-deploy.sh` and `r770-scenario.sh` |
-| `config/` | nginx vhosts, GNS3 template + unit, Malcolm config template + saved objects, mkdocs — how each differs from its proven copy are in `config/README.md` |
+| `config/` | nginx vhosts, GNS3 template + unit, Malcolm config template + saved objects, mkdocs — `config/README.md` says how each differs from its proven copy |
 | `docs/deployment-runbook.md` | The R770-side procedure: the Malcolm, GNS3 and docs pipelines, and the optional front door, with the gate you will see and the failure each step prevents |
 | `docs/rollback.md` | Per step: what changed, where the backup is, the exact undo, what is not reversible |
 | `docs/validation.md` | Areas, opt-in flags, what SKIPPED means, how a FAIL is handled |
