@@ -41,8 +41,8 @@ A check that cannot run reports SKIP with the reason — a tool not installed, a
 prerequisite not set up, an opt-in flag not given, an interface not named. It is
 listed in the report under its area and again under "SKIPPED". It is never
 counted as a pass and never affects the exit code. A report with many SKIPs is
-honest about a box that is not fully set up yet; a report with none on a half-built box would
-be lying.
+honest about a box that is not fully set up yet; a report with none on a box
+that is not fully set up would be lying.
 
 ## What a FAIL means
 
