@@ -89,12 +89,12 @@ GNS3_NODE_IMAGES=(
 # .gns3a appliance definitions to grab from the GNS3 registry (free even when
 # the images are licensed). Missing names WARN, never fail.
 GNS3A_DEFS=(
-    vyos mikrotik-chr opnsense frr alpine-linux tinycore-linux openwrt
+    vyos mikrotik-chr opnsense frr alpine-linux-virt tinycore-linux openwrt
     cisco-iosv cisco-iosvl2 cisco-asav fortigate pan-vm-fw
 )
 # Free definitions whose image is taken from the definition itself: the newest
 # version it lists, from its own download URL, checked against its own md5 (so
-# no version is restated here). vyos, mikrotik-chr, opnsense and alpine-linux
+# no version is restated here). vyos, mikrotik-chr, opnsense and alpine-linux-virt
 # have dedicated fetches above with stronger verification; the licensed five
 # stay manual (gns3/appliances/README.txt).
 GNS3A_FREE_IMAGES=(frr tinycore-linux openwrt)
