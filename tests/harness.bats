@@ -99,3 +99,85 @@ vm() { kit_run "$SCRIPT" "$@"; }
     run grep -nE 'qm (destroy|delsnapshot|unlink)|pct destroy|lvremove|zfs destroy' "$SCRIPT"
     [ "$status" -ne 0 ]
 }
+
+@test "a snapshot exists only when its NAME matches: description words and the current pseudo-entry are not snapshots" {
+    run vm snapshot --pve pve --vmid 9770 --snapshot base
+    echo "$output"; [ "$status" -eq 0 ]
+    grep -q 'pve qm snapshot 9770 base$' "$STUB_LOG"
+    run vm rollback --pve pve --vmid 9770 --snapshot base --yes
+    [ "$status" -eq 1 ]; [[ "$output" == *"no snapshot 'base'"* ]]
+    run vm rollback --pve pve --vmid 9770 --snapshot current --yes
+    [ "$status" -eq 1 ]; [[ "$output" == *"no snapshot 'current'"* ]]
+    ! grep -q ' qm rollback ' "$STUB_LOG"
+}
+
+AG=(--pve pve --vmid 9770 --wan-net net0 --mgmt-host guest --probe 192.0.2.1:80)
+
+@test "airgap needs the NIC, the guest and the probe, and refuses a probe that is not address:port" {
+    run vm airgap on --pve pve --vmid 9770 --mgmt-host guest --probe 192.0.2.1:80
+    [ "$status" -eq 1 ]; [[ "$output" == *"needs --wan-net"* ]]
+    run vm airgap on --pve pve --vmid 9770 --wan-net net0 --probe 192.0.2.1:80
+    [ "$status" -eq 1 ]; [[ "$output" == *"needs --mgmt-host"* ]]
+    run vm airgap on --pve pve --vmid 9770 --wan-net net0 --mgmt-host guest
+    [ "$status" -eq 1 ]; [[ "$output" == *"needs --probe"* ]]
+    run vm airgap on --pve pve --vmid 9770 --wan-net net0 --mgmt-host guest --probe 'example.com:80'
+    [ "$status" -eq 1 ]; [[ "$output" == *"--probe"* ]]
+    run vm airgap sideways "${AG[@]}"
+    [ "$status" -eq 1 ]; [[ "$output" == *"on or off"* ]]
+    ! grep -q ' qm set ' "$STUB_LOG"
+}
+
+@test "airgap on sets link_down on the named NIC only, and passes when the guest's probe fails" {
+    PROBE_RC=1 run vm airgap on "${AG[@]}"
+    echo "$output"; [ "$status" -eq 0 ]
+    grep -q 'pve qm set 9770 --net0 virtio=BC:24:11:00:00:01,bridge=vmbr0,link_down=1$' "$STUB_LOG"
+    grep -q '^net1: virtio=BC:24:11:00:00:02,bridge=vmbr9$' "$QM_CONFIG"
+    [[ "$output" == *"PASS  "*"link_down"* && "$output" == *"PASS  "*"cannot reach 192.0.2.1:80"* ]]
+}
+
+@test "airgap on FAILs when the guest can still reach out" {
+    PROBE_RC=0 run vm airgap on "${AG[@]}"
+    [ "$status" -eq 1 ]; [[ "$output" == *"FAIL  "*"still reaches 192.0.2.1:80"* ]]
+}
+
+@test "airgap on FAILs, never passes, when the guest cannot be asked" {
+    GUEST_RC=255 PROBE_RC=1 run vm airgap on "${AG[@]}"
+    [ "$status" -eq 1 ]; [[ "$output" == *"FAIL  "*"probe was not run"* ]]
+}
+
+@test "airgap on twice sets nothing the second time; airgap off strips the flag and wants the probe to succeed" {
+    PROBE_RC=1 vm airgap on "${AG[@]}" >/dev/null
+    : > "$STUB_LOG"
+    PROBE_RC=1 run vm airgap on "${AG[@]}"
+    [ "$status" -eq 0 ]; [[ "$output" == *"already link-down"* ]]
+    ! grep -q ' qm set ' "$STUB_LOG"
+    PROBE_RC=0 run vm airgap off "${AG[@]}"
+    echo "$output"; [ "$status" -eq 0 ]
+    grep -q 'pve qm set 9770 --net0 virtio=BC:24:11:00:00:01,bridge=vmbr0$' "$STUB_LOG"
+    PROBE_RC=1 run vm airgap off "${AG[@]}"
+    [ "$status" -eq 1 ]; [[ "$output" == *"FAIL  "*"cannot reach"* ]]
+}
+
+@test "airgap --dry-run changes nothing and claims nothing" {
+    run vm airgap on "${AG[@]}" --dry-run
+    [ "$status" -eq 0 ]; [[ "$output" == *"DRY-RUN:"*"link_down=1"* ]]
+    [[ "$output" != *"PASS  "* ]]
+    ! grep -q ' qm set ' "$STUB_LOG"
+}
+
+@test "wait-ssh passes when the guest answers and fails when the time runs out" {
+    GUEST_RC=0 run vm wait-ssh 0 --mgmt-host guest
+    [ "$status" -eq 0 ]; [[ "$output" == *"PASS  "*"guest answers"* ]]
+    GUEST_RC=255 run vm wait-ssh 0 --mgmt-host guest
+    [ "$status" -eq 1 ]; [[ "$output" == *"did not answer within 0 s"* ]]
+    run vm wait-ssh soon --mgmt-host guest
+    [ "$status" -eq 1 ]; [[ "$output" == *"seconds"* ]]
+}
+
+@test "tunnel forwards a loopback port to the guest's 443 and nothing else" {
+    run vm tunnel --mgmt-host guest --local-port 8443 --dry-run
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"DRY-RUN:"*"-N"*"127.0.0.1:8443:127.0.0.1:443"*"guest"* ]]
+    run vm tunnel --mgmt-host guest
+    [ "$status" -eq 1 ]; [[ "$output" == *"needs --local-port"* ]]
+}
