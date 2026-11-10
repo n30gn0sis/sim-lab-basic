@@ -106,7 +106,7 @@ guest() { ssh -o BatchMode=yes -o ConnectTimeout=5 "$MGMT" "$@"; }
 net_value() { pve qm config "$VMID" | sed -n "s/^${WAN_NET}: //p"; }
 
 cmd_airgap() {
-    local want="${ARGS[0]:-}" cur new ip port now
+    local want="${ARGS[0]:-}" cur new ip port now prc
     case "$want" in on|off) ;; *) die "airgap needs on or off" ;; esac
     need_arg --wan-net "$WAN_NET"; need_arg --mgmt-host "$MGMT"; need_arg --probe "$PROBE"
     cur=$(net_value)
@@ -140,12 +140,15 @@ cmd_airgap() {
     ip=${PROBE%:*}; port=${PROBE##*:}
     if ! guest true; then
         fail "guest $MGMT did not answer — the probe was not run, so the air gap is unproven"
-    elif guest "timeout 5 bash -c 'exec 3<>/dev/tcp/${ip}/${port}'"; then
-        if [ "$want" = "on" ]; then fail "guest still reaches $PROBE — the air gap is NOT in effect"
-        else pass "guest reaches $PROBE"; fi
     else
-        if [ "$want" = "on" ]; then pass "guest cannot reach $PROBE"
-        else fail "guest cannot reach $PROBE although $WAN_NET is link-up"; fi
+        guest "timeout 5 bash -c 'exec 3<>/dev/tcp/${ip}/${port}'"; prc=$?
+        case "$prc" in
+            255|126|127) fail "the probe could not be run in guest $MGMT (exit $prc) — the air gap is unproven" ;;
+            0) if [ "$want" = "on" ]; then fail "guest still reaches $PROBE — the air gap is NOT in effect"
+               else pass "guest reaches $PROBE"; fi ;;
+            *) if [ "$want" = "on" ]; then pass "guest cannot reach $PROBE"
+               else fail "guest cannot reach $PROBE although $WAN_NET is link-up"; fi ;;
+        esac
     fi
     footer "airgap $want"
 }

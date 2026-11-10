@@ -77,7 +77,7 @@ vm() { kit_run "$SCRIPT" "$@"; }
     [ "$status" -eq 0 ]; [[ "$output" == *"already running"* ]]
     VM_STATE=stopped run vm stop --pve pve --vmid 9770
     [ "$status" -eq 0 ]; [[ "$output" == *"already stopped"* ]]
-    ! grep -qE ' qm (start|shutdown) ' "$STUB_LOG"
+    run grep -qE ' qm (start|shutdown) ' "$STUB_LOG"; [ "$status" -ne 0 ]
     VM_STATE=stopped run vm start --pve pve --vmid 9770
     [ "$status" -eq 0 ]; grep -q 'pve qm start 9770$' "$STUB_LOG"
     VM_STATE=running run vm stop --pve pve --vmid 9770
@@ -87,7 +87,7 @@ vm() { kit_run "$SCRIPT" "$@"; }
 @test "snapshot never overwrites: an existing name is refused, a new one is taken with its description quoted" {
     run vm snapshot --pve pve --vmid 9770 --snapshot clean-a
     [ "$status" -eq 1 ]; [[ "$output" == *"already exists"* ]]
-    ! grep -q ' qm snapshot ' "$STUB_LOG"
+    run grep -q ' qm snapshot ' "$STUB_LOG"; [ "$status" -ne 0 ]
     run vm snapshot --pve pve --vmid 9770 --snapshot clean-b --description 'key and second NIC'
     echo "$output"; [ "$status" -eq 0 ]
     grep -qF "pve qm snapshot 9770 clean-b --description 'key and second NIC'" "$STUB_LOG"
@@ -150,7 +150,7 @@ AG=(--pve pve --vmid 9770 --wan-net net0 --mgmt-host guest --probe 192.0.2.1:80)
     : > "$STUB_LOG"
     PROBE_RC=1 run vm airgap on "${AG[@]}"
     [ "$status" -eq 0 ]; [[ "$output" == *"already link-down"* ]]
-    ! grep -q ' qm set ' "$STUB_LOG"
+    run grep -q ' qm set ' "$STUB_LOG"; [ "$status" -ne 0 ]
     PROBE_RC=0 run vm airgap off "${AG[@]}"
     echo "$output"; [ "$status" -eq 0 ]
     grep -q 'pve qm set 9770 --net0 virtio=BC:24:11:00:00:01,bridge=vmbr0$' "$STUB_LOG"
@@ -180,4 +180,16 @@ AG=(--pve pve --vmid 9770 --wan-net net0 --mgmt-host guest --probe 192.0.2.1:80)
     [[ "$output" == *"DRY-RUN:"*"-N"*"127.0.0.1:8443:127.0.0.1:443"*"guest"* ]]
     run vm tunnel --mgmt-host guest
     [ "$status" -eq 1 ]; [[ "$output" == *"needs --local-port"* ]]
+}
+
+@test "airgap FAILs, never passes, when the probe could not be run; a timeout still means unreachable" {
+    for rc in 255 127 126; do
+        GUEST_RC=0 PROBE_RC=$rc run vm airgap on "${AG[@]}"
+        [ "$status" -eq 1 ]; [[ "$output" == *"FAIL  "*"probe could not be run"* ]]
+        [[ "$output" != *"PASS  "*"cannot reach"* ]]
+    done
+    GUEST_RC=0 PROBE_RC=255 run vm airgap off "${AG[@]}"
+    [ "$status" -eq 1 ]; [[ "$output" == *"FAIL  "*"probe could not be run"* ]]
+    GUEST_RC=0 PROBE_RC=124 run vm airgap on "${AG[@]}"
+    [ "$status" -eq 0 ]; [[ "$output" == *"PASS  "*"cannot reach 192.0.2.1:80"* ]]
 }
