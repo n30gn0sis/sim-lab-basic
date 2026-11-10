@@ -514,6 +514,40 @@ STUB
     [[ "$output" == *"1 of 2 services not ready"* ]]
 }
 
+
+# who owns the wildcard 443 listener decides: the front door's nginx is expected
+# (a re-entry on an installed host), Malcolm's docker-proxy means the rebind did not take
+start_443() {  # start_443 <ss lines…> — a started stack whose ss -ltnp prints these lines too
+    make_malcolm_tree "$ROOT"; echo "x" > "$ROOT/opt/malcolm/malcolm/nginx/htpasswd"
+    malcolm rebind >/dev/null
+    printf '%s\n' 'echo "LISTEN 0 4096 127.0.0.1:8443 0.0.0.0:*"' > "$BATS_TEST_TMPDIR/ss-body"
+    local l; for l in "$@"; do printf 'echo %q\n' "$l" >> "$BATS_TEST_TMPDIR/ss-body"; done
+    stub ss "$(cat "$BATS_TEST_TMPDIR/ss-body")"
+}
+@test "start: a wildcard 443 listener owned by nginx is the front door, a PASS" {
+    start_443 'LISTEN 0 511 0.0.0.0:443 0.0.0.0:* users:(("nginx",pid=1,fd=6))' 'LISTEN 0 511 [::]:443 [::]:* users:(("nginx",pid=1,fd=7))'
+    run malcolm start; echo "$output"; [ "$status" -eq 0 ]
+    [[ "$output" == *"PASS  "*"443"*"front door's nginx"*"not Malcolm"* ]]
+}
+@test "start: a wildcard 443 listener owned by docker-proxy is a FAIL naming rebind" {
+    start_443 'LISTEN 0 4096 0.0.0.0:443 0.0.0.0:* users:(("docker-proxy",pid=7,fd=4))'
+    run malcolm start; echo "$output"; [ "$status" -eq 1 ]
+    [[ "$output" == *"FAIL  "*"docker-proxy"*"rebind"* ]]
+}
+@test "start: a wildcard 443 listener nobody can name, or another program, stays a WARN naming the owner if known" {
+    start_443 'LISTEN 0 4096 0.0.0.0:443 0.0.0.0:*'
+    run malcolm start; echo "$output"; [ "$status" -eq 2 ]
+    [[ "$output" == *"WARN  "*"443"* ]]
+    start_443 'LISTEN 0 4096 *:443 *:* users:(("haproxy",pid=9,fd=3))'
+    run malcolm start; echo "$output"; [ "$status" -eq 2 ]
+    [[ "$output" == *"WARN  "*"haproxy"* ]]
+}
+@test "start: no wildcard 443 listener is the existing PASS" {
+    start_443
+    run malcolm start; echo "$output"; [ "$status" -eq 0 ]
+    [[ "$output" == *"PASS  nothing on 0.0.0.0:443"* ]]
+}
+
 # ── dashboards and arkime views ─────────────────────────────────────────────
 # The stack is a curl stub: these prove the kit's side of the contract — that
 # it reads the index pattern rather than assuming one, that it asserts every

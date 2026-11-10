@@ -14,7 +14,7 @@
 #   secrets       generate the admin password file once (never printed)
 #   auth          Malcolm's auth_setup, unattended, hashes generated on the box
 #   rebind        publish nginx-proxy on 127.0.0.1:8443 instead of 0.0.0.0:443
-#   start         Malcolm's own ./scripts/start, then wait for health
+#   start         Malcolm's own ./scripts/start, then wait for health; the wildcard 443 listener must be the front door's nginx (docker-proxy there FAILs)
 #   stop          Malcolm's own ./scripts/stop
 #   status        what is in place
 #   inventory     what saved objects Dashboards holds NOW, read-only — the
@@ -473,12 +473,26 @@ cmd_start() {
         fi
         sleep "$step"; waited=$((waited + step))
     done
-    local ss_out; ss_out=$(ss -ltn 2>/dev/null || true)
+    local ss_out; ss_out=$(ss -ltnp 2>/dev/null || true)
     if printf '%s\n' "$ss_out" | grep -q '127\.0\.0\.1:8443 '; then pass "nginx-proxy listening on 127.0.0.1:8443"; else fail "nothing listening on 127.0.0.1:8443"; fi
-    if printf '%s\n' "$ss_out" | grep -qE '(0\.0\.0\.0|\*):443 '; then
-        warn "something listens on 0.0.0.0:443 — expected only once the front door's nginx is up; if this is Malcolm, the rebind did not take"
-    else
+    # who owns the wildcard 443 listener decides, never that one exists: on a re-entry
+    # the front door's nginx (r770-portal-deploy.sh nginx) is expected there; Malcolm's
+    # docker-proxy on it means the rebind did not take
+    local l443 owners nlines nnginx
+    l443=$(printf '%s\n' "$ss_out" | grep -E '(0\.0\.0\.0|\*|\[::\]):443 ' || true)
+    if [ -z "$l443" ]; then
         pass "nothing on 0.0.0.0:443 from Malcolm"
+    else
+        owners=$(printf '%s\n' "$l443" | grep -oE 'users:\(\("[^"]+"' | cut -d'"' -f2 | sort -u | paste -sd' ' -)
+        nlines=$(printf '%s\n' "$l443" | grep -c . || true)
+        nnginx=$(printf '%s\n' "$l443" | grep -c 'users:(("nginx"' || true)
+        if [ "$nlines" -eq "$nnginx" ]; then
+            pass "the wildcard 443 listener is the front door's nginx, not Malcolm"
+        elif printf '%s\n' "$owners" | grep -qw docker-proxy; then
+            fail "Malcolm is published on the wildcard address (docker-proxy owns :443) — the rebind did not take; rerun rebind, then start"
+        else
+            warn "something listens on 0.0.0.0:443 (owner: ${owners:-unreadable}) — expected only the front door's nginx; if this is Malcolm, the rebind did not take"
+        fi
     fi
     footer "start"
 }
