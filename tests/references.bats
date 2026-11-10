@@ -10,7 +10,7 @@ setup() { cd "$BATS_TEST_DIRNAME/.."; }
     while read -r p; do
         case "$p" in *'<'*) continue ;; esac
         [ -e "$p" ] || missing="$missing $p"
-    done < <(grep -rhoP '(?<![\w/.-])(scripts|config|docs|tests|staging|harness)/[A-Za-z0-9_./-]+' README.md CLAUDE.md docs/*.md config/README.md tests/README.md staging/README.md \
+    done < <(grep -rhoP '(?<![\w/.-])(scripts|config|docs|tests|staging|harness)/[A-Za-z0-9_./-]+' README.md CLAUDE.md docs/*.md docs/rehearsals/*.md config/README.md tests/README.md staging/README.md \
              | sed 's/[.,)`:]*$//' | sort -u)
     echo "missing:$missing"
     [ -z "$missing" ]

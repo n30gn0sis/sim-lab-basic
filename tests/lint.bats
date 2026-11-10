@@ -51,3 +51,12 @@ setup() { cd "$BATS_TEST_DIRNAME/.."; }
         [ -x "$f" ] || { echo "not executable: $f"; false; }
     done
 }
+
+@test "the PowerShell helper parses" {
+    command -v pwsh >/dev/null 2>&1 || skip "pwsh is not on PATH"
+    for f in harness/*.ps1; do
+        run env PARSE_FILE="$f" pwsh -NoProfile -Command '$e = $null; [void][System.Management.Automation.Language.Parser]::ParseFile($env:PARSE_FILE, [ref]$null, [ref]$e); if ($e) { $e | ForEach-Object { $_.ToString() }; exit 1 }'
+        echo "$f: $output"
+        [ "$status" -eq 0 ]
+    done
+}

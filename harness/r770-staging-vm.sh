@@ -23,9 +23,17 @@
 #
 #   0  done · 2  done with warnings · 1  refused or failed
 #
-# airgap proves what it did: the flag is read back from the VM's config, and
-# the probe is run INSIDE the guest. On: the probe must fail. Off: it must
-# succeed. A guest that cannot be asked is a FAIL, never a pass.
+# airgap proves what it did, and proves the probe can tell the difference.
+#   on   NIC link-up: the probe is run FIRST in the guest and must succeed (the
+#        positive control); if it does not, FAIL and nothing is sent ("probe
+#        cannot prove the gap"). Only then is link_down=1 set, read back with
+#        `qm config --current` (the live value, not a pending one), and the
+#        probe run again: it must now fail. NIC already link-down: there is no
+#        positive control to run, so a WARN says so and the run ends 2, not 0.
+#   off  link_down is removed, read back, and the probe must succeed.
+# Probe exit 0 = reachable; only 1 and 124 (timeout) = unreachable; any other
+# code is a FAIL ("probe could not be run"). An empty read-back is a FAIL
+# ("could not read"). A guest that cannot be asked is a FAIL, never a pass.
 #
 # Nothing is defaulted: the VM, the hypervisor and the snapshot are arguments
 # the operator takes from `status` and `qm list`, never names this script picks.
@@ -44,6 +52,14 @@ valid() {  # valid <flag> <value> <regex> — die when a given value is not of t
     [ -z "$2" ] && return 0
     [[ "$2" =~ $3 ]] || die "$1 '$2' is not acceptable (expected $3)"
 }
+valid_probe_range() {  # the shape was checked; now the octets (0-255) and the port (1-65535)
+    local o port=${PROBE##*:}
+    [ -z "$PROBE" ] && return 0
+    for o in $(printf '%s' "${PROBE%:*}" | tr . ' '); do
+        [ "$((10#$o))" -le 255 ] || die "--probe '$PROBE' is not acceptable (each address octet must be 0-255)"
+    done
+    { [ "$((10#$port))" -ge 1 ] && [ "$((10#$port))" -le 65535 ]; } || die "--probe '$PROBE' is not acceptable (the port must be 1-65535)"
+}
 pve()     { ssh -o BatchMode=yes -o ConnectTimeout=10 "$PVE" "$@"; }          # reads
 pve_run() { run ssh -o BatchMode=yes -o ConnectTimeout=10 "$PVE" "$@"; }      # changes; honours --dry-run
 vm_state() { pve qm status "$VMID" 2>/dev/null | awk '/^status:/ { print $2 }'; }
@@ -57,14 +73,22 @@ state_or_die() {
 }
 
 cmd_status() {
+    local snaps cfg
     state_or_die
+    snaps=$(pve qm listsnapshot "$VMID") || die "cannot read VM $VMID's snapshots on $PVE"
+    cfg=$(pve qm config "$VMID" --current) || die "cannot read VM $VMID's config on $PVE"
+    [ -n "$cfg" ] || die "cannot read VM $VMID's config on $PVE (it came back empty)"
     printf 'vm %s on %s: %s\n' "$VMID" "$PVE" "$STATE"
-    pve qm listsnapshot "$VMID"
-    pve qm config "$VMID" | grep -E '^(memory|parent|net[0-9]+|ipconfig[0-9]+):'
+    printf '%s\n' "$snaps"
+    printf '%s\n' "$cfg" | grep -E '^(name|memory|parent|net[0-9]+|ipconfig[0-9]+):'
     return 0
 }
 
-rb_current()  { printf 'vm %s is %s\n' "$VMID" "$STATE"; pve qm listsnapshot "$VMID"; }
+rb_current() {
+    printf 'vm %s is %s\n' "$VMID" "$STATE"
+    pve qm config "$VMID" --current | grep -E '^name:' || echo "name: (could not be read — is --vmid right?)"
+    pve qm listsnapshot "$VMID"
+}
 rb_proposed() { printf 'qm rollback %s %s — disk, config and NICs return to that snapshot\n' "$VMID" "$SNAP"; }
 cmd_rollback() {
     need_arg --snapshot "$SNAP"; state_or_die
@@ -103,51 +127,69 @@ cmd_snapshot() {
 }
 
 guest() { ssh -o BatchMode=yes -o ConnectTimeout=5 "$MGMT" "$@"; }
-net_value() { pve qm config "$VMID" | sed -n "s/^${WAN_NET}: //p"; }
+net_value() { pve qm config "$VMID" --current | sed -n "s/^${WAN_NET}: //p"; }
+probe() { guest "timeout 5 bash -c 'exec 3<>/dev/tcp/${PROBE%:*}/${PROBE##*:}'"; }
 
 cmd_airgap() {
-    local want="${ARGS[0]:-}" cur new ip port now prc
+    local want="${ARGS[0]:-}" cur target now prc was_down=0
     case "$want" in on|off) ;; *) die "airgap needs on or off" ;; esac
     need_arg --wan-net "$WAN_NET"; need_arg --mgmt-host "$MGMT"; need_arg --probe "$PROBE"
     cur=$(net_value)
-    [ -n "$cur" ] || die "VM $VMID has no $WAN_NET (see: status)"
+    [ -n "$cur" ] || die "VM $VMID has no $WAN_NET, or its config could not be read (see: status)"
     [[ "$cur" =~ ^[A-Za-z0-9=:,._-]+$ ]] || die "$WAN_NET's value '$cur' holds a character this script will not send through a shell"
+    case "$cur" in *link_down=1*) was_down=1 ;; esac
     if [ "$want" = "on" ]; then
-        case "$cur" in
-            *link_down=1*) note "$WAN_NET already link-down" ;;
-            *) pve_run qm set "$VMID" "--$WAN_NET" "${cur},link_down=1" || die "qm set failed" ;;
-        esac
+        if [ "$was_down" = "1" ]; then target=$cur; else target="${cur},link_down=1"; fi
     else
-        new=${cur//,link_down=1/}
-        if [ "$new" = "$cur" ]; then note "$WAN_NET already link-up"
-        else pve_run qm set "$VMID" "--$WAN_NET" "$new" || die "qm set failed"; fi
+        target=${cur//,link_down=1/}
     fi
+
     if [ "$DRY" = "1" ]; then
-        if [ "$want" = "on" ]; then note "DRY-RUN: $WAN_NET would be link-down; nothing was probed"
-        else note "DRY-RUN: $WAN_NET would be link-up; nothing was probed"; fi
+        if [ "$target" != "$cur" ]; then pve_run qm set "$VMID" "--$WAN_NET" "$target"
+        else note "$WAN_NET is already as wanted"; fi
+        note "DRY-RUN: $WAN_NET would be set link-$want; nothing was probed"
         footer "airgap $want"
     fi
 
+    if [ "$want" = "on" ] && [ "$was_down" = "0" ]; then
+        # Positive control: the probe must succeed BEFORE the gap, or its failure afterwards proves nothing.
+        guest true || { fail "guest $MGMT did not answer — the probe was not run, so the air gap is unproven"; footer "airgap $want"; }
+        probe; prc=$?
+        if [ "$prc" -ne 0 ]; then
+            fail "the probe to $PROBE exited $prc in guest $MGMT while $WAN_NET is link-up — probe cannot prove the gap; nothing was changed"
+            footer "airgap $want"
+        fi
+        pass "positive control: guest reaches $PROBE before the gap"
+    elif [ "$want" = "on" ]; then
+        warn "$WAN_NET was already link-down: no positive control could be run, so a failing probe cannot be told from a broken one"
+    fi
+
+    if [ "$target" != "$cur" ]; then pve_run qm set "$VMID" "--$WAN_NET" "$target" || die "qm set failed"
+    else note "$WAN_NET already link-$want"; fi
+
     now=$(net_value)
+    if [ -z "$now" ]; then
+        fail "could not read $WAN_NET back from VM $VMID's config — the change is unproven"
+        footer "airgap $want"
+    fi
     if [ "$want" = "on" ]; then
-        case "$now" in *link_down=1*) pass "$WAN_NET has link_down=1 in VM $VMID's config" ;;
+        case "$now" in *link_down=1*) pass "$WAN_NET has link_down=1 in VM $VMID's live config" ;;
                        *) fail "$WAN_NET does not show link_down=1 after qm set" ;; esac
     else
         case "$now" in *link_down=1*) fail "$WAN_NET still shows link_down=1 after qm set" ;;
-                       *) pass "$WAN_NET has no link_down in VM $VMID's config" ;; esac
+                       *) pass "$WAN_NET has no link_down in VM $VMID's live config" ;; esac
     fi
 
-    ip=${PROBE%:*}; port=${PROBE##*:}
     if ! guest true; then
         fail "guest $MGMT did not answer — the probe was not run, so the air gap is unproven"
     else
-        guest "timeout 5 bash -c 'exec 3<>/dev/tcp/${ip}/${port}'"; prc=$?
+        probe; prc=$?
         case "$prc" in
-            255|126|127) fail "the probe could not be run in guest $MGMT (exit $prc) — the air gap is unproven" ;;
             0) if [ "$want" = "on" ]; then fail "guest still reaches $PROBE — the air gap is NOT in effect"
                else pass "guest reaches $PROBE"; fi ;;
-            *) if [ "$want" = "on" ]; then pass "guest cannot reach $PROBE"
-               else fail "guest cannot reach $PROBE although $WAN_NET is link-up"; fi ;;
+            1|124) if [ "$want" = "on" ]; then pass "guest cannot reach $PROBE"
+                   else fail "guest cannot reach $PROBE although $WAN_NET is link-up"; fi ;;
+            *) fail "the probe could not be run in guest $MGMT (exit $prc) — the air gap is unproven" ;;
         esac
     fi
     footer "airgap $want"
@@ -168,9 +210,23 @@ cmd_wait_ssh() {
 }
 
 cmd_tunnel() {
+    local rc
     need_arg --mgmt-host "$MGMT"; need_arg --local-port "$LPORT"
     note "https on 127.0.0.1:$LPORT -> $MGMT's 443; Ctrl-C ends it"
-    run ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes -L "127.0.0.1:${LPORT}:127.0.0.1:443" "$MGMT"
+    run ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -L "127.0.0.1:${LPORT}:127.0.0.1:443" "$MGMT"; rc=$?
+    if [ "$DRY" = "1" ]; then
+        note "DRY-RUN: the tunnel would be opened"
+    else
+        case "$rc" in
+            0|130) pass "tunnel to $MGMT ended (exit $rc)" ;;
+            *) fail "the tunnel's ssh ended with exit $rc" ;;
+        esac
+    fi
+    footer "tunnel"
+}
+
+no_extra() {  # no_extra <max> — the subcommand takes at most <max> positional arguments
+    [ "${#ARGS[@]}" -le "$1" ] || die "unexpected argument: ${ARGS[$1]} (try --help)"
 }
 
 SUB="${1:-}"; [ $# -gt 0 ] && shift
@@ -193,20 +249,23 @@ while [ $# -gt 0 ]; do
 done
 case "$SUB" in -h|--help|help|"") usage ;; esac
 SELF="r770-staging-vm"
+# These regexes are the shell-safety guarantee for every value interpolated into
+# a remote command: loosening one needs the remote quoting re-audited.
 valid --pve "$PVE" '^[A-Za-z0-9][A-Za-z0-9._-]*$'
 valid --vmid "$VMID" '^[0-9]+$'
-valid --snapshot "$SNAP" '^[A-Za-z][A-Za-z0-9_-]*$'
+valid --snapshot "$SNAP" '^[A-Za-z][A-Za-z0-9_-]{1,39}$'
 valid --description "$DESC" '^[A-Za-z0-9 ._,-]+$'
 valid --wan-net "$WAN_NET" '^net[0-9]+$'
 valid --mgmt-host "$MGMT" '^[A-Za-z0-9][A-Za-z0-9._-]*$'
 valid --probe "$PROBE" '^([0-9]{1,3}\.){3}[0-9]{1,3}:[0-9]{1,5}$'
+valid_probe_range
 valid --local-port "$LPORT" '^[0-9]{2,5}$'
 kit_init "r770-staging-vm"
 case "$SUB" in
     status|rollback|start|stop|snapshot)
-        need_arg --pve "$PVE"; need_arg --vmid "$VMID"; "cmd_$SUB" ;;
-    airgap)   need_arg --pve "$PVE"; need_arg --vmid "$VMID"; cmd_airgap ;;
-    wait-ssh) cmd_wait_ssh ;;
-    tunnel)   cmd_tunnel ;;
+        no_extra 0; need_arg --pve "$PVE"; need_arg --vmid "$VMID"; "cmd_$SUB" ;;
+    airgap)   no_extra 1; need_arg --pve "$PVE"; need_arg --vmid "$VMID"; cmd_airgap ;;
+    wait-ssh) no_extra 1; cmd_wait_ssh ;;
+    tunnel)   no_extra 0; cmd_tunnel ;;
     *) die "unknown subcommand: $SUB (try --help)" ;;
 esac
