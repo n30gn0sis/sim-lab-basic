@@ -10,16 +10,16 @@ setup() { cd "$BATS_TEST_DIRNAME/.."; }
     while read -r p; do
         case "$p" in *'<'*) continue ;; esac
         [ -e "$p" ] || missing="$missing $p"
-    done < <(grep -rhoP '(?<![\w/.-])(scripts|config|docs|tests|staging)/[A-Za-z0-9_./-]+' README.md CLAUDE.md docs/*.md config/README.md tests/README.md staging/README.md \
+    done < <(grep -rhoP '(?<![\w/.-])(scripts|config|docs|tests|staging|harness)/[A-Za-z0-9_./-]+' README.md CLAUDE.md docs/*.md config/README.md tests/README.md staging/README.md \
              | sed 's/[.,)`:]*$//' | sort -u)
     echo "missing:$missing"
     [ -z "$missing" ]
 }
 
 @test "every script is executable and every doc-named script exists" {
-    for f in scripts/*.sh staging/*.sh tests/run.sh; do [ -x "$f" ] || { echo "not executable: $f"; false; }; done
+    for f in scripts/*.sh staging/*.sh harness/*.sh tests/run.sh; do [ -x "$f" ] || { echo "not executable: $f"; false; }; done
     while read -r s; do [ -x "$s" ] || { echo "named but missing: $s"; false; }; done \
-        < <(grep -rhoP '(?<![\w/.-])(scripts|staging)/r770-[a-z-]+\.sh' README.md CLAUDE.md docs/*.md staging/README.md .claude/settings.json | sort -u)
+        < <(grep -rhoP '(?<![\w/.-])(scripts|staging|harness)/r770-[a-z-]+\.sh' README.md CLAUDE.md docs/*.md staging/README.md .claude/settings.json | sort -u)
 }
 
 @test "every config file is installed or rendered by some script" {
