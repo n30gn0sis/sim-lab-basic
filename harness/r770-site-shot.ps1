@@ -9,14 +9,15 @@ three .lab names to 127.0.0.1, so the system hosts file is never edited.
   -Url         https://malcolm.lab:<port>/..., gns3.lab or docs.lab only
   -Out         absolute path of the PNG to write
   -AuthFile    optional: a file holding user:password on one line. It is sent
-               as a Basic Authorization header ONLY on requests to https,
-               malcolm.lab / gns3.lab / docs.lab, on the tunnel port; the
-               value never reaches a command line, the output, or the
-               screenshot's file name.
+               as a Basic Authorization header ONLY on requests to https, the
+               host of -Url, on the tunnel port - not to the other two lab
+               names; the value never reaches a command line, the output, or
+               the screenshot's file name. A -Url carrying user:password@ is
+               refused.
 
 Every request the page makes goes through the DevTools Fetch domain: a request
-to the three names on the tunnel port is allowed (with the header when
--AuthFile was given), the browser's own internal about:/data:/chrome-error:
+to the three names on the tunnel port is allowed (with the header only for
+the host of -Url), the browser runs with no proxy, the browser's own internal about:/data:/chrome-error:
 URLs are allowed without it, and every other request is failed, never sent -
 with or without -AuthFile. Unknown host names also do not resolve. Every wait
 is bounded; on a timeout the script throws and the browser is cleaned up.
@@ -39,6 +40,7 @@ $target = [uri]$Url
 if ($target.Scheme -ne 'https' -or $names -notcontains $target.Host -or $target.Port -ne $TunnelPort) {
     throw "Url must be https://<$($names -join '|')>:$TunnelPort/..."
 }
+if ($target.UserInfo) { throw "Url must not carry user:password@ - use -AuthFile" }
 if (-not [IO.Path]::IsPathRooted($Out)) { throw "-Out must be an absolute path" }
 if (-not (Test-Path -LiteralPath $Browser)) { throw "no browser at $Browser" }
 
@@ -49,7 +51,7 @@ $rules = (($names | ForEach-Object { "MAP $_ 127.0.0.1" }) + 'MAP * ~NOTFOUND') 
 $browserArgs = @(
     '--headless=new', "--remote-debugging-port=$debugPort", "--user-data-dir=`"$profileDir`"",
     "--host-resolver-rules=`"$rules`"", '--ignore-certificate-errors', '--window-size=1440,900',
-    '--no-first-run', '--disable-extensions', '--disable-site-isolation-trials', 'about:blank'
+    '--no-first-run', '--disable-extensions', '--disable-site-isolation-trials', '--no-proxy-server', 'about:blank'
 )
 $proc = Start-Process -FilePath $Browser -ArgumentList $browserArgs -PassThru
 $ws = $null
@@ -59,10 +61,12 @@ $script:buf = [byte[]]::new(1048576)
 $script:msg = [IO.MemoryStream]::new()
 $script:basic = $null
 
-# 'lab' = the tunnel's names (gets the login), 'internal' = browser-own URL
-# (allowed, never gets the login), 'blocked' = everything else.
+# 'target' = https, the host of -Url, the tunnel port (the only kind that gets
+# the login), 'lab' = the other two lab names on the tunnel port (allowed, no
+# login), 'internal' = browser-own URL (allowed, no login), 'blocked' = the rest.
 function Get-UrlKind([string]$u) {
     try { $x = [uri]$u } catch { return 'blocked' }
+    if ($x.Scheme -eq 'https' -and $x.Host -eq $target.Host -and $x.Port -eq $TunnelPort) { return 'target' }
     if ($x.Scheme -eq 'https' -and $names -contains $x.Host -and $x.Port -eq $TunnelPort) { return 'lab' }
     if (@('about', 'data', 'chrome-error') -contains $x.Scheme) { return 'internal' }
     return 'blocked'
@@ -106,7 +110,7 @@ function Resolve-Event($m) {
     $kind = Get-UrlKind $m.params.request.url
     if ($kind -eq 'blocked') {
         $null = Send-Cdp 'Fetch.failRequest' @{ requestId = $rid; errorReason = 'BlockedByClient' }
-    } elseif ($kind -eq 'lab' -and $script:basic) {
+    } elseif ($kind -eq 'target' -and $script:basic) {
         $hdrs = @($m.params.request.headers.PSObject.Properties |
             Where-Object { $_.Name -ne 'Authorization' } |
             ForEach-Object { @{ name = $_.Name; value = [string]$_.Value } })
@@ -181,4 +185,11 @@ finally {
     if ($proc -and -not $proc.HasExited) { & taskkill /PID $proc.Id /T /F *> $null }
     Start-Sleep -Milliseconds 500
     Remove-Item -LiteralPath $profileDir -Recurse -Force -ErrorAction SilentlyContinue
+    if (Test-Path -LiteralPath $profileDir) {
+        Start-Sleep -Seconds 2
+        Remove-Item -LiteralPath $profileDir -Recurse -Force -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $profileDir) {
+            [Console]::Error.WriteLine("warning: the temporary browser profile could not be removed: $profileDir")
+        }
+    }
 }
