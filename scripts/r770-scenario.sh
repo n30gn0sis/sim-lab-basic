@@ -1057,8 +1057,9 @@ cmd_ingest() {
     done < <(ingest_views "$d")
     [ "$n" -gt 0 ] || die "$d/run.conf names no capture (outer=/inner=) — nothing to ingest"
     while read -r f view; do
-        # atomic hand-over: the watcher can take a file while cp is still writing it
-        # (Arkime then tags the sessions truncated-pcap). Copy to a temp name that is
+        # atomic hand-over, as a precaution: a ~900 MB cp into a watched directory is
+        # visible long before it is complete (whether the watcher would take it early
+        # was not established on staging 2026-11-10). Copy to a temp name that is
         # a sibling of upload/ in the same <pcapDir> (same filesystem, so mv is a
         # rename): upload/ itself holds tmp/ and variants/ and a cron inside Malcolm
         # prunes it, and a dot-file there is not known to be ignored by the watcher.
