@@ -62,21 +62,9 @@ sudo ./scripts/r770-portal-deploy.sh nginx --dry-run          # the optional fro
   (`ca cert htpasswd nginx`), is a separate, explicit sequence run after
   Malcolm is up; it serves `docs.lab` but does not build it, and it is not
   part of any `full`.
-- **`scripts/lib/common.sh` is the one seam every script sources.** It owns:
-  `KIT_ROOT`/`KIT_DRY_RUN`/`KIT_YES`/`KIT_NON_INTERACTIVE`/`KIT_EVIDENCE_DIR`
-  (what makes every script dry-runnable and testable against a fake root);
-  `gate()` (prints current/proposed/rollback, the mechanism behind every
-  "GATED" change); `bundle_verify()` (shells out to the verifier that travels
-  *inside* the bundle — the kit ships none of its own); `assert_image_tags()`
-  (catches `docker load` reporting success on a tag set that's actually
-  incomplete); `render()` (token substitution that refuses to write if any
-  `__TOKEN__` survives); `secret_file()` (generate-once, print the path
-  never the value); `stamp()`/`stamped()` (idempotency markers under
-  `/srv/bundles/.kit-stamps`); `run_step()`/`step_index()` (what each
-  pipeline's own `full` uses to slice its step sequence for
-  `--from/--to/--only` and to re-enter after a failure — the same job the
-  retired `r770-deploy.sh`'s `child()`/`stage_index()` did before each
-  pipeline carried its own).
+- **`scripts/lib/common.sh` is the one seam every script sources** — use its
+  helpers (`gate()`, `render()`, `secret_file()`, `stamp()`, `run_step()`, …)
+  rather than reimplementing them; read it before adding logic.
 - **A "bundle" is a contract, not a convention.** `bundle_dir()` only accepts
   a directory that has `r770-bundle.sh`, `BUNDLE_NOTES.md` and
   `MANIFEST.sha256` at its root. Version pins are never restated: they live
