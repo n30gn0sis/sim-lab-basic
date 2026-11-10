@@ -1221,10 +1221,70 @@ esac'
 }
 
 # ── ingest — into Malcolm's upload drop-off, never gt/ ──────────────────────
+ingest_compose() {  # ingest_compose <source> — Malcolm's compose file with a /pcap bind mount from <source>
+    mkdir -p "$ROOT/opt/malcolm/malcolm"
+    cat > "$ROOT/opt/malcolm/malcolm/docker-compose.yml" <<EOF
+services:
+  upload:
+    volumes:
+      - type: bind
+        source: ./config
+        target: /etc/cfg
+      - type: bind
+        source: $1
+        target: /pcap
+  other:
+    volumes:
+      - type: bind
+        source: $1
+        target: /data/pcap
+EOF
+}
+@test "ingest takes the drop-off from the compose file's /pcap source: absolute, never the stock pcap/upload" {
+    record_env; make_run_dir demo; stub chown ':'
+    ingest_compose /data/pcap/raw
+    mkdir -p "$ROOT/data/pcap/raw/upload" "$ROOT/opt/malcolm/malcolm/pcap/upload"
+    run scenario ingest "$RD"; echo "$output"; [ "$status" -eq 0 ]
+    [ -f "$ROOT/data/pcap/raw/upload/demo-20261001T1400Z,outer.pcapng" ]
+    [ "$(find "$ROOT/data/pcap/raw/upload" -type f | wc -l)" -eq 2 ]
+    [ "$(find "$ROOT/opt/malcolm/malcolm/pcap/upload" -type f | wc -l)" -eq 0 ]
+    [ "$(find "$ROOT/data/pcap/raw" -maxdepth 1 -name '.r770-ingest*' | wc -l)" -eq 0 ]
+}
+@test "ingest resolves a relative ./pcap source against the compose file's directory" {
+    record_env; make_run_dir demo; stub chown ':'
+    ingest_compose ./pcap; mkdir -p "$ROOT/opt/malcolm/malcolm/pcap/upload"
+    run scenario ingest "$RD"; echo "$output"; [ "$status" -eq 0 ]
+    [ -f "$ROOT/opt/malcolm/malcolm/pcap/upload/demo-20261001T1400Z,inner-a.pcapng" ]
+}
+@test "ingest dies naming the compose file when it is missing or names no /pcap mount, copying nothing" {
+    record_env; make_run_dir demo; stub chown ':'
+    mkdir -p "$ROOT/opt/malcolm/malcolm/pcap/upload"
+    run scenario ingest "$RD"; echo "$output"; [ "$status" -eq 1 ]
+    [[ "$output" == *"$ROOT/opt/malcolm/malcolm/docker-compose.yml"* ]]
+    printf 'services:\n  x:\n    volumes:\n      - type: bind\n        source: ./a\n        target: /other\n' > "$ROOT/opt/malcolm/malcolm/docker-compose.yml"
+    run scenario ingest "$RD"; echo "$output"; [ "$status" -eq 1 ]
+    [[ "$output" == *"docker-compose.yml"*"/pcap"* ]]
+    [ "$(find "$ROOT/opt/malcolm/malcolm/pcap/upload" -type f | wc -l)" -eq 0 ]
+    ingest_compose /data/pcap/raw    # source dir without upload/
+    run scenario ingest "$RD"; [ "$status" -eq 1 ]; [[ "$output" == *"$ROOT/data/pcap/raw/upload"* ]]
+}
+@test "ingest hands over atomically: cp never targets upload/, the name appears by rename, a failed cp leaves nothing" {
+    record_env; make_run_dir demo; stub chown ':'
+    ingest_compose /data/pcap/raw; mkdir -p "$ROOT/data/pcap/raw/upload"
+    real_cp=$(command -v cp)
+    stub cp "echo \"cp \$*\" >> \"\$STUB_LOG\"; [ -f \"\$BATS_TEST_TMPDIR/cp-fail\" ] && { printf part > \"\${@: -1}\"; exit 1; }; exec $real_cp \"\$@\""
+    run scenario ingest "$RD"; echo "$output"; [ "$status" -eq 0 ]
+    run grep -E '^cp .*/upload/' "$STUB_LOG"; [ "$status" -ne 0 ]
+    grep -q '^cp .*/data/pcap/raw/\.r770-ingest\.' "$STUB_LOG"
+    [ -f "$ROOT/data/pcap/raw/upload/demo-20261001T1400Z,outer.pcapng" ]
+    rm -f "$ROOT"/data/pcap/raw/upload/*; touch "$BATS_TEST_TMPDIR/cp-fail"
+    run scenario ingest "$RD"; echo "$output"; [ "$status" -eq 1 ]
+    [ "$(find "$ROOT/data/pcap/raw" -type f | wc -l)" -eq 0 ]
+}
 @test "ingest copies outer and inner captures with the run id as a tag, never anything under gt/" {
     record_env; make_run_dir demo
     mkdir -p "$RD/gt/a/keys"; echo k > "$RD/gt/a/keys/esp_sa"
-    up="$ROOT/opt/malcolm/malcolm/pcap/upload"; mkdir -p "$up"
+    up="$ROOT/opt/malcolm/malcolm/pcap/upload"; mkdir -p "$up"; ingest_compose ./pcap
     stub chown 'echo "chown $*" >> "$STUB_LOG"'
     run scenario ingest "$RD"; echo "$output"; [ "$status" -eq 0 ]
     [ -f "$up/demo-20261001T1400Z,outer.pcapng" ]; [ -f "$up/demo-20261001T1400Z,inner-a.pcapng" ]
@@ -1233,7 +1293,7 @@ esac'
     grep -q 'chown 1000:1000' "$STUB_LOG"; grep -q '^ingest=20' "$RD/run.conf"
 }
 @test "ingest refuses an empty capture or a run with no captures, copying nothing; and a host without Malcolm" {
-    record_env; make_run_dir demo; up="$ROOT/opt/malcolm/malcolm/pcap/upload"; mkdir -p "$up"
+    record_env; make_run_dir demo; up="$ROOT/opt/malcolm/malcolm/pcap/upload"; mkdir -p "$up"; ingest_compose ./pcap
     : > "$RD/outer-lab-tap0.pcapng"
     run scenario ingest "$RD"; [ "$status" -eq 1 ]; [[ "$output" == *"outer-lab-tap0.pcapng"*"empty"* ]]
     [ "$(find "$up" -type f | wc -l)" -eq 0 ]
@@ -1310,7 +1370,7 @@ while True:
     run scenario verify "$RD"; echo "$output"; [ "$status" -eq 1 ]; [[ "$output" == *"cannot write"*"expected.md"* ]]
 }
 @test "ingest refuses an interrupted run, copying nothing; WARNs (exit 2) on a result=FAIL run but copies it; --dry-run claims no PASS" {
-    record_env; make_run_dir demo; up="$ROOT/opt/malcolm/malcolm/pcap/upload"; mkdir -p "$up"; stub chown ':'
+    record_env; make_run_dir demo; up="$ROOT/opt/malcolm/malcolm/pcap/upload"; mkdir -p "$up"; ingest_compose ./pcap; stub chown ':'
     sed -i 's/^end=.*/end=interrupted 2026-10-01T14:03:00Z/' "$RD/run.conf"
     run scenario ingest "$RD"; echo "$output"; [ "$status" -eq 1 ]; [[ "$output" == *"interrupted run"* ]]
     [ "$(find "$up" -type f | wc -l)" -eq 0 ]

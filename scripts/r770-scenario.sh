@@ -24,7 +24,8 @@
 #                   into the run directory (run it as that directory's owner)
 #   ingest <run-dir> copy the run's captures into Malcolm's upload drop-off as
 #                   <run-id>,<view>.pcapng (tags <run-id>, outer, inner-<node>);
-#                   refuses an interrupted run, WARNs on result=FAIL
+#                   refuses an interrupted run, WARNs on result=FAIL; the drop-off
+#                   is discovered from the compose /pcap mount, files renamed in
 #   down <name>     stop and delete the imported project (idempotent)
 #   status          which scenarios are up, their TAPs, their last run record
 #   check <name>    judge the newest traffic run in Malcolm: every expect.txt
@@ -1034,14 +1035,21 @@ ingest_views() {  # ingest_views <run-dir> — "<file> <view>" per capture run.c
 cmd_ingest() {
     banner "ingest — $RUN_DIR_ARG"
     need_root
-    local d=$RUN_DIR_ARG up rid f view n=0
+    local d=$RUN_DIR_ARG up rid f view n=0 mh cf src tmp
     if ! { [ -n "$d" ] && [ -f "$d/run.conf" ]; }; then die "${d:-ingest} has no run.conf — not a run directory"; fi
     rid=$(rc_get "$d" run_id); [ -n "$rid" ] || die "$d/run.conf has no run_id"
     # record closes run.conf with end=<UTC> only on a run it finished; its trap
     # writes end=interrupted, and a half-run is no reference set for Malcolm
     grep -q '^end=20' "$d/run.conf" || die "$d is an interrupted run — not a reference set (run.conf has no clean end=); nothing was copied"
-    up="$(p "${MALCOLM_HOME:-/opt/malcolm}")/malcolm/pcap/upload"
-    [ -d "$up" ] || die "no Malcolm drop-off at $up — Malcolm is not set up here (r770-malcolm-deploy.sh full)"
+    # discovered, never assumed: the host side of the bind mount whose target is
+    # /pcap in Malcolm's own compose file (the kit's config moves it off ./pcap)
+    mh=$(p "${MALCOLM_HOME:-/opt/malcolm}"); cf="$mh/malcolm/docker-compose.yml"
+    [ -f "$cf" ] || die "no Malcolm compose file at $cf — cannot discover the PCAP drop-off; run r770-malcolm-deploy.sh full first"
+    src=$(awk '$1 == "source:" { s = $2; next } $1 == "target:" && $2 == "/pcap" && s != "" { gsub(/["\047]/, "", s); print s; exit } { s = "" }' "$cf")
+    [ -n "$src" ] || die "$cf names no bind mount with target: /pcap — cannot discover the PCAP drop-off; nothing was copied"
+    case "$src" in /*) src=$(p "$src") ;; *) src="$mh/malcolm/${src#./}" ;; esac
+    up="$src/upload"
+    [ -d "$up" ] || die "no Malcolm drop-off at $up (the /pcap source in $cf, plus /upload) — nothing was copied"
     # first pass: every capture must exist and be non-empty before any copy
     while read -r f _; do
         [ -s "$d/$f" ] || die "$f is missing or empty in $d — nothing was copied"
@@ -1049,8 +1057,15 @@ cmd_ingest() {
     done < <(ingest_views "$d")
     [ "$n" -gt 0 ] || die "$d/run.conf names no capture (outer=/inner=) — nothing to ingest"
     while read -r f view; do
-        run cp "$d/$f" "$up/$rid,$view.pcapng" || die "copy of $f failed — the drop-off may hold a partial $rid,$view.pcapng"
-        run chown 1000:1000 "$up/$rid,$view.pcapng" || warn "could not chown $rid,$view.pcapng to 1000:1000 — Malcolm's upload watcher may ignore it"
+        # atomic hand-over: the watcher can take a file while cp is still writing it
+        # (Arkime then tags the sessions truncated-pcap). Copy to a temp name that is
+        # a sibling of upload/ in the same <pcapDir> (same filesystem, so mv is a
+        # rename): upload/ itself holds tmp/ and variants/ and a cron inside Malcolm
+        # prunes it, and a dot-file there is not known to be ignored by the watcher.
+        tmp="$src/.r770-ingest.$$"
+        run cp "$d/$f" "$tmp" || { rm -f "$tmp"; die "copy of $f failed — the partial copy was removed; nothing is in the drop-off for $rid,$view.pcapng"; }
+        run chown 1000:1000 "$tmp" || warn "could not chown $rid,$view.pcapng to 1000:1000 — Malcolm's upload watcher may ignore it"
+        run mv "$tmp" "$up/$rid,$view.pcapng" || { rm -f "$tmp"; die "could not move $rid,$view.pcapng into $up — the temporary copy was removed"; }
     done < <(ingest_views "$d")
     [ "$DRY" = "1" ] || echo "ingest=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$d/run.conf"
     [ "$(rc_get "$d" result)" != FAIL ] || warn "$rid recorded result=FAIL — handed over anyway; read its transcript before trusting what Malcolm shows"

@@ -653,7 +653,7 @@ the same grammar. `tshark` comes from the bundle's apt set.
 captures to Malcolm. It copies only the files `run.conf` names in its `outer=`
 and `inner=` lines, by those explicit names and never a glob over the run
 directory, so `gt/` cannot travel. Each lands in Malcolm's upload drop-off
-(`<MALCOLM_HOME>/malcolm/pcap/upload/`, owned `1000:1000`) as
+(`<pcapDir>/upload/`, owned `1000:1000`; `<pcapDir>` is read from the `source:` of the bind mount whose `target:` is `/pcap` in `<MALCOLM_HOME>/malcolm/docker-compose.yml`, never assumed; each file is copied to `<pcapDir>/.r770-ingest.<pid>` and renamed in, so the watcher never sees a half-written file) as
 `<run-id>,<view>.pcapng` (`<run-id>,outer.pcapng`,
 `<run-id>,inner-<node>.pcapng`); Malcolm tags an upload from the
 comma-separated parts of its name, so the run id and the view become tags.
