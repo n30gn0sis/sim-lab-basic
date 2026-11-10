@@ -83,7 +83,8 @@ sudo <media>/<bundle>/kit/scripts/r770-install.sh run --yes  # import, gns3, mal
 rerun **that** copy with `run --yes --from <step>`. INSTALLED means every
 step was clean and `scripts/r770-e2e.sh` proved every scenario in Malcolm;
 anything less is NOT INSTALLED with the step to look at. The summary lands
-in `r770-evidence/install-<host>-<ts>.md`. The last action is
+in `r770-evidence/install-<host>-<ts>.md`. Rehearsed 2026-11-10 on VM 9770:
+`docs/rehearsals/2026-11-10-installer-acceptance.md`. The last action is
 `umount <media>`, as the summary prints.
 
 The per-pipeline procedures below stay as the reference for what each step
@@ -527,17 +528,42 @@ refused rather than taken down, a check that could not judge (Malcolm
 not answering) is a WARN, not a PASS, and a run in which no scenario ran
 is a FAIL.
 
-## IPsec & simulated-WAN scenarios (built, staging rehearsal pending)
+## IPsec & simulated-WAN scenarios (rehearsed 2026-11-10)
 
 The IPsec & WAN scenario spec is filed as
 `docs/superpowers/specs/2026-09-24-ipsec-scenarios-spec.md`; how the kit as
 built carries it out is `docs/superpowers/specs/2026-10-07-ipsec-wan-scenarios-kit-design.md`,
 and the work is sequenced in `docs/superpowers/plans/2026-10-07-ipsec-wan-scenarios.md`.
-Status: built, staging rehearsal pending (plan Task 11). `record` (its
-captures, idle tail, run directory, `--impair` and `--events`, and the ground
-truth under `gt/`), `verify` and `ingest` all exist and are covered offline by
-`tests/scenario.bats`; nothing here has yet run against a real GNS3, tcpdump or
-Malcolm, so this section is rewritten "as measured" after that rehearsal.
+Status: rehearsed 2026-11-10 on VM 9770, bundle `bundle-20261110`, with open
+findings — `docs/rehearsals/2026-11-10-ipsec-wan.md`. `record` (its captures,
+idle tail, run directory, `--impair` and `--events`, and the ground truth under
+`gt/`), `verify`, `ingest` and `check` ran against a real GNS3, tcpdump and
+Malcolm there.
+
+**As measured.**
+
+| What | Measured |
+|---|---|
+| S0 baseline (`s0-w1`) | RTT 0.87 ms average gateway to gateway; 50.0 Mbit/s per iperf3 stream, two streams; path MTU 1500; no kernel drops in five of six runs (the first run after a reboot dropped packets on two captures) |
+| `--impair <profile>@b` | shapes site A → site B: with `poor-broadband@b`, UDP offered at 20 Mbit/s arrived at 9.63 Mbit/s A → B and untouched B → A; RTT +80 ms |
+| Keys (X7) | absent: the bundled strongSwan image carries no save-keys plugin, so X7 is SKIP and the inner capture is the plaintext truth |
+| A real Ctrl-C during `record` | exit 130, `run.conf` closed `end=interrupted`, no verdict, no capture left, TAPs clean; `ingest` refuses that run. The traffic generator inside the node runs on until its own timer ends |
+| tcpdump when its own TAP goes link-down | keeps running |
+| Tags in Arkime after `ingest` | Malcolm splits the file name on `,` `-` `_` `.`: a run is found by its timestamp token (for example `tags == 20261110T1435Z`) plus `outer` or `inner` — not by `<run-id>` or `inner-<node>` |
+| `check` after `record` | judge a run that followed a fresh `up`: Arkime stops recording a long-lived ESP flow at its packet cap, so a later run on the same tunnel shows no ESP session in its window |
+| `wan-flap.txt` | every event ran; the IKE SA survived the 30 s outage (no DPD restart) |
+
+| Row | `s1-w1-ss-20261110T1435Z` | `s1-w1-ss-20261110T1726Z` |
+|---|---|---|
+| X1 IKE on udp/500 | PASS | PASS |
+| X2 nothing on udp/4500 | PASS | PASS |
+| X3 data as ESP | PASS | PASS |
+| X4 no site address outside | PASS | PASS |
+| X5 a CHILD_SA rekey | PASS | PASS |
+| X6 DPD in the idle tail | PASS | PASS |
+| X7 decryption | SKIP (keys absent) | SKIP (keys absent) |
+| X8 no kernel drops | PASS | PASS |
+| X9 `ingest`, then `check` | PASS | PASS |
 
 **What changes against the pack as it stands.** The spec assumes a
 two-bridge fabric (`br-lab-tNN` outer, `br-lab-iNN` inner) and host tools
@@ -605,8 +631,8 @@ TAPs the Clouds named `tap-a` and `tap-b` bind, read from GNS3 — with a profil
 `config/wan/profiles/` through `scripts/r770-wan.sh apply`, once every capture
 is open, so the capture holds the change; it is recorded in `run.conf` as
 `impair=<profile>@<a|b>:<tap>`. The direction rule: netem shapes what the
-host sends *into* a TAP, so `@b` shapes site A → site B (to be measured on
-staging — Task 11, H7). `--events <file>` runs `t|action|arg` lines, `t` in
+host sends *into* a TAP, so `@b` shapes site A → site B (measured on
+staging 2026-11-10). `--events <file>` runs `t|action|arg` lines, `t` in
 whole seconds after traffic start and never decreasing, alongside the
 traffic: `note <text>`, `wan-apply <profile>@a|b`, `wan-clear a|b`,
 `link-down a|b`, `link-up a|b`, `exec <node>|<command>` (`sh -c` in that

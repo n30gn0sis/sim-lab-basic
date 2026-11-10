@@ -84,8 +84,8 @@ sudo ./scripts/r770-scenario.sh traffic ipsec-esp     # 60 s of known traffic, a
 sudo ./scripts/r770-scenario.sh down ipsec-esp
 ```
 
-IPsec over simulated WANs is built on top of the pack, its staging rehearsal
-pending: `s0-w1` (the plaintext baseline) and `s1-w1-ss` (IKEv2/ESP site to
+IPsec over simulated WANs is built on top of the pack, rehearsed 2026-11-10, with open
+findings (`docs/rehearsals/2026-11-10-ipsec-wan.md`): `s0-w1` (the plaintext baseline) and `s1-w1-ss` (IKEv2/ESP site to
 site across a single-ISP underlay); `r770-scenario.sh record` (outer and inner
 reference PCAPs, `--impair`, timed `--events`, ground truth under `gt/`),
 `verify` (tshark over the run directory) and `ingest` (the captures into
