@@ -1115,6 +1115,55 @@ while True: time.sleep(0.1)
     command sleep 0.3; ! pgrep -f "$CASES" >/dev/null; ! pgrep -f "$BATS_TEST_TMPDIR/ev.txt" >/dev/null
 }
 
+# sigint_launch <marker> <cmd...> — run cmd in its own session with SIGINT at its
+# default disposition (a background job of this shell would start with it
+# ignored, and bash cannot trap a signal ignored at entry), wait for <marker>
+# to appear, then send SIGINT to the whole process group like a terminal's
+# Ctrl-C. Prints "rc=<n>" (128+n for death by signal n).
+sigint_launch() {
+    local marker=$1; shift
+    python3 - "$marker" "$@" <<'PY'
+import os, signal, subprocess, sys, time
+marker, cmd = sys.argv[1], sys.argv[2:]
+p = subprocess.Popen(cmd, start_new_session=True,
+                     preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
+for _ in range(200):
+    if os.path.exists(marker): break
+    time.sleep(0.1)
+time.sleep(0.5)
+os.killpg(p.pid, signal.SIGINT)
+try: rc = p.wait(timeout=10)
+except subprocess.TimeoutExpired:
+    os.killpg(p.pid, signal.SIGKILL); rc = 999
+print("rc=%d" % (128 - rc if rc < 0 else rc))
+PY
+}
+# a docker exec that, like the real one on a terminal Ctrl-C, exits at once
+# (not dying of the signal), so bash carries on with the script
+sigint_docker_exec() {
+    sed -i '1a if [ "$1" = exec ] \&\& [ "$2" = -i ]; then trap "exit 0" INT; : > "$BATS_TEST_TMPDIR/exec-started"; while :; do sleep 0.3; done; fi' "$BIN/docker"
+}
+
+@test "record interrupted by a real SIGINT closes run.conf as end=interrupted, writes no verdict, stops the captures, exits 130" {
+    record_env; scenario up demo --bundle "$BUNDLE" >/dev/null
+    sigint_docker_exec
+    PATH="$KIT_PATH" run sigint_launch "$BATS_TEST_TMPDIR/exec-started" "$SCRIPT" record demo; echo "$output"
+    [[ "$output" == *"rc=130"* ]]
+    d=$(find "$CASES/demo" -mindepth 1 -maxdepth 1 -type d | head -1)
+    grep -q '^end=interrupted ' "$d/run.conf"
+    run grep -E '^(result=|end=20)' "$d/run.conf"; [ "$status" -ne 0 ]
+    [ -s "$d/capture-stats.txt" ]
+    command sleep 0.3; run pgrep -f "$CASES"; [ "$status" -ne 0 ]
+}
+
+@test "traffic interrupted by a real SIGINT writes no run record and exits 130" {
+    scenario up demo --bundle "$BUNDLE" >/dev/null
+    sigint_docker_exec
+    PATH="$KIT_PATH" run sigint_launch "$BATS_TEST_TMPDIR/exec-started" "$SCRIPT" traffic demo; echo "$output"
+    [[ "$output" == *"rc=130"* ]]
+    run bash -c "ls '$KIT_EVIDENCE_DIR'/scenario-demo-*.run 2>/dev/null"; [ "$status" -ne 0 ]
+}
+
 @test "record --events: a failed event is a WARN naming it, and the run exits 2" {
     record_env; scenario up demo --bundle "$BUNDLE" >/dev/null
     sed -i '1a case "$*" in *"sh -c boom"*) echo "docker $*" >> "$STUB_LOG"; exit 1 ;; esac' "$BIN/docker"

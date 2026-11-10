@@ -20,6 +20,10 @@ setup() {
 # replacement PATH, in a fresh shell (so die/exit are observable).
 lib() { kit_run bash -c "set -uo pipefail; . '$LIB'; kit_init test; $1"; }
 
+@test "kit_init starts the transcript tee with -i, so a terminal's SIGINT cannot kill it" {
+    run grep -E 'tee -i -a "\$KIT_LOG"' "$LIB"; [ "$status" -eq 0 ]
+}
+
 @test "p() prefixes every absolute path with KIT_ROOT" {
     run lib 'p /etc/apt/sources.list'
     [ "$output" = "$ROOT/etc/apt/sources.list" ]

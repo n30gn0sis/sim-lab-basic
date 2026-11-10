@@ -16,7 +16,8 @@
 #   record <name>   traffic, captured: outer on TAP_A (the Cloud named tap-a),
 #                   inner in each inner_capture node's netns, an idle tail, and
 #                   a run directory (run.conf with result=, drop stats,
-#                   sha256sums); a capture that ends early FAILs the run
+#                   sha256sums); a capture that ends early FAILs the run; Ctrl-C
+#                   closes run.conf as end=interrupted (no result=), exit 130
 #   verify <run-dir> judge a finished run directory with tshark: every row of
 #                   the scenario's pcap-expect.txt, decryption (only with
 #                   discovered keys), zero kernel drops; writes expected.md
@@ -364,6 +365,9 @@ cmd_traffic() {
     case "$secs" in ''|*[!0-9]*) die "the traffic window must be whole seconds (got '$secs')" ;; esac
     taps=$(awk -F'\t' '$5 != "" {print $5}' "$WORK/nodes.tsv" | paste -sd, -)
     start=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    # Ctrl-C: the docker exec child exits without dying of the signal, so without
+    # this bash would carry on and write a normal run record for an aborted window
+    trap 'exit 130' INT
     run_traffic "$NAME" "$WORK/nodes.tsv" "$secs"
     end=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     write_run_record "$start" "$end" "$secs" "$T_OK" "$T_BADN" "$taps"
@@ -656,6 +660,11 @@ cmd_record() {
     [ ! -e "$RUN_DIR" ] || die "$RUN_DIR already exists — one run per minute; nothing under $(p "$CASES") is overwritten"
     mkdir -p "$RUN_DIR" || die "cannot create $RUN_DIR"
     trap record_cleanup EXIT
+    # a terminal Ctrl-C: bash waits for its foreground child, which exits without
+    # dying of the signal, and would carry on as if the traffic had finished. The
+    # trap runs once that child is gone and ends the run through the EXIT trap
+    # (end=interrupted, no result=), exit 130
+    trap 'exit 130' INT
     {
         echo "scenario=$NAME"; echo "run_id=$RUN_ID"; echo "project=lab-scenario-$NAME"
         echo "taps=$taps"; echo "tap_a=$tap_a"; echo "tap_b=$tap_b"
