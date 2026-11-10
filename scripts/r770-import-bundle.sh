@@ -40,7 +40,9 @@ DOCKER_PKGS="docker-ce docker-ce-cli containerd.io docker-compose-plugin"
 # Everything the kit's own steps require_pkg, installed by the apt stage from the
 # bundle's repo (they ship in its apt/). Found 2026-10-03: nothing installed them,
 # so a fresh R770 died at gns3's venv; staging had stood them in by hand.
-BASE_PKGS="python3-venv python3-pip-whl python3-ruamel.yaml python3-dotenv easy-rsa nginx ubridge"
+# tcpdump and tshark: r770-scenario.sh record captures with one and verify judges
+# with the other; found 2026-11-10 — tshark shipped in apt/ and nothing installed it.
+BASE_PKGS="python3-venv python3-pip-whl python3-ruamel.yaml python3-dotenv easy-rsa nginx ubridge tcpdump tshark"
 
 BUNDLE=""; MEDIA=""; DEVICE=""
 usage() { usage_from_header 3; exit 0; }
@@ -249,6 +251,8 @@ cmd_apt() {
     elif [ "$DRY" = "1" ]; then
         note "dry run: would install from the local repo: $missing"
     else
+        # a package may ask a debconf question (tshark does); on a terminal that would stop an unattended run
+        export DEBIAN_FRONTEND=noninteractive
         # shellcheck disable=SC2086  # one argument per package, on purpose
         if run apt-get install -y $missing; then
             pass "base packages installed from the local repo: $missing"

@@ -157,6 +157,11 @@ import() { kit_run "$SCRIPT" "$@"; }
     [[ "$output" == *"PASS  base packages installed from the local repo: python3-venv ubridge"* ]]
 }
 
+@test "the apt stage's base packages include the scenario harness's capture and judge tools" {
+    # record needs tcpdump, verify needs tshark; both ship in the bundle's apt/ (rehearsal 2026-11-10)
+    grep -qE '^BASE_PKGS=".* tcpdump tshark"$' scripts/r770-import-bundle.sh
+}
+
 @test "apt: base packages already present are a PASS and nothing is installed" {
     stub apt-get 'echo "apt-get $*" >> "$STUB_LOG"; echo "Get:2 file:/srv/repo/apt ./ Packages [1 kB]"'
     run import apt --bundle "$BUNDLE"
