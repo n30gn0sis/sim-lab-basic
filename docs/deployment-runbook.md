@@ -32,7 +32,7 @@ The install is **not** a single sitting.
 |---|---|
 | Bundle-in prep: `preflight` `gate` `copy` `apt` `phone-home` `docker` `files` (shared by all three pipelines) | the storage layout's volumes mounted — `preflight` refuses otherwise |
 | GNS3 pipeline: `load` `venv` `secrets` `config` `service` `labnet` | bundle-in prep done; `python3-venv`, `python3-pip-whl` and `ubridge` installed from the local repo |
-| Malcolm pipeline: `load` `unpack` `configure` `secrets` `auth` `rebind` `start` | bundle-in prep done; `python3-ruamel.yaml` and `python3-dotenv` from the local repo; capture ports prepared (no address, promiscuous, offloads off) before `configure --capture-ifs` |
+| Malcolm pipeline: `load` `unpack` `configure` `secrets` `auth` `rebind` `start` | bundle-in prep done; `python3-ruamel.yaml` and `python3-dotenv` from the local repo; physical capture ports named in `--capture-ifs` (the `capture` step prepares them; it refuses a port with an address, a master or the default route) |
 | Docs pipeline: `load` `build` | bundle-in prep done |
 | Front door: `ca` `cert` `htpasswd` `nginx` | `easy-rsa` and `nginx` from the local repo, and Malcolm's `auth` step already run |
 | validate | runs at any point; SKIPs what is not set up, naming it |
@@ -226,11 +226,12 @@ A pair whose tags are already all present is skipped, so the step is safe to
 rerun. A missing tag means the tarball is incomplete: re-cut; never patch by
 hand.
 
-### Steps M9–M14 — unpack, configure, secrets, auth, rebind, start
+### Steps M9–M15 — unpack, capture, configure, secrets, auth, rebind, start
 
 ```bash
 B=/srv/bundles/bundle-YYYYMMDD
 sudo ./scripts/r770-malcolm-deploy.sh unpack --bundle $B       # needs python3-ruamel.yaml, python3-dotenv (apt/)
+sudo ./scripts/r770-malcolm-deploy.sh capture --capture-ifs "<if ...>"   # (GATED) physical capture ports only; SKIPs without --capture-ifs
 sudo ./scripts/r770-malcolm-deploy.sh configure --bundle $B    # renders the kit's config template, replays it through install.py
 #   add --capture-ifs lab_mirror0 for live capture of the lab (run GNS3's labnet first)
 sudo ./scripts/r770-malcolm-deploy.sh secrets                  # /etc/lab/secrets/malcolm-admin.pw, once
@@ -238,6 +239,8 @@ sudo ./scripts/r770-malcolm-deploy.sh auth --bundle $B         # auth_setup, has
 sudo ./scripts/r770-malcolm-deploy.sh rebind                   # 0.0.0.0:443 -> 127.0.0.1:8443, the front door owns 443
 sudo ./scripts/r770-malcolm-deploy.sh start                    # Malcolm's ./scripts/start, then wait for health
 ```
+
+`capture` *(GATED)* writes `/etc/systemd/network/05-capture-<if>.network` (no address, no ARP, promiscuous) per physical port and enables `r770-capture-offloads@<if>.service`, then proves each port. To undo, remove those files, run `systemctl disable r770-capture-offloads@<if>.service` and `networkctl reload`; the gate prints the same rollback. `lab_mirror0` is passed over (GNS3's `labnet` owns it).
 
 After a reboot the stack comes back by itself (restart policy `unless-stopped`,
 set at `configure`). `r770-malcolm-deploy.sh stop` takes it down until the next

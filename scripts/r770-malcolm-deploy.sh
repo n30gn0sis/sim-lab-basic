@@ -9,6 +9,8 @@
 #   load          docker load the Malcolm tarball, then assert every tag
 #   assert-tags   the tag check alone (docker load lies by omission)
 #   unpack        unzip the bundled installer into /opt/malcolm
+#   capture       physical capture ports (--capture-ifs) made silent,
+#                 promiscuous, offloads off, via r770-capture-ports.sh (GATED)
 #   configure     render the kit's config template, replay it through the
 #                 installer (--import-malcolm-config-file), then rebind
 #   secrets       generate the admin password file once (never printed)
@@ -23,7 +25,7 @@
 #   arkime-views  install the kit's Arkime views, then read every one back
 #   full          the whole Malcolm pipeline, in order, stopping at the first
 #                 step that refuses: preflight gate copy apt phone-home
-#                 docker files load unpack configure secrets auth rebind
+#                 docker files load unpack capture configure secrets auth rebind
 #                 start (see --from/--to/--only)
 #
 #   --bundle <dir>             the bundle (on the media for preflight/gate/copy
@@ -91,10 +93,12 @@ REBIND_FROM='^    - 0.0.0.0:443:443/tcp$'
 REBIND_TO='    - 127.0.0.1:8443:443/tcp'
 SECRET="$MALCOLM_SECRET_FILE"
 SCEN_DIR="${SCENARIO_DIR:-$KIT_DIR/scenarios}"   # the pack dashboards and arkime-views generate from
-STEPS=(preflight gate copy apt phone-home docker files load unpack configure secrets auth rebind start)
+STEPS=(preflight gate copy apt phone-home docker files load unpack capture configure secrets auth rebind start)
 # test seam: lets a suite stub out every call this script makes to
 # r770-import-bundle.sh under `full`, and record what was called.
 IMPORT_BUNDLE_CMD="${IMPORT_BUNDLE_CMD:-$KIT_DIR/scripts/r770-import-bundle.sh}"
+# test seam, as IMPORT_BUNDLE_CMD above
+CAPTURE_PORTS_CMD="${CAPTURE_PORTS_CMD:-$KIT_DIR/scripts/r770-capture-ports.sh}"
 
 usage() { usage_from_header 3; exit 0; }
 home()      { p "$MALCOLM_HOME"; }
@@ -143,6 +147,18 @@ cmd_unpack() {
         fi
     fi
     footer "unpack"
+}
+
+# ── capture ──────────────────────────────────────────────────────────────────
+# capture — physical capture ports made ready before configure names them
+# (r770-capture-ports.sh; lab_mirror0 is labnet's and is passed over there).
+cmd_capture() {
+    if [ "$CAPTURE_SET" != "1" ] || [ -z "$CAPTURE_IFS" ]; then
+        banner "capture — physical capture ports"
+        skip "no --capture-ifs given: no capture port to prepare"
+        footer "capture"
+    fi
+    "$CAPTURE_PORTS_CMD" apply --capture-ifs "$CAPTURE_IFS"
 }
 
 # ── configure ────────────────────────────────────────────────────────────────
@@ -911,6 +927,7 @@ cmd_full() {
             apt|phone-home|docker|files) run_step "$step" "$IMPORT_BUNDLE_CMD" "$step" --bundle "$(local_bundle)" ;;
             load)      run_step "$step" cmd_load ;;
             unpack)    run_step "$step" cmd_unpack ;;
+            capture)   run_step "$step" cmd_capture ;;
             configure) run_step "$step" cmd_configure ;;
             secrets)   run_step "$step" cmd_secrets ;;
             auth)      run_step "$step" cmd_auth ;;
@@ -955,6 +972,7 @@ case "$SUB" in
     load)        cmd_load ;;
     assert-tags) cmd_assert_tags ;;
     unpack)      cmd_unpack ;;
+    capture)     cmd_capture ;;
     configure)   cmd_configure ;;
     secrets)     cmd_secrets ;;
     auth)        cmd_auth ;;

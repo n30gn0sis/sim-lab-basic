@@ -1026,6 +1026,8 @@ multi_pack() {  # a one-scenario pack whose range is a list of two CIDRs
     make_malcolm_tree "$ROOT"
     stub_import_bundle
     stub_docker_reporting ghcr.io/idaholab/malcolm/arkime:0.0.0-fixture ghcr.io/idaholab/malcolm/nginx-proxy:0.0.0-fixture
+    stub capture-stub 'echo "capture-ports $*" >> "$STUB_LOG"'
+    export CAPTURE_PORTS_CMD="$BIN/capture-stub"
     run malcolm full --bundle "$BUNDLE"
     echo "$output"
     [ "$status" -eq 0 ]
@@ -1038,6 +1040,24 @@ multi_pack() {  # a one-scenario pack whose range is a list of two CIDRs
     grep -q '^auth_setup --auth-noninteractive' "$MALCOLM_STUB_LOG"
     grep -q '^start' "$MALCOLM_STUB_LOG"
     [[ "$output" == *"DEPLOYED — every step clean"* ]]
+}
+
+@test "full runs the capture step between unpack and configure, handing it --capture-ifs; with none given the step SKIPs" {
+    make_malcolm_tree "$ROOT"
+    stub_import_bundle
+    stub_docker_reporting ghcr.io/idaholab/malcolm/arkime:0.0.0-fixture ghcr.io/idaholab/malcolm/nginx-proxy:0.0.0-fixture
+    stub capture-stub 'echo "capture-ports $*" >> "$STUB_LOG"'
+    export CAPTURE_PORTS_CMD="$BIN/capture-stub"
+    run malcolm full --bundle "$BUNDLE" --only capture
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"SKIP  no --capture-ifs given"* ]]
+    ! grep -q '^capture-ports' "$STUB_LOG"
+    mkdir -p "$ROOT/sys/class/net/ens2f0"
+    run malcolm full --bundle "$BUNDLE" --only capture --capture-ifs "ens2f0"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    grep -qx 'capture-ports apply --capture-ifs ens2f0' "$STUB_LOG"
 }
 
 @test "full with --media/--device passes them to the gate step only, and --media alone to copy" {
