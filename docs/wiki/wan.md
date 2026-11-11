@@ -6,33 +6,32 @@ Use it to answer questions like: does this VPN survive satellite latency? How do
 
 ## The scripts
 
-Three commands, from the lab's script library (in the config repo; exact install path lands at build time — **TBD**):
+One script does the work, `r770-wan.sh` in the kit's `scripts/` directory. The lab operator runs it with `sudo`; it has three commands:
 
 ```bash
-wan-apply <profile> <interface>   # apply an impairment profile to a lab link endpoint
-wan-show                          # list active impairments and their parameters
-wan-clear <interface>             # remove impairment, restore clean behavior
+sudo r770-wan.sh apply <profile> <lab-tapN>   # apply an impairment profile to a lab TAP
+sudo r770-wan.sh show                         # every kit TAP: its profile, or clean, and its settings
+sudo r770-wan.sh clear <lab-tapN>             # remove the impairment, restore clean behavior
 ```
 
-Every impairment is visible in `wan-show` and fully removable with `wan-clear` — nothing persists across a deliberate clear, and impairments never touch the management interface or the capture ports (that's enforced by design, not etiquette).
+It shapes the kit's `lab-tapN` TAPs only and refuses any other name, so it can never touch the management interface or the capture ports (that's enforced by the script, not etiquette). Every impairment is visible in `show` and fully removable with `clear`.
 
 ## Built-in profiles
 
 | Profile | Rate | Delay | Jitter | Loss | Feels like |
 |---|---|---|---|---|---|
 | `branch-wan` | 20 Mbps | 40 ms | 5 ms | 0.2% | A typical branch-office circuit |
-| `satellite` | 25 Mbps | 600 ms RTT-equivalent | variable | — | Geostationary satellite |
+| `satellite` | 25 Mbps | 300 ms each way | 20 ms | — | Geostationary satellite |
 | `poor-broadband` | 10 Mbps | 80 ms | — | 2% | Bad consumer DSL/cable |
-| `asym-adsl` | 8 Mbps down / 1 Mbps up | 25 ms | 3 ms | 0.1% | ADSL-style asymmetric line |
+| `asym-adsl` | 16 Mbps down / 1 Mbps up | 20 ms | 3 ms | 0.1% | ADSL-style asymmetric line |
 | `lte-good` | 30 Mbps down / 10 Mbps up | 45 ms | 10 ms | 0.3% | Subscriber on a good cell |
 | `lte-poor` | 5 Mbps down / 1 Mbps up | 90 ms | 30 ms | 2% | Subscriber on a poor cell |
 | `leo` | 100 Mbps down / 15 Mbps up | 30 ms | 10 ms | 0.5% | Low-earth-orbit satellite (handover spikes are scripted link-down/up events, not part of the profile) |
 | `mpls-metro` | 100 Mbps | 5 ms | 1 ms | 0% | Metro MPLS customer-edge access |
-| `congested-uplink` | 50 Mbps | — | — | — | Rate cap only; delay and loss come from queueing when background flows compete |
 
-Profiles are just parameter files — new ones (a specific customer circuit, a cellular link, a lossy microwave hop) are easy to add to the library; ask or submit one.
+Profiles are just parameter files — new ones (a specific customer circuit, a cellular link, a lossy microwave hop) are easy to add to the library; ask the operator.
 
-The profile files themselves live in `scenarios/profiles/`, one `.conf` per circuit, and are shared with the IPsec reference-PCAP scenarios — see [Reference PCAPs and scenarios](scenarios.md).
+The profile files live in the kit's `config/wan/profiles/`, one `.conf` per circuit. A profile that comes in two halves has a plain name for the downstream side and a `-up` name for the upstream side: `asym-adsl`, `leo`, `lte-good` and `lte-poor` each have an `-up` partner, which carries the upstream rate in the table above. The same files are used by the scenario pack — see [Reference PCAPs and scenarios](scenarios.md).
 
 ## Workflow: prove it, then trust it
 
@@ -43,9 +42,9 @@ Never assume the impairment took effect — measure it. The standard loop:
 ping -c 20 <target>                 # note the RTT
 iperf3 -c <target>                  # note the throughput
 
-# 2. Apply
-wan-apply branch-wan <lab-iface>
-wan-show                            # confirm it's active
+# 2. Apply (the operator runs these)
+sudo r770-wan.sh apply branch-wan <lab-tapN>
+sudo r770-wan.sh show               # confirm it's active
 
 # 3. Verify the physics changed
 ping -c 20 <target>                 # RTT should now be ~baseline + 40 ms
@@ -54,15 +53,15 @@ iperf3 -c <target>                  # throughput should cap near 20 Mbps
 # 4. Run your actual test / capture
 
 # 5. Clean up and confirm baseline returns
-wan-clear <lab-iface>
+sudo r770-wan.sh clear <lab-tapN>
 ping -c 20 <target>
 ```
 
-If step 3 shows no change, you probably impaired the wrong interface or the wrong direction — `netem` shapes traffic *leaving* an interface, so a "40 ms link" is often 40 ms applied at one endpoint (affecting one direction) or 20 ms at each end. Check `wan-show` and think about which direction your test traffic flows.
+If step 3 shows no change, you probably impaired the wrong interface or the wrong direction — `netem` shapes traffic *leaving* an interface, so a "40 ms link" is often 40 ms applied at one endpoint (affecting one direction) or 20 ms at each end. Check `r770-wan.sh show` and think about which direction your test traffic flows.
 
 ## Tips
 
 - **Capture under impairment.** The combination of WAN emulation + the [virtual mirror into Malcolm](gns3.md#analyzing-lab-traffic) (or GNS3 link capture) is the lab's best teaching tool — you can *see* retransmissions, dup-ACKs, and window collapse in Arkime/Wireshark rather than reading about them.
 - **Impair inside the topology, not the world.** Apply profiles to the specific GNS3 link endpoint or lab segment that represents the WAN, so the rest of your topology stays clean.
 - **Loss and jitter are statistical.** Short tests can miss a 0.2% loss profile entirely; run enough packets (or long enough iperf3) for the statistics to show.
-- **Clear when done.** A forgotten impairment on a shared segment is a classic "why is everything slow" mystery for the next analyst. `wan-show` is the first thing to check when a lab link behaves strangely.
+- **Clear when done.** A forgotten impairment on a shared segment is a classic "why is everything slow" mystery for the next analyst. `r770-wan.sh show` is the first thing to check when a lab link behaves strangely.

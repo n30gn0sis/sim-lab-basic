@@ -14,8 +14,10 @@ plugins: [search]
 markdown_extensions: [admonition, tables, toc]
 nav:
   - Home: index.md
+  - Getting started: getting-started.md
   - Access & workspaces: access.md
   - Malcolm: malcolm.md
   - GNS3: gns3.md
   - WAN impairment: wan.md
   - CLI tools: cli-tools.md
+  - Reference PCAPs and scenarios: scenarios.md

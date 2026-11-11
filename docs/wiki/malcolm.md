@@ -1,6 +1,6 @@
 # Analysis Stack — Malcolm
 
-Malcolm (version pin owned by `scripts/r770-offline-fetch.sh` — see `OWNERS.md`) is the lab's traffic-analysis platform. It is one integrated Docker Compose deployment that bundles every analysis tool you'll touch — you don't install or manage any of them, you just use their web interfaces through the portal.
+Malcolm is the lab's traffic-analysis platform. It is one integrated Docker Compose deployment that bundles every analysis tool you'll touch — you don't install or manage any of them, you just use their web interfaces at `https://malcolm.lab` (it asks for the shared analyst login).
 
 **What's inside, in analyst terms:**
 
@@ -69,7 +69,7 @@ If the sessions are case-relevant, also promote a copy to `/data/pcap/cases/` so
 
 ### Trusting a capture
 
-Before you conclude "that traffic never happened," check drop counters: Arkime's own stats page shows per-interface capture drops, and the Grafana capture-health dashboard trends them. Zeek writes its estimate to `capture_loss` (visible in Dashboards) — it should sit at ≈0%. Non-zero loss during your window means absence of evidence is not evidence of absence.
+Before you conclude "that traffic never happened," check drop counters: Arkime's own stats page shows per-interface capture drops. Zeek writes its estimate to `capture_loss` (visible in Dashboards) — it should sit at ≈0%. Non-zero loss during your window means absence of evidence is not evidence of absence.
 
 ## Zeek
 

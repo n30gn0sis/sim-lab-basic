@@ -2,22 +2,20 @@
 
 How you reach the lab, where your files live, what gets deleted automatically, and the rules an air-gapped box imposes.
 
-> Items marked **(TBD)** depend on build decisions not yet final — see [Pending items](index.md#pending-items).
-
 ## Getting in
 
 All analyst access happens over the **management network**. The capture side of the box is invisible to you by design — capture ports have no IP addresses and cannot be reached.
 
 | Access | Mechanism | Notes |
 |---|---|---|
-| Web services | HTTPS through the Nginx portal | One entry point fans out to Malcolm, GNS3, Grafana, and the docs site. Final URLs **(TBD)** — working names are `portal.lab`, `malcolm.lab`, `gns3.lab`, `monitoring.lab` |
-| Shell | SSH, **key-only** (no passwords, no root login) | Management IP only. Key enrollment process **(TBD** — proposed: send your public key to the lab operator; design in `docs/superpowers/specs/2026-09-14-account-provisioning-design.md`**)** |
+| Web services | HTTPS through the Nginx front door | Three addresses: `https://malcolm.lab` (Malcolm: Arkime, Dashboards), `https://gns3.lab` (GNS3) and `https://docs.lab` (this guide). They are `.lab` names, so your workstation must resolve them to the lab server (ask the operator) |
+| Shell | SSH, **key-only** (no passwords, no root login) | Management IP only. Send your public key to the lab operator to be enrolled |
 | PCAP drop-off | SFTP to the staging area | Scoped account; see [Importing PCAP](malcolm.md#importing-pcap) |
-| GNS3 desktop client | Connects to the GNS3 server API through the portal | Same credentials as the GNS3 web UI |
+| GNS3 desktop client | Connects to the GNS3 server API at `gns3.lab` | Same credentials as the GNS3 web UI |
 
-**TLS certificates:** the lab has no public CA. Services present certificates from the lab's **internal CA** — you will need to trust the internal CA certificate on your workstation once (browser + OS store), or you'll see warnings on every service. Get the CA cert from the lab operator.
+**TLS certificates:** the lab has no public CA. Services present certificates from the lab's **internal CA** — you will need to trust the internal CA certificate on your workstation once (browser + OS store), or you'll see warnings on every service. Get the CA certificate (`ca.crt`) from the lab operator; once your workstation trusts it, `malcolm.lab`, `gns3.lab` and `docs.lab` open without warnings.
 
-**Logins:** GNS3 v3 enforces its own authentication, Malcolm has its own account system, and Grafana has its own admin/viewer accounts. These are separate credential sets **(TBD** until provisioning is defined — the proposed model is in `docs/superpowers/specs/2026-09-14-account-provisioning-design.md`**)**.
+**Logins:** there are two. One shared analyst login opens Malcolm (`malcolm.lab`) and this guide (`docs.lab`); GNS3 (`gns3.lab`) has its own admin login. Ask the lab operator for them.
 
 ## Storage and retention
 
@@ -38,16 +36,6 @@ Zeek/Arkime *metadata* (the searchable index) has its own longer retention, mana
 
 **Backups:** configs, GNS3 projects, curated case artifacts, and workspace selections are backed up nightly. Raw PCAP and search indexes are **not** backed up, by policy. If it only exists in `raw/`, it isn't protected.
 
-## Monitoring
-
-Grafana (via the portal) is the lab's health view. The dashboards worth an analyst's attention:
-
-- **Capture health** — per-feed packet rates and drop counters. If drops are non-zero during your capture window, your PCAP has holes; check before drawing conclusions from absence of traffic.
-- **Storage burn-rate** — days-to-full projection for the PCAP and index volumes. This tells you how long `raw/` retention effectively is right now.
-- **Host health** — CPU, RAM, disk latency. Useful before launching a heavy GNS3 topology.
-
-Alerting (disk thresholds, sustained capture drops, service down) goes to the portal. Exact dashboard inventory firms up during the monitoring build phase **(TBD)**.
-
 ## Air-gap rules
 
 This server has **no internet access, ever**. Consequences:
@@ -58,7 +46,3 @@ This server has **no internet access, ever**. Consequences:
 - **Bringing data in:** PCAPs and files come in via SFTP to `/data/staging/` over the management network, or via approved removable media per site policy.
 - **Taking data out:** exports leave via SFTP from `/srv/work/`, subject to site data-handling policy. Nothing on this box syncs anywhere automatically.
 - **Time:** the lab keeps its own clock (chrony serves the lab). Timestamps are consistent *within* the lab; verify offset against your evidence source before correlating with external logs.
-
-## Offline documentation
-
-Because you can't google from the lab network, the docs site mirrors upstream documentation locally: Malcolm docs, Zeek docs, Arkime docs, GNS3 docs, and the Wireshark user guide. Reach them through the portal's docs link. Mirrors are best-effort snapshots from bundle-build time — good for reference, not guaranteed current.

@@ -1,15 +1,15 @@
 # Network Simulation — GNS3
 
-GNS3 (server version pin owned by `scripts/r770-offline-fetch.sh` — see `OWNERS.md`) is the lab's topology builder: drag routers, firewalls, switches, and endpoints onto a canvas, wire them up, and run them as real software — QEMU virtual machines and Docker containers under the hood. Use it to reproduce a customer network, build a test bed for a protocol question, stage traffic for capture practice, or rehearse a change.
+GNS3 is the lab's topology builder: drag routers, firewalls, switches, and endpoints onto a canvas, wire them up, and run them as real software — QEMU virtual machines and Docker containers under the hood. Use it to reproduce a customer network, build a test bed for a protocol question, stage traffic for capture practice, or rehearse a change.
 
 ## Connecting
 
 Two ways in, same server, same projects:
 
-- **Web UI** — GNS3 v3 ships a built-in web interface, reached through the portal. Good for most topology work.
-- **Desktop GNS3 GUI** — install the GNS3 client on your workstation and point it at the lab server as a *remote server* through the portal address. Familiar if you've used GNS3 standalone; nothing runs on your workstation except the GUI.
+- **Web UI** — GNS3 v3 ships a built-in web interface, reached at `https://gns3.lab`. Good for most topology work.
+- **Desktop GNS3 GUI** — install the GNS3 client on your workstation and point it at the lab server as a *remote server* at `gns3.lab`. Familiar if you've used GNS3 standalone; nothing runs on your workstation except the GUI.
 
-Authentication is enforced by the server (accounts **TBD** until provisioning is defined — proposed design: `docs/superpowers/specs/2026-09-14-account-provisioning-design.md`). Projects live server-side under `/srv/gns3/projects` — they persist between sessions and are included in nightly backups, so your topology survives both logout and disaster.
+Authentication is enforced by the server: GNS3 has its own admin login, separate from the Malcolm and wiki login (ask the lab operator). Projects live server-side under `/srv/gns3/projects` — they persist between sessions and are included in nightly backups, so your topology survives both logout and disaster.
 
 ## What you can build with
 
@@ -20,8 +20,8 @@ Bundled free/open-source appliances, ready to use:
 | Appliance | Role |
 |---|---|
 | **VyOS** | General-purpose router — OSPF/BGP, VPN, firewall; the workhorse |
-| **MikroTik CHR** (RouterOS 7.21) | RouterOS environments |
-| **OPNsense** (pin: see `scripts/r770-offline-fetch.sh`) | Firewall/router with a full web UI (the no-license pfSense alternative) |
+| **MikroTik CHR** | RouterOS environments |
+| **OPNsense** | Firewall/router with a full web UI (the no-license pfSense alternative) |
 | **FRR** | Pure routing stack — lightweight BGP/OSPF/IS-IS nodes |
 | **OpenWrt** | CPE/edge-device behavior |
 
@@ -41,7 +41,7 @@ This is a shared box. Router/firewall appliances cost real RAM (commonly 2–4 G
 
 - Prefer Docker nodes and built-in switches over VMs wherever the job allows.
 - Stop topologies when you're done for the day; projects keep their state.
-- Check the Grafana host dashboard before launching something huge.
+- Ask the operator before launching something huge.
 
 ## Analyzing lab traffic
 
@@ -57,6 +57,6 @@ For a quick look that doesn't need the full Malcolm treatment, GNS3 also has bui
 
 ## Ready-made scenarios
 
-The operator can run a scenario from the kit's pack instead of building one: `client-server`, `ipsec-esp`, `ipsec-ike`, `ospf` and `bgp`, each with its own address range and one link on `br-lab`. Ask for one by name; `r770-scenario.sh traffic` then generates a known window of traffic you can find in Malcolm by the scenario's range.
+The operator can run a scenario from the kit's pack instead of building one: `bgp`, `client-server`, `dns`, `ipsec-esp`, `ipsec-ike`, `ospf`, `s0-w1`, `s1-w1-ss`, `ssh` and `tls`, each with its own address range and one link on `br-lab`. Ask for one by name; `r770-scenario.sh traffic` then generates a known window of traffic you can find in Malcolm by the scenario's range.
 
 Combine with [WAN emulation](wan.md) to watch how protocols behave under latency and loss — captured and analyzed like any other traffic.
