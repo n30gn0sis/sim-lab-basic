@@ -26,7 +26,7 @@ sudo ./scripts/r770-scenario.sh traffic client-server
 sudo ./scripts/r770-scenario.sh down client-server
 ```
 
-Then open Arkime at `https://malcolm.lab`, set the time range to the last 15 minutes, and search `ip == 10.205.0.20`. You will see the sessions between a client and a web server: pings and one web request every half second for a minute.
+Then open Arkime at `https://malcolm.lab`, set the time range to the last 15 minutes, and search `ip == 10.205.0.0/16`. You will see the sessions between a client and a web server: pings and one web request every half second for a minute. Arkime only sees a capture file once it is closed, so the sessions can take several minutes to appear: if the search is empty, wait and search again. The operator can run `sudo ./scripts/r770-scenario.sh check client-server`, which waits for them and reports whether they arrived.
 
 ## Where to look next
 
