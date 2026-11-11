@@ -96,7 +96,7 @@
         "malSysPrunePcap": false,
         "malcolmIcs": true,
         "malcolmProfile": "malcolm",
-        "malcolmRestartPolicy": "no",
+        "malcolmRestartPolicy": "unless-stopped",
         "netboxAutoPopulate": false,
         "netboxAutoPopulateSubnetFilter": "<MALCOLM_CONFIG_NONE>",
         "netboxLogstashAutoCreatePrefix": false,

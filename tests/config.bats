@@ -52,3 +52,8 @@ setup() { cd "$BATS_TEST_DIRNAME/.."; }
     grep -q '"zeekPullIntelligenceFeeds": false' "$t"
     grep -q '"version": "__MALCOLM_VER__"' "$t"
 }
+
+@test "A10: the Malcolm config template has the stack restart with the Docker daemon" {
+    run grep -cE '^[[:space:]]*"malcolmRestartPolicy": "unless-stopped",?$' config/malcolm/malcolm-config.json.template
+    [ "$output" = "1" ]
+}

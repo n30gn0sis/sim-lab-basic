@@ -237,6 +237,11 @@ sudo ./scripts/r770-malcolm-deploy.sh rebind                   # 0.0.0.0:443 -> 
 sudo ./scripts/r770-malcolm-deploy.sh start                    # Malcolm's ./scripts/start, then wait for health
 ```
 
+After a reboot the stack comes back by itself (restart policy `unless-stopped`,
+set at `configure`). `r770-malcolm-deploy.sh stop` takes it down until the next
+`start`. A box configured before this change needs `configure`, `rebind` and
+`start` rerun once.
+
 `configure` asserts every flag it passes against the bundled installer's
 `--help` and dies naming a missing one — a version bump fails by name, not by
 surprise. The template pins PCAP to `/data/pcap/raw` and indexes to
