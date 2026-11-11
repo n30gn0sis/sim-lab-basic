@@ -85,7 +85,9 @@ step was clean and `scripts/r770-e2e.sh` proved every scenario in Malcolm;
 anything less is NOT INSTALLED with the step to look at. The summary lands
 in `r770-evidence/install-<host>-<ts>.md`. Rehearsed 2026-11-10 on VM 9770:
 `docs/rehearsals/2026-11-10-installer-acceptance.md`. The last action is
-`umount <media>`, as the summary prints.
+`umount <media>`, as the summary prints. On a bare host `plan` prints SKIP rows,
+each naming the step that provides it, for what the run itself will install or
+create (Docker, apt packages, the CA, Malcolm's login file), and still reads READY.
 
 The per-pipeline procedures below stay as the reference for what each step
 does, and for running one by hand.

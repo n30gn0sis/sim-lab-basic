@@ -23,6 +23,10 @@ setup() {
   "-br link"*)                  printf "lo UNKNOWN\neno1 UP\nens2f0 UP\nbr-lab UP\nlab_mirror0 UP\n" ;;
 esac'
     stub findmnt 'case "$*" in -lno\ TARGET,SOURCE*) printf "/ /dev/sda1\n/media/usb /dev/sdb1\n" ;; *) exit 1 ;; esac'
+    stub dpkg 'exit 0'; stub docker 'exit 0'
+    mkdir -p "$ROOT/etc/lab/ca/pki" "$ROOT/opt/malcolm/malcolm/nginx" "$ROOT/etc/nginx/ssl"
+    touch "$ROOT/etc/lab/ca/pki/ca.crt" "$ROOT/opt/malcolm/malcolm/nginx/htpasswd" \
+          "$ROOT/etc/nginx/ssl/lab.crt" "$ROOT/etc/nginx/lab.htpasswd"
     for c in import gns3 malcolm docs portal validate e2e; do
         stub "$c-stub" 'echo "'"$c"' $*" >> "$STUB_LOG"; f="$T/rc-'"$c"'"; [ -f "$f" ] && exit "$(cat "$f")"; exit 0'
     done
@@ -426,7 +430,40 @@ exit 0'
     echo "$output"
     [ "$status" -eq 0 ]
     grep -qx "malcolm full --bundle $BUNDLE --to unpack --dry-run" "$STUB_LOG"
-    [[ "$output" == *"SKIP  malcolm configure"*"labnet"* ]]
+    [[ "$output" == *"SKIP  malcolm capture, configure"*"labnet"* ]]
+}
+
+@test "A2: plan on a bare host reviews what it can and SKIPs the rest, naming the step that provides it — READY, not FAIL" {
+    good_conf
+    unstub docker; stub dpkg 'exit 1'
+    rm -rf "$ROOT/etc/lab/ca" "$ROOT/opt/malcolm" "$ROOT/etc/nginx/ssl/lab.crt" "$ROOT/etc/nginx/lab.htpasswd"
+    run inst plan --conf "$CONF"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    grep -q "^gns3 full --bundle $BUNDLE --to files --dry-run" "$STUB_LOG"
+    grep -q "^malcolm full --bundle $BUNDLE --to files --dry-run" "$STUB_LOG"
+    grep -q "^docs full --bundle $BUNDLE --to files --dry-run" "$STUB_LOG"
+    ! grep -q '^portal ' "$STUB_LOG"
+    [[ "$output" == *"SKIP  gns3 after files"*"docker"*"import"* ]]
+    [[ "$output" == *"SKIP  malcolm after files"*"docker"* ]]
+    [[ "$output" == *"SKIP  portal ca"*"easy-rsa"*"import"* ]]
+    [[ "$output" == *"SKIP  portal cert"*"portal ca"* ]]
+    [[ "$output" == *"SKIP  portal htpasswd"*"malcolm"*"auth"* ]]
+    [[ "$output" == *"SKIP  portal nginx"* ]]
+    [[ "$output" != *"FAIL  "* ]]
+}
+
+@test "A2: with Docker present but the apt packages absent, the pipelines are reviewed up to load" {
+    good_conf
+    stub dpkg 'exit 1'
+    run inst plan --conf "$CONF"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    grep -q "^gns3 full --bundle $BUNDLE --to load --dry-run" "$STUB_LOG"
+    grep -q "^malcolm full --bundle $BUNDLE --to load --dry-run" "$STUB_LOG"
+    grep -q "^docs full --bundle $BUNDLE --dry-run" "$STUB_LOG"
+    [[ "$output" == *"SKIP  gns3 after load"*"python3-venv"* ]]
+    [[ "$output" == *"SKIP  malcolm after load"*"python3-ruamel.yaml"* ]]
 }
 
 @test "INDEX_PATTERN reaches the dashboards step as --index-pattern; left empty, the child decides (and refuses)" {
