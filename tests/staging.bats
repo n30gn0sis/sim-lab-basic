@@ -156,3 +156,14 @@ real_bundle() {
     [ "$status" -eq 0 ]
     [[ "$output" != *"SITE_"* ]]
 }
+
+@test "A8: the fetch stages no definition whose image the bundle cannot carry" {
+    defs=$(sed -n '/^GNS3A_DEFS=(/,/^)/p' staging/r770-offline-fetch.sh)
+    [ -n "$defs" ]
+    for d in cisco-iosv cisco-iosvl2 cisco-asav fortigate pan-vm-fw; do
+        if grep -qw -- "$d" <<< "$defs"; then echo "still listed: $d"; false; fi
+    done
+    for d in vyos mikrotik-chr opnsense frr alpine-linux-virt tinycore-linux openwrt; do
+        grep -qw -- "$d" <<< "$defs" || { echo "lost: $d"; false; }
+    done
+}

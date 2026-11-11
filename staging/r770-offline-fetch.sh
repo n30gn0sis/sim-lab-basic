@@ -86,11 +86,13 @@ GNS3_NODE_IMAGES=(
     "$STRONGSWAN_IMG"
 )
 
-# .gns3a appliance definitions to grab from the GNS3 registry (free even when
-# the images are licensed). Missing names WARN, never fail.
+# .gns3a appliance definitions to grab from the GNS3 registry. Only names
+# whose image this bundle carries or fetches: a definition without its image
+# shows in the GUI, fails at boot, and is warned about by every `files` step,
+# so the install can never end clean (acceptance 2026-11-10, finding A8).
+# A licensed appliance is added here in the same change that stages its image.
 GNS3A_DEFS=(
     vyos mikrotik-chr opnsense frr alpine-linux-virt tinycore-linux openwrt
-    cisco-iosv cisco-iosvl2 cisco-asav fortigate pan-vm-fw
 )
 # Free definitions whose image is taken from the definition itself: the newest
 # version it lists, from its own download URL, checked against its own md5 (so
@@ -753,7 +755,7 @@ for a in "${GNS3A_DEFS[@]}"; do
         note "WARN: registry has no appliances/${a}.gns3a — browse https://github.com/GNS3/gns3-registry/tree/master/appliances for the actual name"
     fi
 done
-note "GNS3 definitions: $(count_glob "$B/gns3/definitions"/*.gns3a) .gns3a files (definitions are free even for licensed appliances)"
+note "GNS3 definitions: $(count_glob "$B/gns3/definitions"/*.gns3a) .gns3a files"
 
 # 6b. VyOS rolling — reuse an already-downloaded nightly (any tag) before
 # resolving the latest via the GitHub API, so a resume doesn't chase a newer
@@ -866,7 +868,7 @@ done
 # 6h. Licensed images — manual checklist
 cat > "$B/gns3/appliances/README.txt" <<'EOF'
 LICENSED / ACCOUNT-GATED GNS3 IMAGES — MANUAL DOWNLOADS, STAGE INTO THIS DIRECTORY
-(decisions 2026-08-31; definitions for these are already in ../definitions/)
+(decisions 2026-08-31; no definition is shipped for these: add the name to GNS3A_DEFS when its image is staged)
 
   Cisco (CCO / CML-VIRL entitlement):
     - IOSv (vios-adventerprisek9-*.qcow2)   - IOSvL2 (vios_l2-*.qcow2)

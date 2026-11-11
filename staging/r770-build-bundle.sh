@@ -179,8 +179,8 @@ step "3/5  Manual items — nothing below can be scripted"
 cat <<'MANUAL'
 
   gns3/appliances/         licensed appliance images you hold entitlements for.
-                           The .gns3a definitions are already staged and are
-                           free even where the images are not.
+                           No definition is shipped for these: add the name to
+                           GNS3A_DEFS when its image is staged.
 
 They are added by hand, AFTER the fetch wrote its manifest. That manifest
 cannot see them. Step 4 regenerates it so it can. (Dell firmware is not a
