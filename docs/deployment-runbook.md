@@ -32,7 +32,7 @@ The install is **not** a single sitting.
 |---|---|
 | Bundle-in prep: `preflight` `gate` `copy` `apt` `phone-home` `docker` `files` (shared by all three pipelines) | the storage layout's volumes mounted — `preflight` refuses otherwise |
 | GNS3 pipeline: `load` `venv` `secrets` `config` `service` `labnet` | bundle-in prep done; `python3-venv`, `python3-pip-whl` and `ubridge` installed from the local repo |
-| Malcolm pipeline: `load` `unpack` `configure` `secrets` `auth` `rebind` `start` | bundle-in prep done; `python3-ruamel.yaml` and `python3-dotenv` from the local repo; physical capture ports named in `--capture-ifs` (the `capture` step prepares them; it refuses a port with an address, a master or the default route) |
+| Malcolm pipeline: `load` `unpack` `capture` `configure` `secrets` `auth` `rebind` `start` | bundle-in prep done; `python3-ruamel.yaml` and `python3-dotenv` from the local repo (and `ethtool` once a physical capture port is named); physical capture ports named in `--capture-ifs` (the `capture` step prepares them; it refuses a port with an address, a master or the default route) |
 | Docs pipeline: `load` `build` | bundle-in prep done |
 | Front door: `ca` `cert` `htpasswd` `nginx` | `easy-rsa` and `nginx` from the local repo, and Malcolm's `auth` step already run |
 | validate | runs at any point; SKIPs what is not set up, naming it |
@@ -88,6 +88,10 @@ in `r770-evidence/install-<host>-<ts>.md`. Rehearsed 2026-11-10 on VM 9770:
 `umount <media>`, as the summary prints. On a bare host `plan` prints SKIP rows,
 each naming the step that provides it, for what the run itself will install or
 create (Docker, apt packages, the CA, Malcolm's login file), and still reads READY.
+Malcolm's `capture` step is reviewed on its own row whenever Malcolm's review
+stops before it, so a capture port the step would refuse (missing, not
+physical, bridged, addressed, the management path) is a FAIL in `plan`, not a
+stop mid-run; that row is a SKIP naming the apt step while `ethtool` is absent.
 
 The per-pipeline procedures below stay as the reference for what each step
 does, and for running one by hand.
@@ -183,13 +187,14 @@ proxy. There is no registry to reach.
 
 - [ ] Disposition: every package the lab needs is in the curated set (an unplanned `apt install` will fail by design until the next bundle)
 
-`apt` points APT at the local repo; it installs nothing. The packages later
-steps need — `python3-venv` and `python3-pip-whl` (GNS3 `venv`),
-`python3-ruamel.yaml` and `python3-dotenv` (Malcolm `unpack`/`configure`),
-`ubridge` (GNS3 `service`), `easy-rsa` and `nginx` (front door) — are
-installed by hand from that repo (`apt-get install` against the local source,
-the only one there is), and each step
-refuses by name when its package is absent.
+`apt` points APT at the local repo, then installs from it (and only from it)
+whichever of the packages later steps need are missing — `python3-venv` and
+`python3-pip-whl` (GNS3 `venv`), `python3-ruamel.yaml` and `python3-dotenv`
+(Malcolm `unpack`/`configure`), `ubridge` (GNS3 `service`), `easy-rsa` and
+`nginx` (front door), `ethtool` (Malcolm `capture`, and the boot-time offload
+unit `labnet` and `capture` enable), `tcpdump` and `tshark` (scenario `record`
+and `verify`); the gate lists them. Each step still refuses by name when its
+package is absent.
 
 ### Step M7 — files
 
@@ -200,7 +205,7 @@ sudo ./scripts/r770-import-bundle.sh files --bundle /srv/bundles/bundle-YYYYMMDD
 | From the bundle | To | Note |
 |---|---|---|
 | `images/` | `/srv/vms/base` | `qemu-img info` when `qemu-img` is installed |
-| `gns3/definitions/*.gns3a` | `/srv/gns3/appliances` | definitions are free even where images are licensed |
+| `gns3/definitions/*.gns3a` | `/srv/gns3/appliances` | only for appliances whose image the bundle carries: the fetch ships no definition without its image, so licensed appliances (Cisco, FortiGate, Palo Alto) are imported by hand by the operator |
 | `gns3/appliances/` | `/srv/gns3/images` (+ `checksums/`) | `README.txt` skipped; a definition with no image WARNs — it would appear in the GUI and fail at boot |
 | `enrichment/` | `/opt/enrichment` (+ `rules/`) | staged only: Suricata is disabled by decision, GeoIP descoped |
 | `docs/` | `/srv/docs` | best-effort mirrors; reading material only |
@@ -240,7 +245,7 @@ sudo ./scripts/r770-malcolm-deploy.sh rebind                   # 0.0.0.0:443 -> 
 sudo ./scripts/r770-malcolm-deploy.sh start                    # Malcolm's ./scripts/start, then wait for health
 ```
 
-`capture` *(GATED)* writes `/etc/systemd/network/05-capture-<if>.network` (no address, no ARP, promiscuous) per physical port and enables `r770-capture-offloads@<if>.service`, then proves each port. To undo, remove those files, run `systemctl disable r770-capture-offloads@<if>.service` and `networkctl reload`; the gate prints the same rollback. `lab_mirror0` is passed over (GNS3's `labnet` owns it).
+`capture` *(GATED)* writes `/etc/systemd/network/05-capture-<if>.network` (no address, no ARP, promiscuous) per physical port and enables `r770-capture-offloads@<if>.service`, then waits for networkd to settle (`CAPTURE_PORTS_WAIT_SECS`, default 10) and proves each port: promiscuous, offloads off and no address at all — link-local included, as `configure` requires. It refuses without `ethtool` (the apt step installs it). To undo, remove those files, run `systemctl disable r770-capture-offloads@<if>.service`, `networkctl reload` and `ip link set <if> promisc off arp on` (the reload leaves the live port promiscuous with ARP off; a reboot does the same); the gate prints the same rollback. The unit template stays: `labnet`'s `lab_mirror0` instance shares it. `lab_mirror0` is passed over (GNS3's `labnet` owns it).
 
 After a reboot the stack comes back by itself (restart policy `unless-stopped`,
 set at `configure`). `r770-malcolm-deploy.sh stop` takes it down until the next
@@ -410,14 +415,18 @@ Clouds carrying every scenario's traffic onto `lab_mirror0`.)
 
 The step installs `/etc/systemd/network/05-*lab*` files (the bridge with
 MAC learning and multicast snooping off, the veth, the TAPs, and
-`05-lab_mirror0.link`, which turns offloads off on the capture end) and runs
-`networkctl reload`; it refuses while systemd-networkd is inactive, before
+`05-lab_mirror0.link`, which turns offloads off on the capture end), installs
+the boot-time offload unit `/etc/systemd/system/r770-capture-offloads@.service`
+and enables its `r770-capture-offloads@lab_mirror0.service` instance (it runs
+`ethtool -K` each time the link appears, clearing the TSO sub-features the
+`.link` file cannot name), and runs `networkctl reload`; it refuses while systemd-networkd is inactive, before
 `config` has created the service user, and when one of its names already
 belongs to something else. After the reload it waits for the whole end state,
 then proves hub mode, no multicast snooping, the ports, that no physical
 interface joined the bridge directly or through a VLAN or bond (rule 8), that
-`lab_mirror0` is up, promiscuous and address-less with gro/lro/tso off, and
-whether Docker's `br_netfilter` + `FORWARD DROP` could drop bridged IP (a
+`lab_mirror0` is up, promiscuous and address-less with gro/lro/tso off (a
+WARN when `ethtool` is absent, since the enabled unit would fail at every
+boot), and whether Docker's `br_netfilter` + `FORWARD DROP` could drop bridged IP (a
 WARN with the rule to add by hand — the kit adds none). `GNS3_LAB_TAPS`
 changes the TAP count (default 4); lowering it removes the TAPs and files it
 no longer declares, through the gate. Files in place but interfaces missing

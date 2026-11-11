@@ -11,7 +11,8 @@ setup() {
     S="$ROOT/sys/class/net"
     mkdir -p "$S/ens2f0/device" "$S/ens2f1/device" "$S/eno1/device" "$S/lab_mirror0" "$S/dummy0" "$ROOT/etc/systemd/network"
     echo 0x1103 > "$S/ens2f0/flags"; echo 0x1103 > "$S/ens2f1/flags"
-    export ROOT KIT_YES=1
+    export ROOT KIT_YES=1 CAPTURE_PORTS_WAIT_SECS=1
+    stub dpkg 'exit 0'
     stub systemctl 'echo "systemctl $*" >> "$STUB_LOG"; [ "$*" = "is-active systemd-networkd" ] && echo active; exit 0'
     stub_log networkctl
     stub ip 'echo "ip $*" >> "$STUB_LOG"
@@ -131,4 +132,79 @@ netf() { echo "$ROOT/etc/systemd/network/05-capture-$1.network"; }
     [ "$status" -eq 0 ]
     [[ "$output" == *"ens2f0"* ]]
     ! grep -qE '^(networkctl reload|systemctl enable|ethtool -K)' "$STUB_LOG"
+}
+
+@test "I1: apply waits for networkd to make a port promiscuous and address-less before proving it" {
+    echo 0x1003 > "$S/ens2f0/flags"
+    settled="$BATS_TEST_TMPDIR/settled"
+    # until networkd settles, the port still carries the fe80 it got while merely up
+    stub ip "echo \"ip \$*\" >> \"\$STUB_LOG\"; [ \"\$*\" = '-o addr show dev ens2f0' ] && [ ! -e '$settled' ] && echo '4: ens2f0    inet6 fe80::1/64 scope link'; exit 0"
+    stub sleep "echo \"sleep \$*\" >> \"\$STUB_LOG\"; touch '$settled'; echo 0x1103 > '$S/ens2f0/flags'"
+    CAPTURE_PORTS_WAIT_SECS=5 run cap apply --capture-ifs ens2f0
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"PASS  ens2f0: no address, no master, promiscuous, offloads off"* ]]
+    [[ "$output" != *"FAIL"* ]]
+    [ "$(grep -c '^sleep' "$STUB_LOG")" -eq 1 ]
+}
+
+@test "I1: the wait is bounded — a port networkd never makes promiscuous FAILs after CAPTURE_PORTS_WAIT_SECS" {
+    echo 0x1003 > "$S/ens2f0/flags"
+    stub sleep 'echo "sleep $*" >> "$STUB_LOG"'
+    CAPTURE_PORTS_WAIT_SECS=3 run cap apply --capture-ifs ens2f0
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"FAIL  ens2f0: not promiscuous"* ]]
+    [ "$(grep -c '^sleep' "$STUB_LOG")" -eq 3 ]
+}
+
+@test "I4: a link-local address is tolerated before apply, but the proof fails any address — what configure would refuse" {
+    stub ip 'echo "ip $*" >> "$STUB_LOG"; [ "$*" = "-o addr show dev ens2f0" ] && echo "4: ens2f0    inet6 fe80::1/64 scope link"; exit 0'
+    stub sleep 'exit 0'
+    run cap apply --capture-ifs ens2f0
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [ -e "$(netf ens2f0)" ]                                         # the refusals let it through
+    [[ "$output" == *"FAIL  ens2f0: carries an address"* ]]
+    [[ "$output" != *"PASS  ens2f0"* ]]
+    run cap status --capture-ifs ens2f0
+    [ "$status" -eq 1 ]; [[ "$output" == *"FAIL  ens2f0: carries an address"* ]]
+}
+
+@test "I2: apply refuses, before any write, when ethtool is not installed and a physical port is named" {
+    stub dpkg 'case "$*" in "-s ethtool") exit 1;; *) exit 0;; esac'
+    run cap apply --capture-ifs ens2f0
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"not installed: ethtool"* ]]
+    [ ! -e "$(netf ens2f0)" ]
+    ! grep -qE '^(networkctl|systemctl enable)' "$STUB_LOG"
+    run cap apply --capture-ifs lab_mirror0                          # nothing physical: nothing needs it
+    [ "$status" -eq 0 ]; [[ "$output" == *"SKIP  no physical capture port"* ]]
+}
+
+@test "M1: files and template in place but the instance not enabled — goes through the gate and enables it" {
+    cap apply --capture-ifs ens2f0 >/dev/null
+    : > "$STUB_LOG"
+    stub systemctl 'echo "systemctl $*" >> "$STUB_LOG"; case "$1" in is-active) echo active;; is-enabled) exit 1;; esac; exit 0'
+    run cap apply --capture-ifs ens2f0
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"== GATE"* ]]
+    [[ "$output" != *"already in place"* ]]
+    grep -qx 'systemctl enable r770-capture-offloads@ens2f0.service' "$STUB_LOG"
+}
+
+@test "I3/T3: the rollback disables each port's instance, clears live promiscuous/ARP-off, and keeps the shared unit template" {
+    run cap apply --capture-ifs "ens2f0 ens2f1"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    rb=$(printf '%s\n' "$output" | sed -n '/^-- rollback --$/,/^-- accepted/p')
+    for i in ens2f0 ens2f1; do
+        [[ "$rb" == *"rm /etc/systemd/network/05-capture-$i.network"* ]]
+        [[ "$rb" == *"systemctl disable r770-capture-offloads@$i.service"* ]]
+        [[ "$rb" == *"ip link set $i promisc off arp on"* ]]
+    done
+    [[ "$rb" == *"networkctl reload"* ]]
+    [[ "$rb" != *"rm /etc/systemd/system/r770-capture-offloads@.service"* ]]
 }

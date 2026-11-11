@@ -162,6 +162,17 @@ import() { kit_run "$SCRIPT" "$@"; }
     grep -qE '^BASE_PKGS=".* tcpdump tshark"$' scripts/r770-import-bundle.sh
 }
 
+@test "I2: the apt stage installs ethtool — the capture step requires it and the boot-time offload unit runs it" {
+    grep -qE '^BASE_PKGS=".*\bethtool\b.*"$' scripts/r770-import-bundle.sh
+    grep -qE '^[[:space:]]+ethtool\b' staging/r770-offline-fetch.sh      # and the bundle's curated apt set carries it
+    stub apt-get 'echo "apt-get $*" >> "$STUB_LOG"; echo "Get:2 file:/srv/repo/apt ./ Packages [1 kB]"'
+    stub dpkg 'case "$*" in "-s snapd"|"-s ethtool") exit 1;; *) exit 0;; esac'
+    run import apt --bundle "$BUNDLE"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    grep -qx "apt-get install -y ethtool" "$STUB_LOG"
+}
+
 @test "apt: base packages already present are a PASS and nothing is installed" {
     stub apt-get 'echo "apt-get $*" >> "$STUB_LOG"; echo "Get:2 file:/srv/repo/apt ./ Packages [1 kB]"'
     run import apt --bundle "$BUNDLE"

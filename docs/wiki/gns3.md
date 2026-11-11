@@ -25,7 +25,7 @@ Bundled free/open-source appliances, ready to use:
 | **FRR** | Pure routing stack — lightweight BGP/OSPF/IS-IS nodes |
 | **OpenWrt** | CPE/edge-device behavior |
 
-Appliance *definitions* also exist for licensed images — Cisco IOSv/IOSvL2/ASAv, FortiGate, Palo Alto VM-Series — but the images themselves are entitlement-gated. Which ones are actually staged is **TBD**; check the appliance list in the UI or ask the operator before planning a Cisco-dependent lab.
+Licensed appliances — Cisco IOSv/IOSvL2/ASAv, FortiGate, Palo Alto VM-Series — are not in the bundle: their images are entitlement-gated, and the kit ships no definition for an appliance whose image it does not carry. The operator imports any of them by hand. Which ones are actually on this box is **TBD**; check the appliance list in the UI or ask the operator before planning a Cisco-dependent lab.
 
 ### Endpoints
 

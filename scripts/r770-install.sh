@@ -24,7 +24,8 @@
 #                            (run --yes is unattended: it also implies --non-interactive)
 #
 #   INSTALL_IMPORT_CMD INSTALL_GNS3_CMD INSTALL_MALCOLM_CMD INSTALL_DOCS_CMD
-#   INSTALL_PORTAL_CMD INSTALL_VALIDATE_CMD INSTALL_E2E_CMD   the children (tests stub them)
+#   INSTALL_PORTAL_CMD INSTALL_VALIDATE_CMD INSTALL_E2E_CMD
+#   INSTALL_CAPTURE_CMD                                       the children (tests stub them)
 #
 #   0  INSTALLED · 2  finished with warnings (never INSTALLED) · 1  refused or failed
 #
@@ -49,6 +50,7 @@ DOCS="${INSTALL_DOCS_CMD:-$KIT_DIR/scripts/r770-docs-deploy.sh}"
 PORTAL="${INSTALL_PORTAL_CMD:-$KIT_DIR/scripts/r770-portal-deploy.sh}"
 VALIDATE="${INSTALL_VALIDATE_CMD:-$KIT_DIR/scripts/r770-validate.sh}"
 E2E="${INSTALL_E2E_CMD:-$KIT_DIR/scripts/r770-e2e.sh}"
+CAPTURE="${INSTALL_CAPTURE_CMD:-$KIT_DIR/scripts/r770-capture-ports.sh}"   # plan only: run reaches it through malcolm's capture step
 SUB=""; CONF_PATH=""; FROM=""; TO=""
 MEDIA_NEEDED=1   # 0 once a run starts past import: the media may be gone, the local copy stands in
 usage() { usage_from_header 3; exit 0; }
@@ -431,7 +433,32 @@ plan_horizon() {
         gns3)    m=$(pkg_missing python3-venv python3-pip-whl ubridge) ;;
         malcolm) m=$(pkg_missing python3-ruamel.yaml python3-dotenv) ;;
     esac
-    [ -z "$m" ] || printf 'load|package(s)%s — installed by the import steps (apt)' "$m"
+    [ -z "$m" ] || { printf 'load|package(s)%s — installed by the import steps (apt)' "$m"; return 0; }
+    # malcolm's capture step (after unpack) requires ethtool once a physical port is named
+    if [ "$1" = malcolm ] && [ -n "$(phys_capture_ifs)" ]; then
+        m=$(pkg_missing ethtool)
+        [ -z "$m" ] || printf 'unpack|package(s)%s — installed by the import steps (apt)' "$m"
+    fi
+}
+# phys_capture_ifs — the CAPTURE_IFS names r770-capture-ports.sh prepares (every one but labnet's)
+phys_capture_ifs() {
+    local i out=""
+    for i in $CONF_CAPTURE_IFS; do case " $LATE_IFS " in *" $i "*) ;; *) out="$out $i" ;; esac; done
+    printf '%s' "${out# }"
+}
+# plan_capture — Malcolm's capture step on its own, for a plan whose Malcolm
+# review stops before it. Its refusals (a port that is missing, not physical,
+# bridged, addressed or the management path) need nothing the import
+# installs, so even a bare host shows them here instead of mid-run; ethtool,
+# which the step requires, comes from the import's apt step.
+plan_capture() {
+    local m
+    m=$(pkg_missing ethtool)
+    if [ -n "$(phys_capture_ifs)" ] && [ -n "$m" ]; then
+        skip "malcolm capture ($(phys_capture_ifs)): needs package(s)$m — installed by the import steps (apt); run reviews it at its own gate"
+    else
+        plan_child "malcolm capture" "$CAPTURE" apply --capture-ifs "$CONF_CAPTURE_IFS" --dry-run
+    fi
 }
 # plan_pipeline <label> <exe> <bundle> — review as far as the horizon allows;
 # returns 0 when the whole pipeline can be reviewed, 1 when it was cut short
@@ -455,14 +482,17 @@ cmd_plan() {
     plan_pipeline gns3 "$GNS3" "$b" && plan_child "gns3" "$GNS3" full --bundle "$b" --dry-run
     local i late=""
     for i in $CONF_CAPTURE_IFS; do case " $LATE_IFS " in *" $i "*) has_line "$i" "$(host_ifs)" || late="$late $i" ;; esac; done
+    local capture_reviewed=0
     if plan_pipeline malcolm "$MALCOLM" "$b"; then
         if [ -n "$late" ]; then
             plan_child "malcolm (to unpack)" "$MALCOLM" full --bundle "$b" --to unpack --dry-run
-            skip "malcolm capture, configure, secrets, auth, rebind, start: need${late} — created by the gns3 step's labnet; run reviews them at their own gates"
+            skip "malcolm configure, secrets, auth, rebind, start: need${late} — created by the gns3 step's labnet; run reviews them at their own gates"
         else
             plan_child "malcolm" "$MALCOLM" full --bundle "$b" --capture-ifs "$CONF_CAPTURE_IFS" --dry-run
+            capture_reviewed=1
         fi
     fi
+    [ "$capture_reviewed" = 1 ] || plan_capture
     plan_pipeline docs "$DOCS" "$b" && plan_child "docs" "$DOCS" full --bundle "$b" --dry-run
     local m
     m=$(pkg_missing easy-rsa)

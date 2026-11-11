@@ -1060,6 +1060,19 @@ multi_pack() {  # a one-scenario pack whose range is a list of two CIDRs
     grep -qx 'capture-ports apply --capture-ifs ens2f0' "$STUB_LOG"
 }
 
+@test "M5: capture --force reaches r770-capture-ports.sh; without it, no --force is passed" {
+    stub capture-stub 'echo "capture-ports $*" >> "$STUB_LOG"'
+    export CAPTURE_PORTS_CMD="$BIN/capture-stub"
+    run malcolm capture --capture-ifs ens2f0 --force
+    echo "$output"
+    [ "$status" -eq 0 ]
+    grep -qx 'capture-ports apply --capture-ifs ens2f0 --force' "$STUB_LOG"
+    : > "$STUB_LOG"
+    run malcolm capture --capture-ifs ens2f0
+    [ "$status" -eq 0 ]
+    grep -qx 'capture-ports apply --capture-ifs ens2f0' "$STUB_LOG"
+}
+
 @test "full with --media/--device passes them to the gate step only, and --media alone to copy" {
     stub_import_bundle
     run malcolm full --bundle "$BUNDLE" --media /mnt/usb --device /dev/fixture0 --only gate

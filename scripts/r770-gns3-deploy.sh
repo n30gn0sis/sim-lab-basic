@@ -347,6 +347,9 @@ labnet_assert() {
         else fail "lab_mirror0 has $offl offload(s) still on — ethtool -k lab_mirror0; ethtool -K lab_mirror0 tso off gso off gro off lro off"; fi
     else
         skip "lab_mirror0 offloads unchecked: ethtool not installed ($NETD/05-lab_mirror0.link turns them off when the link is created)"
+        if systemctl is-enabled --quiet r770-capture-offloads@lab_mirror0.service 2>/dev/null; then
+            warn "ethtool is not installed, yet r770-capture-offloads@lab_mirror0.service is enabled: it runs /usr/sbin/ethtool and will fail at every boot — install ethtool from the bundle (r770-import-bundle.sh apt)"
+        fi
     fi
     # Docker loads br_netfilter and sets FORWARD's policy to DROP; with
     # bridge-nf-call-iptables=1, IP frames crossing br-lab traverse that chain.
@@ -392,6 +395,9 @@ cmd_labnet() {
     [ "${#LABNET_LEGACY[@]}" -eq 0 ] || changed=1
     if legacy_veth; then changed=1; fi
     cmp -s "$KIT_CONFIG_DIR/systemd/$OFFL_UNIT" "$(p /etc/systemd/system)/$OFFL_UNIT" || changed=1
+    # the template is shared with r770-capture-ports.sh's physical ports: its
+    # presence says nothing about lab_mirror0's own instance
+    systemctl is-enabled --quiet r770-capture-offloads@lab_mirror0.service 2>/dev/null || changed=1
     if [ "$changed" -eq 0 ]; then
         pass "lab network files already in place in $NETD"
         for n in $(lab_names); do [ -e "$sys/$n" ] || missing="$missing $n"; done
@@ -402,7 +408,8 @@ cmd_labnet() {
         fi
     else
         rb="rm $NETD/05-*lab*; networkctl reload; ip link del br-lab; ip link del lab-mon0"
-        rb="$rb; systemctl disable r770-capture-offloads@lab_mirror0.service; rm /etc/systemd/system/$OFFL_UNIT; systemctl daemon-reload"
+        # lab_mirror0's instance only: the unit template stays, physical capture ports (r770-capture-ports.sh) share it
+        rb="$rb; systemctl disable r770-capture-offloads@lab_mirror0.service"
         for n in $( { lab_names; labnet_stale_taps; } | grep '^lab-tap' | sort -u -V); do rb="$rb; ip link del $n"; done
         gate "install the mirrored lab bridge (br-lab)" labnet_current labnet_proposed "$rb"
         run mkdir -p "$netd" || die "could not create $NETD"

@@ -158,7 +158,12 @@ cmd_capture() {
         skip "no --capture-ifs given: no capture port to prepare"
         footer "capture"
     fi
-    "$CAPTURE_PORTS_CMD" apply --capture-ifs "$CAPTURE_IFS"
+    # --yes/--non-interactive/--dry-run reach the child through the KIT_*
+    # environment common_flag exports; --force has no such variable, so it
+    # is passed on as the flag itself
+    local -a args=(apply --capture-ifs "$CAPTURE_IFS")
+    [ "$FORCE" = "1" ] && args+=(--force)
+    "$CAPTURE_PORTS_CMD" "${args[@]}"
 }
 
 # ── configure ────────────────────────────────────────────────────────────────

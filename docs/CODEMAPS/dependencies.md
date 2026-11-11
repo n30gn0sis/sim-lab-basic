@@ -59,6 +59,7 @@ software reaches the box through the bundle and nowhere else.
 | `easy-rsa` | `portal-deploy ca` / `cert` |
 | `nginx` | `portal-deploy nginx` |
 | `ubridge` | `gns3-deploy service` (without it no GNS3 project opens) |
+| `ethtool` | `capture-ports apply` (Malcolm `capture`), once a physical port is named; the boot-time `r770-capture-offloads@.service` runs it (labnet WARNs when it is absent) |
 
 ## Runtime the kit itself assumes
 

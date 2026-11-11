@@ -345,9 +345,11 @@ EOF
 }
 
 # stub_labnet_host — networkd active, the service user present, networkctl
-# reload "creates" the interfaces, and ip reports an address on lab_mirror0
-# only when MIRROR_ADDR is set.
+# reload "creates" the interfaces, ip reports an address on lab_mirror0
+# only when MIRROR_ADDR is set, and ethtool (a base package the apt stage
+# installs) reports every offload off.
 stub_labnet_host() {
+    stub ethtool 'echo "ethtool $*" >> "$STUB_LOG"; [ "$1" = -k ] && printf "tcp-segmentation-offload: off\ngeneric-receive-offload: off\nlarge-receive-offload: off [fixed]\n"; exit 0'
     stub systemctl 'echo "systemctl $*" >> "$STUB_LOG"; [ "$*" = "is-active systemd-networkd" ] && echo active; exit 0'
     stub networkctl 'echo "networkctl $*" >> "$STUB_LOG"; [ "$1" = reload ] && [ -x "$BATS_TEST_TMPDIR/on-reload" ] && "$BATS_TEST_TMPDIR/on-reload"; exit 0'
     stub ip 'echo "ip $*" >> "$STUB_LOG"; case "$*" in *"addr show dev lab_mirror0"*) [ -n "${MIRROR_ADDR:-}" ] && echo "9: lab_mirror0    inet6 fe80::1/64 scope link";; esac; exit 0'
@@ -537,12 +539,36 @@ labnet_user() { stub getent 'case "$1 $2" in "passwd gns3") exit 0;; *) exit 1;;
     grep -qx 'systemctl enable r770-capture-offloads@lab_mirror0.service' "$STUB_LOG"
 }
 
-@test "labnet SKIPs the offload proof when ethtool is not installed" {
+@test "labnet SKIPs the offload proof when ethtool is not installed, and WARNs that the enabled boot unit would fail (I2)" {
+    stub_labnet_host; labnet_user; unstub ethtool
+    run gns3 labnet
+    echo "$output"
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"SKIP  lab_mirror0 offloads unchecked: ethtool not installed"* ]]
+    [[ "$output" == *"WARN  ethtool is not installed"*"r770-capture-offloads@lab_mirror0.service"* ]]
+}
+
+@test "M1: labnet with every file in place but lab_mirror0's offload instance not enabled goes through the gate and enables it" {
+    stub_labnet_host; labnet_user
+    gns3 labnet >/dev/null
+    : > "$STUB_LOG"
+    stub systemctl 'echo "systemctl $*" >> "$STUB_LOG"; case "$1" in is-active) echo active;; is-enabled) exit 1;; esac; exit 0'
+    run gns3 labnet
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"== GATE"* ]]
+    [[ "$output" != *"already in place"* ]]
+    grep -qx 'systemctl enable r770-capture-offloads@lab_mirror0.service' "$STUB_LOG"
+}
+
+@test "I3: labnet's rollback disables its own offload instance and keeps the unit template physical capture ports share" {
     stub_labnet_host; labnet_user
     run gns3 labnet
     echo "$output"
     [ "$status" -eq 0 ]
-    [[ "$output" == *"SKIP  lab_mirror0 offloads unchecked: ethtool not installed"* ]]
+    rb=$(printf '%s\n' "$output" | sed -n '/^-- rollback --$/,/^-- accepted/p')
+    [[ "$rb" == *"systemctl disable r770-capture-offloads@lab_mirror0.service"* ]]
+    [[ "$rb" != *"rm /etc/systemd/system/r770-capture-offloads@.service"* ]]
 }
 
 @test "labnet WARNs when br_netfilter sends bridged IP through a FORWARD chain whose policy is DROP (F2)" {

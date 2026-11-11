@@ -42,7 +42,9 @@ DOCKER_PKGS="docker-ce docker-ce-cli containerd.io docker-compose-plugin"
 # so a fresh R770 died at gns3's venv; staging had stood them in by hand.
 # tcpdump and tshark: r770-scenario.sh record captures with one and verify judges
 # with the other; found 2026-11-10 — tshark shipped in apt/ and nothing installed it.
-BASE_PKGS="python3-venv python3-pip-whl python3-ruamel.yaml python3-dotenv easy-rsa nginx ubridge tcpdump tshark"
+# ethtool: r770-capture-ports.sh requires it, and r770-capture-offloads@.service
+# runs it at every boot (final review 2026-11-11, I2).
+BASE_PKGS="python3-venv python3-pip-whl python3-ruamel.yaml python3-dotenv easy-rsa nginx ubridge ethtool tcpdump tshark"
 
 BUNDLE=""; MEDIA=""; DEVICE=""
 usage() { usage_from_header 3; exit 0; }

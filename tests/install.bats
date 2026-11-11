@@ -27,12 +27,12 @@ esac'
     mkdir -p "$ROOT/etc/lab/ca/pki" "$ROOT/opt/malcolm/malcolm/nginx" "$ROOT/etc/nginx/ssl"
     touch "$ROOT/etc/lab/ca/pki/ca.crt" "$ROOT/opt/malcolm/malcolm/nginx/htpasswd" \
           "$ROOT/etc/nginx/ssl/lab.crt" "$ROOT/etc/nginx/lab.htpasswd"
-    for c in import gns3 malcolm docs portal validate e2e; do
+    for c in import gns3 malcolm docs portal validate e2e capture; do
         stub "$c-stub" 'echo "'"$c"' $*" >> "$STUB_LOG"; f="$T/rc-'"$c"'"; [ -f "$f" ] && exit "$(cat "$f")"; exit 0'
     done
     export INSTALL_IMPORT_CMD="$BIN/import-stub" INSTALL_GNS3_CMD="$BIN/gns3-stub" INSTALL_MALCOLM_CMD="$BIN/malcolm-stub" \
            INSTALL_DOCS_CMD="$BIN/docs-stub" INSTALL_PORTAL_CMD="$BIN/portal-stub" INSTALL_VALIDATE_CMD="$BIN/validate-stub" \
-           INSTALL_E2E_CMD="$BIN/e2e-stub"
+           INSTALL_E2E_CMD="$BIN/e2e-stub" INSTALL_CAPTURE_CMD="$BIN/capture-stub"
 }
 
 inst() { kit_run "$SCRIPT" "$@"; }
@@ -430,7 +430,56 @@ exit 0'
     echo "$output"
     [ "$status" -eq 0 ]
     grep -qx "malcolm full --bundle $BUNDLE --to unpack --dry-run" "$STUB_LOG"
-    [[ "$output" == *"SKIP  malcolm capture, configure"*"labnet"* ]]
+    [[ "$output" == *"SKIP  malcolm configure"*"labnet"* ]]
+    grep -qx "capture apply --capture-ifs lab_mirror0 --dry-run" "$STUB_LOG"   # capture passes lab_mirror0 over: reviewable now (M8)
+}
+
+@test "M8: plan on a bare host reviews the capture step's refusals for the physical ports named — a refusal is a FAIL row" {
+    good_conf; sed -i 's#^CAPTURE_IFS=.*#CAPTURE_IFS=lab_mirror0 ens2f0#' "$CONF"
+    unstub docker; stub dpkg 'case "$*" in "-s ethtool") exit 0;; *) exit 1;; esac'
+    run inst plan --conf "$CONF"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    grep -qx "capture apply --capture-ifs lab_mirror0 ens2f0 --dry-run" "$STUB_LOG"
+    [[ "$output" == *"PASS  malcolm capture: would apply cleanly"* ]]
+    echo 1 > "$T/rc-capture"
+    run inst plan --conf "$CONF"
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"FAIL  malcolm capture: refused under --dry-run"* ]]
+}
+
+@test "M8: plan on a bare host without ethtool SKIPs the capture row, naming the apt step — not a FAIL" {
+    good_conf; sed -i 's#^CAPTURE_IFS=.*#CAPTURE_IFS=lab_mirror0 ens2f0#' "$CONF"
+    unstub docker; stub dpkg 'exit 1'
+    run inst plan --conf "$CONF"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    ! grep -q '^capture ' "$STUB_LOG"
+    [[ "$output" == *"SKIP  malcolm capture"*"ethtool"*"import"* ]]
+    [[ "$output" != *"FAIL  "* ]]
+}
+
+@test "M8/I2: with Docker and Malcolm's packages present but ethtool absent, Malcolm is reviewed to unpack and capture SKIPs naming ethtool" {
+    good_conf; sed -i 's#^CAPTURE_IFS=.*#CAPTURE_IFS=lab_mirror0 ens2f0#' "$CONF"
+    stub dpkg 'case "$*" in "-s ethtool") exit 1;; *) exit 0;; esac'
+    run inst plan --conf "$CONF"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    grep -qx "malcolm full --bundle $BUNDLE --to unpack --dry-run" "$STUB_LOG"
+    ! grep -q '^capture ' "$STUB_LOG"
+    [[ "$output" == *"SKIP  malcolm after unpack"*"ethtool"* ]]
+    [[ "$output" == *"SKIP  malcolm capture"*"ethtool"* ]]
+    [[ "$output" != *"FAIL  "* ]]
+}
+
+@test "M8: when the whole Malcolm pipeline is reviewed, its own capture step covers the ports — no separate row" {
+    good_conf; sed -i 's#^CAPTURE_IFS=.*#CAPTURE_IFS=lab_mirror0 ens2f0#' "$CONF"
+    run inst plan --conf "$CONF"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    grep -qx "malcolm full --bundle $BUNDLE --capture-ifs lab_mirror0 ens2f0 --dry-run" "$STUB_LOG"
+    ! grep -q '^capture ' "$STUB_LOG"
 }
 
 @test "A2: plan on a bare host reviews what it can and SKIPs the rest, naming the step that provides it — READY, not FAIL" {
