@@ -514,6 +514,29 @@ labnet_user() { stub getent 'case "$1 $2" in "passwd gns3") exit 0;; *) exit 1;;
     [[ "$output" == *"FAIL  lab_mirror0 has 2 offload(s) still on"* ]]
 }
 
+@test "A11: labnet installs the boot-time offload unit and enables it for lab_mirror0" {
+    stub_labnet_host; labnet_user
+    run gns3 labnet
+    echo "$output"
+    [ "$status" -eq 0 ]
+    u="$ROOT/etc/systemd/system/r770-capture-offloads@.service"
+    [ -f "$u" ]
+    grep -qx 'ExecStart=/usr/sbin/ethtool -K %i tso off gso off gro off lro off' "$u"
+    grep -qx 'BindsTo=sys-subsystem-net-devices-%i.device' "$u"
+    grep -qx 'systemctl enable r770-capture-offloads@lab_mirror0.service' "$STUB_LOG"
+    [[ "$output" == *"r770-capture-offloads@lab_mirror0.service"* ]]   # the gate showed it
+}
+
+@test "A11: a box whose labnet ran before the offload unit existed gets it on the next labnet" {
+    stub_labnet_host; labnet_user
+    gns3 labnet >/dev/null
+    rm "$ROOT/etc/systemd/system/r770-capture-offloads@.service"; : > "$STUB_LOG"
+    run gns3 labnet
+    echo "$output"
+    [ "$status" -eq 0 ]
+    grep -qx 'systemctl enable r770-capture-offloads@lab_mirror0.service' "$STUB_LOG"
+}
+
 @test "labnet SKIPs the offload proof when ethtool is not installed" {
     stub_labnet_host; labnet_user
     run gns3 labnet

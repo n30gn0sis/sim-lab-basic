@@ -19,6 +19,7 @@ bundled installer's filename. `tests/no-pins.bats` enforces this.
 | `gns3/gns3_server.conf.template` | `__PASSWORD__` → `__ADMIN_PW__`; `jwt_secret_key` line dropped (measured: not honoured) | fewer lies in the template |
 | `wan/profiles/*.conf` | new | values from `docs/wiki/wan.md` and the filed spec section 6.2; read by `scripts/r770-wan.sh` |
 | `systemd/gns3.service` | new | a server started from a shell outlived its tmux session |
+| `systemd/r770-capture-offloads@.service` | new in the kit | offloads return after a reboot without it (A11) |
 | `networkd/{br-lab,lab-mirror}.netdev`, `networkd/{br-lab,lab-mon0,lab_mirror0}.network`, `networkd/lab_mirror0.link`, `networkd/lab-tap.{netdev,network}.template` | new | the live mirror: a hub-mode lab bridge (no MAC learning, no multicast snooping) whose veth peer Malcolm captures, with offloads off on that capture end (installed as `/etc/systemd/network/05-*` by `r770-gns3-deploy.sh labnet`) |
 | `config/docs/mkdocs.yml` | header comment names the kit's build path | built on the R770, not the VM |
 | `malcolm/dashboards/ipsec.ndjson.template` | new | IPsec saved searches and a dashboard for server-bound and GNS3 traffic. Queries are built from IANA protocol numbers and the registered IKE ports, so they do not drift when the bundled Malcolm moves; the index pattern is a token read off the running stack |
