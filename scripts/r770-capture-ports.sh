@@ -42,7 +42,11 @@ KIT_OWNED="lab_mirror0"          # capture ends another step owns
 WAIT_SECS="${CAPTURE_PORTS_WAIT_SECS:-10}"
 PORTS=()
 STAGE=""
-usage() { usage_from_header 3; exit 0; }
+# usage returns, so the help branch of the dispatch below reaches the end of
+# the script: every other branch ends in footer's or die's exit, and the
+# linter on Ubuntu 24.04 then reports the gate's callbacks (only ever invoked
+# by name) as unreachable. Found by the suite on the VM, final pass.
+usage() { usage_from_header 3; }
 
 ports_resolve() {  # fill PORTS with the physical ports named, after every refusal
     local i sys a; sys="$(p /sys/class/net)"
@@ -188,7 +192,7 @@ SUB="${1:-}"; [ $# -gt 0 ] && shift
 while [ $# -gt 0 ]; do
     case "$1" in
         --capture-ifs) CAPTURE_IFS="${2:-}"; shift ;;
-        -h|--help)     usage ;;
+        -h|--help)     usage; exit 0 ;;
         *)             common_flag "$1" || die "unknown option: $1 (try --help)" ;;
     esac
     shift

@@ -208,3 +208,12 @@ netf() { echo "$ROOT/etc/systemd/network/05-capture-$1.network"; }
     [[ "$rb" == *"networkctl reload"* ]]
     [[ "$rb" != *"rm /etc/systemd/system/r770-capture-offloads@.service"* ]]
 }
+
+@test "help, as a subcommand or a flag, prints the usage and exits 0 having run nothing" {
+    : > "$STUB_LOG"
+    run cap --help;       echo "$output"; [ "$status" -eq 0 ]; [[ "$output" == *"r770-capture-ports.sh apply"* ]]
+    run cap help;         echo "$output"; [ "$status" -eq 0 ]; [[ "$output" == *"r770-capture-ports.sh apply"* ]]
+    run cap;              echo "$output"; [ "$status" -eq 0 ]; [[ "$output" == *"r770-capture-ports.sh apply"* ]]
+    run cap apply --help; echo "$output"; [ "$status" -eq 0 ]; [[ "$output" == *"r770-capture-ports.sh apply"* ]]
+    [ ! -s "$STUB_LOG" ]
+}
