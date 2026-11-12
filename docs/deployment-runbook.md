@@ -231,7 +231,7 @@ A pair whose tags are already all present is skipped, so the step is safe to
 rerun. A missing tag means the tarball is incomplete: re-cut; never patch by
 hand.
 
-### Steps M9–M15 — unpack, capture, configure, secrets, auth, rebind, start
+### Steps M9–M15 — unpack, capture, configure, secrets, auth, rebind, start  *(capture and auth are GATED)*
 
 ```bash
 B=/srv/bundles/bundle-YYYYMMDD
@@ -240,12 +240,14 @@ sudo ./scripts/r770-malcolm-deploy.sh capture --capture-ifs "<if ...>"   # (GATE
 sudo ./scripts/r770-malcolm-deploy.sh configure --bundle $B    # renders the kit's config template, replays it through install.py
 #   add --capture-ifs lab_mirror0 for live capture of the lab (run GNS3's labnet first)
 sudo ./scripts/r770-malcolm-deploy.sh secrets                  # /etc/lab/secrets/malcolm-admin.pw, once
-sudo ./scripts/r770-malcolm-deploy.sh auth --bundle $B         # auth_setup, hashes generated on the box
+sudo ./scripts/r770-malcolm-deploy.sh auth --bundle $B         # (GATED) the stack's owner into the docker group if not in it; then auth_setup, hashes generated on the box
 sudo ./scripts/r770-malcolm-deploy.sh rebind                   # 0.0.0.0:443 -> 127.0.0.1:8443, the front door owns 443
 sudo ./scripts/r770-malcolm-deploy.sh start                    # Malcolm's ./scripts/start, then wait for health
 ```
 
 `capture` *(GATED)* writes `/etc/systemd/network/05-capture-<if>.network` (no address, no ARP, promiscuous) per physical port and enables `r770-capture-offloads@<if>.service`, then waits for networkd to settle (`CAPTURE_PORTS_WAIT_SECS`, default 10) and proves each port: promiscuous, offloads off and no address at all — link-local included, as `configure` requires. It refuses without `ethtool` (the apt step installs it). To undo, remove those files, run `systemctl disable r770-capture-offloads@<if>.service`, `networkctl reload` and `ip link set <if> promisc off arp on` (the reload leaves the live port promiscuous with ARP off; a reboot does the same); the gate prints the same rollback. The unit template stays: `labnet`'s `lab_mirror0` instance shares it. `lab_mirror0` is passed over (GNS3's `labnet` owns it).
+
+`auth` *(GATED)* first makes sure the stack's owner (the `PUID` user in `/opt/malcolm/malcolm/config/process.env`) is in the `docker` group: Malcolm's scripts run as that user and drive docker compose. The group exists only once the `docker` step has installed Docker Engine, so on a first install the owner is never in it yet. The gate shows the user's groups and the group's members, proposes `usermod -aG docker <user>`, and names the rollback, `gpasswd -d <user> docker`. Membership of `docker` is root-equivalent on this host — accept it knowingly. The step then carries on in the same run with no new login: the kit runs Malcolm's scripts through `runuser`, which reads the group database afresh. An owner already in the group meets no gate. With no `docker` group at all, `auth` refuses and names the `docker` step; the kit never creates the group. The gate applies even when the auth material is already there, so rerunning `auth` is the fix whenever `start` or `stop` find the owner outside the group.
 
 After a reboot the stack comes back by itself (restart policy `unless-stopped`,
 set at `configure`). `r770-malcolm-deploy.sh stop` takes it down until the next
@@ -270,7 +272,7 @@ accepts. The first `configure` runs the zip's `install.py` from
 stack (`/opt/malcolm/malcolm/scripts/install.py`). Malcolm's control scripts refuse root, so `auth`,
 `start` and `stop` run as the stack's owner — the `PUID`/`PGID` in
 `/opt/malcolm/malcolm/config/process.env`, which must not be root and must be in the `docker`
-group — and `configure`/`rebind` give that user the stack and the configured
+group (`auth` adds it, at its gate) — and `configure`/`rebind` give that user the stack and the configured
 index and PCAP directories. `rebind` is re-applied after every installer run
 because a compose override file is ignored. `configure` also sets
 `ARKIME_default__trackESP=true` in
@@ -840,7 +842,9 @@ reused. `--force` redoes a stamped or generated step.
 | a `load` step names a MISSING tag | The tarball is incomplete. Re-cut; do not patch by hand |
 | `venv` dies naming `python3-venv` | The apt step did not run, or the curated set lacks it |
 | `configure` dies naming a flag | The bundled installer's interface moved; read `BUNDLE_NOTES.md`, update the kit, then rerun |
-| `auth`, `start` or `stop` refuses: `<user> is not in the docker group` | Malcolm's scripts run as the `PUID` user and drive docker. `usermod -aG docker <user>`, then rerun `--from auth`. A fresh box's operator account is not in `docker` |
+| `auth` stops at the gate `add <user> to the docker group` | Expected once on a fresh box: the `docker` group exists only after the `docker` step. Read current · proposed · rollback, then answer `y`, or rerun with `--yes` (`--from auth` under `full`). No new login is needed |
+| `auth` refuses: `the docker group does not exist` | Docker Engine is not installed yet: run the `docker` step (`full --from docker`), then `auth` |
+| `start` or `stop` refuses: `<user> is not in the docker group` | Malcolm's scripts run as the `PUID` user and drive docker. Rerun `r770-malcolm-deploy.sh auth --bundle <dir>` (or `full --from auth`): it adds the user at its gate. Then rerun the step |
 | `start` FAILs on unready services | Rerun `start` to keep waiting; then `docker compose logs` in the stack directory |
 | `service` FAILs on `0.0.0.0:3080` | The rendered config's host is not loopback; rerun `config` |
 | `nginx -t` rejects | Nothing was reloaded; the previous config is live. Fix the vhost, rerun |

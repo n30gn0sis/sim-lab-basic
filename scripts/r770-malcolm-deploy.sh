@@ -14,7 +14,9 @@
 #   configure     render the kit's config template, replay it through the
 #                 installer (--import-malcolm-config-file), then rebind
 #   secrets       generate the admin password file once (never printed)
-#   auth          Malcolm's auth_setup, unattended, hashes generated on the box
+#   auth          Malcolm's auth_setup, unattended, hashes generated on the box;
+#                 first adds the stack's owner to the docker group when it is
+#                 not in it (GATED: membership is root-equivalent)
 #   rebind        publish nginx-proxy on 127.0.0.1:8443 instead of 0.0.0.0:443
 #   start         Malcolm's own ./scripts/start, then wait for health; the wildcard 443 listener must be the front door's nginx (docker-proxy there FAILs)
 #   stop          Malcolm's own ./scripts/stop
@@ -357,6 +359,9 @@ cmd_auth() {
     b=$(bundle_dir "$BUNDLE") || exit 1
     setup="$(stack)/scripts/auth_setup"
     [ -x "$setup" ] || die "$setup not found — run configure first (the installer extracts the stack)"
+    # before the already-present check: start and stop name this step as the
+    # fix for an owner outside the group, so it must apply on a rerun too
+    docker_join
     if [ -s "$(stack)/nginx/htpasswd" ] && [ "$FORCE" != "1" ]; then
         pass "auth material already present ($(stack)/nginx/htpasswd); --force regenerates certs and keystores too"
         footer "auth"
@@ -437,13 +442,54 @@ own_stack() {  # give the stack to its recorded owner (after every installer run
     done
     [ "$DRY" = "1" ] || [ -z "$dirs" ] || pass "data dirs owned by $user:$dirs"
 }
+docker_member() {  # docker_member <user> — 0 if the docker group lists <user>
+    # grep reads to the end (no -q): an early exit could SIGPIPE tr, and
+    # pipefail would then turn a match into a "not a member"
+    getent group docker | cut -d: -f4 | tr ',' '\n' | grep -x -- "$1" >/dev/null
+}
+# No "log in again": every step runs Malcolm's scripts through `runuser -u`,
+# a fresh process that takes its groups from the group database as it is now
+# (staging, final pass 2026-11-12: usermod, then the same run went on).
 owner_for_docker() {  # the owner's name, once it is known to reach docker
     local o user
     o=$(malcolm_owner) || exit 1
     user=${o%% *}
-    getent group docker | cut -d: -f4 | tr ',' '\n' | grep -qx "$user" \
-        || die "$user is not in the docker group — Malcolm's scripts run as $user and drive docker compose (usermod -aG docker $user, then log in again)"
+    docker_member "$user" \
+        || die "$user is not in the docker group — Malcolm's scripts run as $user and drive docker compose. The kit adds it at a gate: rerun 'r770-malcolm-deploy.sh auth --bundle <dir>' (or 'full --from auth'), then this step"
     printf '%s' "$user"
+}
+
+# docker_join — Malcolm's owner joins the docker group, gated: membership is
+# root-equivalent. The group exists only once the docker step has installed
+# Docker, so on a first install nobody could have added the owner before
+# (final pass, staging from a bare OS, 2026-11-12: every such run stopped at
+# auth once). The kit never creates the group itself.
+DJ_USER=""
+dj_current() {
+    printf '    %s is not in the docker group; %s is in: %s\n' "$DJ_USER" "$DJ_USER" "$(id -nG "$DJ_USER" 2>/dev/null || echo '(id could not read them)')"
+    printf '    docker group members: %s\n' "$(getent group docker | cut -d: -f4 | sed 's/^$/(none)/')"
+}
+dj_proposed() {
+    echo "    usermod -aG docker $DJ_USER"
+    echo "    Membership of docker is root-equivalent on this host (any member can run a container as root); Malcolm needs it because its scripts run as $DJ_USER and drive docker compose."
+}
+docker_join() {
+    local o
+    o=$(malcolm_owner) || exit 1
+    DJ_USER=${o%% *}
+    if ! getent group docker >/dev/null 2>&1; then
+        if [ "$DRY" = "1" ]; then
+            skip "docker group membership for $DJ_USER: the docker group does not exist yet — the docker step (Docker Engine from the bundle) creates it; run reviews this gate then"
+            return 0
+        fi
+        die "the docker group does not exist — the docker step creates it when it installs Docker Engine from the bundle (r770-import-bundle.sh docker, or full --from docker); the kit never creates the group itself"
+    fi
+    docker_member "$DJ_USER" && return 0
+    gate "add $DJ_USER to the docker group" dj_current dj_proposed "gpasswd -d $DJ_USER docker"
+    run usermod -aG docker "$DJ_USER" || die "usermod -aG docker $DJ_USER failed — nothing else was changed"
+    [ "$DRY" = "1" ] && return 0
+    docker_member "$DJ_USER" || die "usermod reported success but the docker group still does not list $DJ_USER — read 'getent group docker'"
+    pass "$DJ_USER added to the docker group — the steps that run Malcolm's scripts as $DJ_USER pick it up without a new login"
 }
 
 # ── rebind ───────────────────────────────────────────────────────────────────

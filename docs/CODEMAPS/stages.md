@@ -11,7 +11,7 @@ proposed · rollback, needs `--yes` or a `y`).
 
 | Pipeline | Script | `full` step sequence | Operator-invoked extras |
 |---|---|---|---|
-| Malcolm | `scripts/r770-malcolm-deploy.sh` | `preflight` `gate` `copy` `apt` 🔒 `phone-home` 🔒 `docker` 🔒 `files` `load` `unpack` `capture` 🔒 `configure` `secrets` `auth` `rebind` `start` | `assert-tags`, `stop`, `status`, `inventory`, `dashboards`, `arkime-views` |
+| Malcolm | `scripts/r770-malcolm-deploy.sh` | `preflight` `gate` `copy` `apt` 🔒 `phone-home` 🔒 `docker` 🔒 `files` `load` `unpack` `capture` 🔒 `configure` `secrets` `auth` 🔒 `rebind` `start` | `assert-tags`, `stop`, `status`, `inventory`, `dashboards`, `arkime-views` |
 | GNS3 | `scripts/r770-gns3-deploy.sh` | `preflight` `gate` `copy` `apt` 🔒 `phone-home` 🔒 `docker` 🔒 `files` `load` `venv` `secrets` `config` `service` 🔒 `labnet` 🔒 | `assert-tags`, `status` |
 | Docs | `scripts/r770-docs-deploy.sh` | `preflight` `gate` `copy` `apt` 🔒 `phone-home` 🔒 `docker` 🔒 `files` `load` `build` | `assert-tags`, `status` |
 | Front door | `scripts/r770-portal-deploy.sh` | none — never part of a `full`; run by hand as `ca` `cert` `htpasswd` `nginx` 🔒, in that order, after Malcolm's `auth` step | `status`, `--print-sans` |
