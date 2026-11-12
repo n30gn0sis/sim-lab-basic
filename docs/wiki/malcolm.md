@@ -12,7 +12,7 @@ Malcolm is the lab's traffic-analysis platform. It is one integrated Docker Comp
 | **OpenSearch** | The search engine underneath (you query it via Arkime/Dashboards, not directly) |
 | **Suricata** | Signature IDS — present but **disabled at initial build**; no alerts until enabled |
 
-**Where the traffic comes from:** physical TAP/SPAN feeds on dedicated capture ports, a virtual mirror of lab topologies (see [GNS3](gns3.md#analyzing-lab-traffic)), and PCAPs you import yourself.
+**Where the traffic comes from:** a virtual mirror of lab topologies (see [GNS3](gns3.md#analyzing-lab-traffic)) and PCAPs you import yourself. No physical TAP or SPAN feed is cabled to this server yet.
 
 **Known limitations up front:** no GeoIP (country/ASN fields absent — descoped), no Suricata alerts initially, and raw PCAP ages out automatically (see [retention](access.md#storage-and-retention)).
 
@@ -62,7 +62,7 @@ Wireshark itself runs on your workstation, not on the server. To get packets the
 
 1. Run the search that isolates the sessions you care about.
 2. Use Arkime's **Export PCAP** action (per-session, or for the whole result set).
-3. Save the export into your workspace under `/srv/work/`, then pull it to your workstation over SFTP.
+3. Save the export into your workspace under `/srv/work/`, then pull it to your workstation with `scp`.
 4. Open in Wireshark. Exports are standard PCAP and open cleanly.
 
 If the sessions are case-relevant, also promote a copy to `/data/pcap/cases/` so the evidence outlives raw retention.
@@ -116,11 +116,11 @@ Each saved search also stands on its own in Discover, and the same protocols exi
 
 Bringing your own capture into Malcolm gives it the full treatment — Zeek logs, Arkime indexing, dashboards — the same as live traffic:
 
-1. SFTP your file(s) into `/data/staging/`.
-2. Use Malcolm's upload/ingest interface and point it at the file. Assign a **tag** while ingesting — it's how you'll isolate your dataset from everything else (`tags == mytag` in Arkime, `tags:mytag` in Dashboards).
+1. Upload the file through Malcolm's upload page; for a large file, `scp` it into `/data/staging/` first.
+2. Assign a **tag** while ingesting — it's how you'll isolate your dataset from everything else (`tags == mytag` in Arkime, `tags:mytag` in Dashboards).
 3. Wait for processing (large PCAPs take a while; progress is visible in the upload UI).
 4. Analyze as usual, filtered to your tag.
-5. Clean your originals out of `/data/staging/` when done — it's a working area, not storage.
+5. Clean anything you copied into `/data/staging/` out when done — it's a working area, not storage.
 
 Timestamps note: imported traffic appears at its *original* capture time — set the Dashboards/Arkime time range to when the PCAP was recorded, not to today.
 

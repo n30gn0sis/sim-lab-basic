@@ -9,7 +9,7 @@ Two ways in, same server, same projects:
 - **Web UI** — GNS3 v3 ships a built-in web interface, reached at `https://gns3.lab`. Good for most topology work.
 - **Desktop GNS3 GUI** — install the GNS3 client on your workstation and point it at the lab server as a *remote server* at `gns3.lab`. Familiar if you've used GNS3 standalone; nothing runs on your workstation except the GUI.
 
-Authentication is enforced by the server: GNS3 has its own admin login, separate from the Malcolm and wiki login (ask the lab operator). Projects live server-side under `/srv/gns3/projects` — they persist between sessions and are included in nightly backups, so your topology survives both logout and disaster.
+Authentication is enforced by the server: GNS3 has its own admin login, separate from the Malcolm and wiki login (ask the lab operator). Projects live server-side under `/srv/gns3/projects` — they persist between sessions, so your topology survives logout. They are not backed up: export a project you cannot afford to lose.
 
 ## What you can build with
 
@@ -47,11 +47,11 @@ This is a shared box. Router/firewall appliances cost real RAM (commonly 2–4 G
 
 The lab's best trick: traffic inside your GNS3 topology can be fed into Malcolm and analyzed exactly like real captured traffic — Zeek logs, Arkime search, dashboards, the lot.
 
-Mechanically, one shared lab bridge (`br-lab`) is mirrored into a dedicated virtual feed that Malcolm captures alongside the physical TAPs (the capture ports themselves are never bridged into the lab — evidence and experiments stay separated). The workflow:
+Mechanically, one shared lab bridge (`br-lab`) is mirrored into a dedicated virtual feed, and that feed is what Malcolm captures live (the capture end itself is never a port of the lab bridge). The workflow:
 
 1. Build and start your topology; get traffic flowing.
 2. Put the segment you want analyzed on `br-lab`: add a GNS3 **Cloud** node and bind it through its **TAP** tab (not Ethernet) to a free `lab-tapN`; do the same with a second Cloud on the other end of the link. Everything crossing `br-lab` reaches Malcolm.
-3. Analyze in Malcolm. Filter by your lab's IP ranges or the mirror feed's interface/tag to isolate your traffic from the physical feeds.
+3. Analyze in Malcolm. Filter by your lab's IP ranges to isolate your traffic from other labs on the same bridge.
 
 For a quick look that doesn't need the full Malcolm treatment, GNS3 also has built-in per-link capture (right-click a link → capture) which writes a PCAP you can pull back to Wireshark — handy for a single link, no mirror needed.
 
