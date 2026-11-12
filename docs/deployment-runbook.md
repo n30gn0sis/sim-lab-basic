@@ -88,6 +88,10 @@ in `r770-evidence/install-<host>-<ts>.md`. Rehearsed 2026-11-10 on VM 9770:
 `umount <media>`, as the summary prints. On a bare host `plan` prints SKIP rows,
 each naming the step that provides it, for what the run itself will install or
 create (Docker, apt packages, the CA, Malcolm's login file), and still reads READY.
+On a first install the verdict is `READY WITH WARNINGS` (exit 2), and that is
+expected: the import preflight warns that docker is not present yet and that
+there is no previous bundle to roll back to. Any FAIL, or any other warning,
+is to be read before `run`.
 Malcolm's `capture` step is reviewed on its own row whenever Malcolm's review
 stops before it, so a capture port the step would refuse (missing, not
 physical, bridged, addressed, the management path) is a FAIL in `plan`, not a
