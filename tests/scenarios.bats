@@ -161,6 +161,34 @@ PY
 @test "s1-w1-ss disables MOBIKE on both gateways, so IKE stays on udp/500 with no NAT (spec X2)" {
     for g in gw-a gw-b; do grep -qE '^\s*mobike\s*=\s*no' "scenarios/s1-w1-ss/nodes/$g.swanctl.conf"; done
 }
+@test "no swanctl.conf puts two settings on one line (strongSwan reads the rest of the line as the value)" {
+    # 'local { auth = psk  id = gw-a }' loads as auth = "psk  id = gw-a":
+    # "invalid value for: auth, config discarded" (rehearsal 2026-11-10).
+    run grep -nE '=[^=#]*[^=#[:space:]][[:space:]]+[A-Za-z_-]+[[:space:]]*=' scenarios/*/nodes/*.swanctl.conf
+    [ "$status" -ne 0 ]
+}
+
+@test "s1-w1-ss's initiator also traps: one load-time attempt before gw-b is configured is not the only one" {
+    grep -qE '^[[:space:]]*start_action = trap\|start$' scenarios/s1-w1-ss/nodes/gw-a.swanctl.conf
+}
+
+@test "s1-w1-ss's gateways give charon a log file of its own under /gt (its stdout carries nothing)" {
+    for g in gw-a gw-b; do
+        grep -q 'filelog' "scenarios/s1-w1-ss/nodes/$g.sh"
+        grep -q 'path = /gt/charon.log' "scenarios/s1-w1-ss/nodes/$g.sh"
+        run grep -E 'charon .*>/gt/charon\.log' "scenarios/s1-w1-ss/nodes/$g.sh"
+        [ "$status" -ne 0 ]
+    done
+}
+
+@test "s1-w1-ss's save-keys snippet is the plugin's own section (the image includes that directory inside charon.plugins)" {
+    for g in gw-a gw-b; do
+        run grep -E "printf 'charon \{.*save-keys" "scenarios/s1-w1-ss/nodes/$g.sh"
+        [ "$status" -ne 0 ]
+        grep -q "printf 'save-keys {" "scenarios/s1-w1-ss/nodes/$g.sh"
+    done
+}
+
 @test "s1-w1-ss's ISP knows neither site, so any 10.211.x.x address on the outer side is leakage" {
     ! grep -q '10\.211\.' scenarios/s1-w1-ss/nodes/isp1.frr.conf
     ! grep -q '10\.211\.' scenarios/s1-w1-ss/nodes/isp1.sh

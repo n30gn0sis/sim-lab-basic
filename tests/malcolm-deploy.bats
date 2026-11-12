@@ -514,6 +514,40 @@ STUB
     [[ "$output" == *"1 of 2 services not ready"* ]]
 }
 
+
+# who owns the wildcard 443 listener decides: the front door's nginx is expected
+# (a re-entry on an installed host), Malcolm's docker-proxy means the rebind did not take
+start_443() {  # start_443 <ss lines…> — a started stack whose ss -ltnp prints these lines too
+    make_malcolm_tree "$ROOT"; echo "x" > "$ROOT/opt/malcolm/malcolm/nginx/htpasswd"
+    malcolm rebind >/dev/null
+    printf '%s\n' 'echo "LISTEN 0 4096 127.0.0.1:8443 0.0.0.0:*"' > "$BATS_TEST_TMPDIR/ss-body"
+    local l; for l in "$@"; do printf 'echo %q\n' "$l" >> "$BATS_TEST_TMPDIR/ss-body"; done
+    stub ss "$(cat "$BATS_TEST_TMPDIR/ss-body")"
+}
+@test "start: a wildcard 443 listener owned by nginx is the front door, a PASS" {
+    start_443 'LISTEN 0 511 0.0.0.0:443 0.0.0.0:* users:(("nginx",pid=1,fd=6))' 'LISTEN 0 511 [::]:443 [::]:* users:(("nginx",pid=1,fd=7))'
+    run malcolm start; echo "$output"; [ "$status" -eq 0 ]
+    [[ "$output" == *"PASS  "*"443"*"front door's nginx"*"not Malcolm"* ]]
+}
+@test "start: a wildcard 443 listener owned by docker-proxy is a FAIL naming rebind" {
+    start_443 'LISTEN 0 4096 0.0.0.0:443 0.0.0.0:* users:(("docker-proxy",pid=7,fd=4))'
+    run malcolm start; echo "$output"; [ "$status" -eq 1 ]
+    [[ "$output" == *"FAIL  "*"docker-proxy"*"rebind"* ]]
+}
+@test "start: a wildcard 443 listener nobody can name, or another program, stays a WARN naming the owner if known" {
+    start_443 'LISTEN 0 4096 0.0.0.0:443 0.0.0.0:*'
+    run malcolm start; echo "$output"; [ "$status" -eq 2 ]
+    [[ "$output" == *"WARN  "*"443"* ]]
+    start_443 'LISTEN 0 4096 *:443 *:* users:(("haproxy",pid=9,fd=3))'
+    run malcolm start; echo "$output"; [ "$status" -eq 2 ]
+    [[ "$output" == *"WARN  "*"haproxy"* ]]
+}
+@test "start: no wildcard 443 listener is the existing PASS" {
+    start_443
+    run malcolm start; echo "$output"; [ "$status" -eq 0 ]
+    [[ "$output" == *"PASS  nothing on 0.0.0.0:443"* ]]
+}
+
 # ── dashboards and arkime views ─────────────────────────────────────────────
 # The stack is a curl stub: these prove the kit's side of the contract — that
 # it reads the index pattern rather than assuming one, that it asserts every
@@ -992,6 +1026,8 @@ multi_pack() {  # a one-scenario pack whose range is a list of two CIDRs
     make_malcolm_tree "$ROOT"
     stub_import_bundle
     stub_docker_reporting ghcr.io/idaholab/malcolm/arkime:0.0.0-fixture ghcr.io/idaholab/malcolm/nginx-proxy:0.0.0-fixture
+    stub capture-stub 'echo "capture-ports $*" >> "$STUB_LOG"'
+    export CAPTURE_PORTS_CMD="$BIN/capture-stub"
     run malcolm full --bundle "$BUNDLE"
     echo "$output"
     [ "$status" -eq 0 ]
@@ -1004,6 +1040,37 @@ multi_pack() {  # a one-scenario pack whose range is a list of two CIDRs
     grep -q '^auth_setup --auth-noninteractive' "$MALCOLM_STUB_LOG"
     grep -q '^start' "$MALCOLM_STUB_LOG"
     [[ "$output" == *"DEPLOYED — every step clean"* ]]
+}
+
+@test "full runs the capture step between unpack and configure, handing it --capture-ifs; with none given the step SKIPs" {
+    make_malcolm_tree "$ROOT"
+    stub_import_bundle
+    stub_docker_reporting ghcr.io/idaholab/malcolm/arkime:0.0.0-fixture ghcr.io/idaholab/malcolm/nginx-proxy:0.0.0-fixture
+    stub capture-stub 'echo "capture-ports $*" >> "$STUB_LOG"'
+    export CAPTURE_PORTS_CMD="$BIN/capture-stub"
+    run malcolm full --bundle "$BUNDLE" --only capture
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"SKIP  no --capture-ifs given"* ]]
+    ! grep -q '^capture-ports' "$STUB_LOG"
+    mkdir -p "$ROOT/sys/class/net/ens2f0"
+    run malcolm full --bundle "$BUNDLE" --only capture --capture-ifs "ens2f0"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    grep -qx 'capture-ports apply --capture-ifs ens2f0' "$STUB_LOG"
+}
+
+@test "M5: capture --force reaches r770-capture-ports.sh; without it, no --force is passed" {
+    stub capture-stub 'echo "capture-ports $*" >> "$STUB_LOG"'
+    export CAPTURE_PORTS_CMD="$BIN/capture-stub"
+    run malcolm capture --capture-ifs ens2f0 --force
+    echo "$output"
+    [ "$status" -eq 0 ]
+    grep -qx 'capture-ports apply --capture-ifs ens2f0 --force' "$STUB_LOG"
+    : > "$STUB_LOG"
+    run malcolm capture --capture-ifs ens2f0
+    [ "$status" -eq 0 ]
+    grep -qx 'capture-ports apply --capture-ifs ens2f0' "$STUB_LOG"
 }
 
 @test "full with --media/--device passes them to the gate step only, and --media alone to copy" {
@@ -1115,18 +1182,165 @@ multi_pack() {  # a one-scenario pack whose range is a list of two CIDRs
 @test "auth refuses an owner outside the docker group before generating anything, and never invokes auth_setup" {
     # The 2026-10-06 EC2 rehearsal: a fresh box's PUID user is not in docker,
     # and auth_setup then dies with Malcolm's own "requires docker, please run
-    # install.py" -- which points at the installer, not at the group.
-    make_malcolm_tree "$ROOT"
-    mkdir -p "$ROOT/etc/lab/secrets"; echo fixture-pw > "$ROOT/etc/lab/secrets/malcolm-admin.pw"
-    rm -f "$ROOT/opt/malcolm/malcolm/nginx/htpasswd"
-    stub getent 'case "$1 $2" in "passwd 1000") echo "labop:x:1000:1000::/home/labop:/bin/bash";; "group docker") echo "docker:x:988:";; *) exit 2;; esac'
+    # install.py" -- which points at the installer, not at the group. Since
+    # F2 the kit offers the fix at a gate; an unattended run without --yes
+    # still stops there, before anything is generated.
+    auth_ready; owner_outside_docker
+    unset KIT_YES
     run malcolm auth --bundle "$BUNDLE"
     echo "$output"
     [ "$status" -eq 1 ]
     [[ "$output" == *"labop is not in the docker group"* ]]
     [[ "$output" == *"usermod -aG docker labop"* ]]
+    ! grep -q '^usermod' "$STUB_LOG"
     ! grep -q 'auth_setup --auth-noninteractive' "$STUB_LOG"
     ! grep -q '^docker run' "$STUB_LOG"
+}
+
+# ── F2: the owner joins the docker group at a gate (final pass, 2026-11-12) ──
+# The docker group exists only once the kit's own docker step has run, so on
+# a first install no operator could have added the owner beforehand: every
+# bare-OS run stopped once at auth. The kit now makes the change itself,
+# gated — docker membership is root-equivalent.
+
+auth_ready() {  # a configured stack, the admin secret, no auth material yet
+    make_malcolm_tree "$ROOT"
+    mkdir -p "$ROOT/etc/lab/secrets"; echo fixture-pw > "$ROOT/etc/lab/secrets/malcolm-admin.pw"
+    rm -f "$ROOT/opt/malcolm/malcolm/nginx/htpasswd"
+}
+# owner_outside_docker — labop is not in docker until usermod adds it: the
+# stub records the call and flips the group listing, as the group database
+# would. groupadd/gpasswd only record, so a test can prove neither ran.
+owner_outside_docker() {
+    stub getent 'case "$1 $2" in
+  "passwd 1000") echo "labop:x:1000:1000::/home/labop:/bin/bash";;
+  "group docker") if [ -f "$BATS_TEST_TMPDIR/joined" ]; then echo "docker:x:988:labop"; else echo "docker:x:988:"; fi;;
+  *) exit 2;;
+esac'
+    stub usermod 'echo "usermod $*" >> "$STUB_LOG"; [ "$*" = "-aG docker labop" ] && touch "$BATS_TEST_TMPDIR/joined"; exit 0'
+    stub id "case \"\$1 \${2:-}\" in \"-nG labop\") echo 'labop adm sudo';; *) exec \"$REAL/id\" \"\$@\";; esac"
+    stub_log groupadd
+    stub_log gpasswd
+}
+
+@test "F2: auth adds an owner outside the docker group at a gate, then runs auth_setup as before" {
+    auth_ready; owner_outside_docker
+    run malcolm auth --bundle "$BUNDLE"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"== GATE: add labop to the docker group =="* ]]
+    [[ "$output" == *"-- current --"*"labop adm sudo"*"-- proposed --"*"usermod -aG docker labop"*"root-equivalent"*"docker compose"*"-- rollback --"*"gpasswd -d labop docker"* ]]
+    grep -qx 'usermod -aG docker labop' "$STUB_LOG"
+    [[ "$output" == *"PASS  labop added to the docker group"* ]]
+    [[ "$output" != *"log in again"* ]]
+    # and on with auth in the same run, exactly as the passing auth tests assert
+    grep -q '^runuser -u labop -- ./scripts/auth_setup --auth-noninteractive' "$STUB_LOG"
+    grep -q '^auth_setup --auth-noninteractive --auth-method basic --auth-admin-username analyst' "$MALCOLM_STUB_LOG"
+    [ -s "$ROOT/opt/malcolm/malcolm/nginx/htpasswd" ]
+    [ "$(grep -n '^usermod' "$STUB_LOG" | cut -d: -f1)" -lt "$(grep -n '^runuser' "$STUB_LOG" | cut -d: -f1)" ]
+    ! grep -q '^gpasswd' "$STUB_LOG"
+    ! grep -q '^groupadd' "$STUB_LOG"
+}
+
+@test "F2: --non-interactive without --yes stops at the docker-group gate; nothing after it runs" {
+    auth_ready; owner_outside_docker
+    unset KIT_YES
+    run malcolm auth --bundle "$BUNDLE" --non-interactive
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"== GATE: add labop to the docker group =="* ]]
+    [[ "$output" == *"needs a decision and this run is non-interactive"* ]]
+    ! grep -q '^usermod' "$STUB_LOG"
+    ! grep -q '^docker run' "$STUB_LOG"
+    ! grep -q '^runuser' "$STUB_LOG"
+    [ ! -e "$ROOT/opt/malcolm/malcolm/nginx/htpasswd" ]
+}
+
+@test "F2: a declined docker-group gate changes nothing" {
+    auth_ready; owner_outside_docker
+    unset KIT_YES KIT_NON_INTERACTIVE
+    run malcolm auth --bundle "$BUNDLE" <<< "n"
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"stopped at gate 'add labop to the docker group'"* ]]
+    ! grep -q '^usermod' "$STUB_LOG"
+    ! grep -q '^runuser' "$STUB_LOG"
+    [ ! -e "$ROOT/opt/malcolm/malcolm/nginx/htpasswd" ]
+}
+
+@test "F2: an owner already in the docker group meets no gate and no usermod" {
+    auth_ready
+    stub_log usermod
+    run malcolm auth --bundle "$BUNDLE"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"GATE"* ]]
+    ! grep -q '^usermod' "$STUB_LOG"
+    grep -q '^runuser -u labop -- ./scripts/auth_setup --auth-noninteractive' "$STUB_LOG"
+}
+
+@test "F2: no docker group yet is a refusal naming the docker step; the kit creates no group" {
+    auth_ready; owner_outside_docker
+    stub getent 'case "$1 $2" in "passwd 1000") echo "labop:x:1000:1000::/home/labop:/bin/bash";; *) exit 2;; esac'
+    run malcolm auth --bundle "$BUNDLE"
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"docker group does not exist"*"docker step"* ]]
+    [[ "$output" != *"GATE"* ]]
+    ! grep -q '^groupadd' "$STUB_LOG"
+    ! grep -q '^usermod' "$STUB_LOG"
+    ! grep -q '^runuser' "$STUB_LOG"
+}
+
+@test "F2: --dry-run shows the docker-group gate in full and executes no usermod" {
+    auth_ready; owner_outside_docker
+    run malcolm auth --bundle "$BUNDLE" --dry-run
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"-- current --"*"labop adm sudo"*"-- proposed --"*"usermod -aG docker labop"*"-- rollback --"*"gpasswd -d labop docker"* ]]
+    [[ "$output" == *"DRY-RUN: usermod -aG docker labop"* ]]
+    [[ "$output" == *"DRY-RUN: (cd "*"auth_setup"* ]]
+    ! grep -q '^usermod' "$STUB_LOG"
+    ! grep -q '^runuser' "$STUB_LOG"
+    [ ! -e "$BATS_TEST_TMPDIR/joined" ]
+}
+
+@test "F2: --dry-run before the docker group exists SKIPs naming the docker step, never FAILs" {
+    auth_ready; owner_outside_docker
+    stub getent 'case "$1 $2" in "passwd 1000") echo "labop:x:1000:1000::/home/labop:/bin/bash";; *) exit 2;; esac'
+    run malcolm auth --bundle "$BUNDLE" --dry-run
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"SKIP  "*"docker group"*"docker step"* ]]
+    [[ "$output" != *"FAIL  "* ]]
+    ! grep -q '^usermod' "$STUB_LOG"
+    ! grep -q '^groupadd' "$STUB_LOG"
+}
+
+@test "F2: auth adds the owner even when the auth material is already there, so the fix start and stop name works" {
+    auth_ready; owner_outside_docker
+    echo "analyst:hash" > "$ROOT/opt/malcolm/malcolm/nginx/htpasswd"
+    run malcolm auth --bundle "$BUNDLE"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    grep -qx 'usermod -aG docker labop' "$STUB_LOG"
+    [[ "$output" == *"already present"* ]]
+    ! grep -q '^auth_setup' "$MALCOLM_STUB_LOG"
+}
+
+@test "F2: start and stop still refuse an owner outside the docker group, naming auth as the kit's fix" {
+    auth_ready; owner_outside_docker
+    echo "analyst:hash" > "$ROOT/opt/malcolm/malcolm/nginx/htpasswd"
+    sed -i 's|0.0.0.0:443:443/tcp|127.0.0.1:8443:443/tcp|' "$ROOT/opt/malcolm/malcolm/docker-compose.yml"
+    for sub in start stop; do
+        run malcolm "$sub"
+        echo "$output"
+        [ "$status" -eq 1 ]
+        [[ "$output" == *"labop is not in the docker group"*"r770-malcolm-deploy.sh auth"*"--from auth"* ]]
+        [[ "$output" != *"log in again"* ]]
+    done
+    ! grep -q '^usermod' "$STUB_LOG"
+    ! grep -q '^runuser' "$STUB_LOG"
 }
 
 @test "start and stop run Malcolm's scripts as the stack's owner, and refuse an owner outside the docker group" {

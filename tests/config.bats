@@ -22,7 +22,7 @@ setup() { cd "$BATS_TEST_DIRNAME/.."; }
 }
 
 @test "every __TOKEN__ in config/ is one the kit renders" {
-    known='ADMIN_PW PCAP_NODE_NAME OS_MEMORY LS_MEMORY ARKIME_MANAGE_PCAP ARKIME_FREE_SPACE_G MALCOLM_VER NETWORK_INDEX_PATTERN_ID TAP_NAME TAP_USER PCAP_IFACE CAPTURE_LIVE LIVE_ARKIME LIVE_ZEEK CAPTURE_STATS'
+    known='ADMIN_PW PCAP_NODE_NAME OS_MEMORY LS_MEMORY ARKIME_MANAGE_PCAP ARKIME_FREE_SPACE_G MALCOLM_VER NETWORK_INDEX_PATTERN_ID TAP_NAME TAP_USER PCAP_IFACE CAPTURE_LIVE LIVE_ARKIME LIVE_ZEEK CAPTURE_STATS CAPTURE_IF'
     bad=""
     while read -r t; do
         n=${t#__}; n=${n%__}
@@ -51,4 +51,9 @@ setup() { cd "$BATS_TEST_DIRNAME/.."; }
     grep -q '"autoSuricata": false' "$t"
     grep -q '"zeekPullIntelligenceFeeds": false' "$t"
     grep -q '"version": "__MALCOLM_VER__"' "$t"
+}
+
+@test "A10: the Malcolm config template has the stack restart with the Docker daemon" {
+    run grep -cE '^[[:space:]]*"malcolmRestartPolicy": "unless-stopped",?$' config/malcolm/malcolm-config.json.template
+    [ "$output" = "1" ]
 }

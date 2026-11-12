@@ -1,0 +1,17 @@
+# A physical capture port: silent (no address of any kind, no ARP) and
+# promiscuous. Rendered per port by r770-capture-ports.sh apply as
+# /etc/systemd/network/05-capture-__CAPTURE_IF__.network. Rule 8: it never
+# gets an IP and never joins a bridge.
+[Match]
+Name=__CAPTURE_IF__
+
+[Network]
+DHCP=no
+LinkLocalAddressing=no
+IPv6AcceptRA=no
+ConfigureWithoutCarrier=yes
+
+[Link]
+ARP=no
+Promiscuous=yes
+RequiredForOnline=no

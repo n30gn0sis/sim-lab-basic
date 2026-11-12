@@ -17,7 +17,8 @@
 #   labnet     the mirrored lab bridge: br-lab (hub mode), lab-tap0..N-1 for
 #              GNS3 Cloud nodes (Cloud -> TAP tab, not Ethernet), lab-mon0
 #              <-> lab_mirror0 for Malcolm's capture; systemd-networkd
-#              files, then proven from sysfs (GATED)
+#              files plus the boot-time offload unit
+#              (r770-capture-offloads@lab_mirror0), then proven from sysfs (GATED)
 #   status     what is in place
 #   full       the whole GNS3 pipeline, in order, stopping at the first step
 #              that refuses: preflight gate copy apt phone-home docker files
@@ -59,6 +60,7 @@ SECRET="/etc/lab/secrets/gns3-admin.pw"
 LAB_TAPS="${GNS3_LAB_TAPS:-4}"
 LABNET_WAIT_SECS="${GNS3_LABNET_WAIT_SECS:-10}"
 NETD="/etc/systemd/network"
+OFFL_UNIT="r770-capture-offloads@.service"
 LABNET_STAGE=""
 STEPS=(preflight gate copy apt phone-home docker files load venv secrets config service labnet)
 # test seam: lets a suite stub out every call this script makes to
@@ -288,6 +290,8 @@ labnet_proposed() {
         echo "    == $(basename "$f")"
         sed 's/^/    | /' "$f"
     done
+    echo "    install /etc/systemd/system/$OFFL_UNIT, daemon-reload, enable r770-capture-offloads@lab_mirror0.service"
+    sed 's/^/    | /' "$KIT_CONFIG_DIR/systemd/$OFFL_UNIT"
     for f in "${LABNET_STALE[@]}"; do echo "    remove $NETD/$f   (GNS3_LAB_TAPS is now $LAB_TAPS)"; done
     for n in $(labnet_stale_taps); do echo "    ip link del $n"; done
     for f in "${LABNET_LEGACY[@]}"; do echo "    remove $NETD/$f   (the capture end is lab_mirror0 now)"; done
@@ -343,6 +347,9 @@ labnet_assert() {
         else fail "lab_mirror0 has $offl offload(s) still on — ethtool -k lab_mirror0; ethtool -K lab_mirror0 tso off gso off gro off lro off"; fi
     else
         skip "lab_mirror0 offloads unchecked: ethtool not installed ($NETD/05-lab_mirror0.link turns them off when the link is created)"
+        if systemctl is-enabled --quiet r770-capture-offloads@lab_mirror0.service 2>/dev/null; then
+            warn "ethtool is not installed, yet r770-capture-offloads@lab_mirror0.service is enabled: it runs /usr/sbin/ethtool and will fail at every boot — install ethtool from the bundle (r770-import-bundle.sh apt)"
+        fi
     fi
     # Docker loads br_netfilter and sets FORWARD's policy to DROP; with
     # bridge-nf-call-iptables=1, IP frames crossing br-lab traverse that chain.
@@ -387,6 +394,10 @@ cmd_labnet() {
     [ "${#LABNET_STALE[@]}" -eq 0 ] || changed=1
     [ "${#LABNET_LEGACY[@]}" -eq 0 ] || changed=1
     if legacy_veth; then changed=1; fi
+    cmp -s "$KIT_CONFIG_DIR/systemd/$OFFL_UNIT" "$(p /etc/systemd/system)/$OFFL_UNIT" || changed=1
+    # the template is shared with r770-capture-ports.sh's physical ports: its
+    # presence says nothing about lab_mirror0's own instance
+    systemctl is-enabled --quiet r770-capture-offloads@lab_mirror0.service 2>/dev/null || changed=1
     if [ "$changed" -eq 0 ]; then
         pass "lab network files already in place in $NETD"
         for n in $(lab_names); do [ -e "$sys/$n" ] || missing="$missing $n"; done
@@ -397,12 +408,18 @@ cmd_labnet() {
         fi
     else
         rb="rm $NETD/05-*lab*; networkctl reload; ip link del br-lab; ip link del lab-mon0"
+        # lab_mirror0's instance only: the unit template stays, physical capture ports (r770-capture-ports.sh) share it
+        rb="$rb; systemctl disable r770-capture-offloads@lab_mirror0.service"
         for n in $( { lab_names; labnet_stale_taps; } | grep '^lab-tap' | sort -u -V); do rb="$rb; ip link del $n"; done
         gate "install the mirrored lab bridge (br-lab)" labnet_current labnet_proposed "$rb"
         run mkdir -p "$netd" || die "could not create $NETD"
         for f in "$LABNET_STAGE"/*; do
             run install -m 0644 "$f" "$netd/$(basename "$f")" || die "could not install $(basename "$f")"
         done
+        run mkdir -p "$(p /etc/systemd/system)" || die "could not create /etc/systemd/system"
+        run install -m 0644 "$KIT_CONFIG_DIR/systemd/$OFFL_UNIT" "$(p /etc/systemd/system)/$OFFL_UNIT" || die "could not install $OFFL_UNIT"
+        run systemctl daemon-reload || die "daemon-reload failed"
+        run systemctl enable "r770-capture-offloads@lab_mirror0.service" || die "could not enable the offload unit for lab_mirror0"
         for f in "${LABNET_STALE[@]}" "${LABNET_LEGACY[@]}"; do
             run rm -f "$netd/$f" || die "could not remove $NETD/$f"
         done

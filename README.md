@@ -84,8 +84,8 @@ sudo ./scripts/r770-scenario.sh traffic ipsec-esp     # 60 s of known traffic, a
 sudo ./scripts/r770-scenario.sh down ipsec-esp
 ```
 
-IPsec over simulated WANs is built on top of the pack, its staging rehearsal
-pending: `s0-w1` (the plaintext baseline) and `s1-w1-ss` (IKEv2/ESP site to
+IPsec over simulated WANs is built on top of the pack, rehearsed 2026-11-10, with open
+findings (`docs/rehearsals/2026-11-10-ipsec-wan.md`): `s0-w1` (the plaintext baseline) and `s1-w1-ss` (IKEv2/ESP site to
 site across a single-ISP underlay); `r770-scenario.sh record` (outer and inner
 reference PCAPs, `--impair`, timed `--events`, ground truth under `gt/`),
 `verify` (tshark over the run directory) and `ingest` (the captures into
@@ -110,7 +110,8 @@ need what on the box first — each step checks its own prerequisites and refuse
 | Path | What |
 |---|---|
 | `scripts/r770-import-bundle.sh` | Bundle in: preflight, gate (the verifier **that travels in the bundle**), copy, local APT repo, phone-home neutralised, Docker (then `storage`: where `docker load` will really write, and whether it fits — also runnable alone, read-only), the VM/GNS3/enrichment/docs payload into place. No generic image loading — Malcolm, GNS3 and docs each load their own |
-| `scripts/r770-malcolm-deploy.sh` | Malcolm: `full` runs its own bundle-in prep, then load/assert-tags, unpack, configure by replaying the kit's config template through the installer, secrets, auth, the port rebind, start with Malcolm's own script; then `inventory` (read-only, what Dashboards holds), `dashboards` and `arkime-views` (the lab's IPsec saved searches and views, each asserted back after install) |
+| `scripts/r770-capture-ports.sh` | Physical capture ports: `apply` (gated) renders one silent, promiscuous `.network` per port you name and enables the boot-time offload unit; `status` proves a port. Run by Malcolm's `full` as its `capture` step |
+| `scripts/r770-malcolm-deploy.sh` | Malcolm: `full` runs its own bundle-in prep, then load/assert-tags, unpack, capture (physical capture ports), configure by replaying the kit's config template through the installer, secrets, auth, the port rebind, start with Malcolm's own script; then `inventory` (read-only, what Dashboards holds), `dashboards` and `arkime-views` (the lab's IPsec saved searches and views, each asserted back after install) |
 | `scripts/r770-gns3-deploy.sh` | GNS3: `full` runs its own bundle-in prep, then load/assert-tags for the docker-node images, venv from the wheelhouse (`--no-index`), service user, config owned by that user, systemd unit on 127.0.0.1, then `labnet`: the hub-mode lab bridge whose mirror (`lab_mirror0`) Malcolm captures with `--capture-ifs` |
 | `scripts/r770-docs-deploy.sh` | The analyst wiki: `full` runs its own bundle-in prep, then load/assert-tags for the mkdocs image, then `build` (`--network none`) with an atomic publish to `/srv/www/docs` — a failed build never leaves `docs.lab` empty |
 | `scripts/r770-scenario.sh` | The scenario pack's driver: `list`, `up` (import into GNS3, start, configure each node, wait until ready), `traffic` (a bounded window and a run record under `r770-evidence/`), `record` (`traffic` with an outer capture on the TAP and inner captures inside node netns, an idle tail, and a run directory with `run.conf`, drop stats and `sha256sums` under `/data/pcap/cases`; `--impair <profile>@a` or `@b` shapes a TAP through `r770-wan.sh` for the run, `--events <file>` runs timed events, one per line, logged to `events.log`), `verify <run-dir>` (the run's `pcap-expect.txt` rows with `tshark`, decryption only with discovered keys, zero kernel drops, `expected.md` in the run directory; no GNS3 needed), `ingest <run-dir>` (the run's captures into Malcolm's upload drop-off as `<run-id>,<view>.pcapng`, by the names `run.conf` lists, never `gt/`), `down`, `status`. Not gated: it touches only the projects it imported |
@@ -122,6 +123,9 @@ need what on the box first — each step checks its own prerequisites and refuse
 | `scripts/r770-airgap-check.sh` | Read-only posture report: no APT source, resolver, mirror, proxy, snap or pip index points outside |
 | `scripts/r770-validate.sh` | The lab's capability checks as a check · expected · observed · verdict · evidence table; SKIP with a reason, never silence |
 | `staging/` | The bundle pipeline: preflight, fetch (the pin owner), the one-command builder, and the verifier the fetch places inside every bundle. Runs on the staging host only |
+| `harness/r770-staging-vm.sh` | Rehearsals only, run on the operator's machine: drives the Proxmox VM that stands in for the R770 through `qm` over ssh — `status`, `rollback` (**gated**), `start`, `stop`, `snapshot` (never overwrites), `airgap on|off` (the internet NIC link-down, proven by a probe from inside the guest), `wait-ssh`, `tunnel`. Destroys nothing; every name is an argument |
+| `harness/r770-site-shot.ps1` | Rehearsals only, operator PC (PowerShell): one screenshot of one `.lab` page through the harness tunnel, in a private headless browser whose resolver maps the three names to loopback — the hosts file is never edited. An optional auth file supplies the login without it reaching a command line. No bats suite; proven by use in the rehearsal record |
+| `docs/rehearsals/` | One record per rehearsal: bundle, kit commit, stand-ins, a verdict per step with its transcript's name |
 | `scripts/lib/common.sh` | The one set of seams (`KIT_ROOT`, `KIT_DRY_RUN`, `KIT_YES`, `KIT_NON_INTERACTIVE`, `KIT_EVIDENCE_DIR`), gates, rendering, image-list handling, `run_step`/`step_index` (what `full` uses to slice its step sequence), the call into the bundle's verifier |
 | `scripts/lib/expect.sh` | One scenario `expect.txt` row as the Arkime expression and the Dashboards (KQL) query that find it — the one translator behind the generated scenario searches and views and `r770-scenario.sh check`; refuses a protocol it does not know |
 | `scripts/lib/malcolm-api.sh` | Malcolm's Dashboards and Arkime APIs through 127.0.0.1:8443 only, the credential through a 0600 netrc and never argv — sourced by `r770-malcolm-deploy.sh` and `r770-scenario.sh` |

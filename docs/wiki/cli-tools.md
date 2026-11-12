@@ -3,7 +3,7 @@
 The server carries a curated set of command-line tools for spot checks, validation, and testing over SSH. Ground rules first, because they're different from a normal Linux box:
 
 - **Malcolm is the capture platform; the CLI is the screwdriver.** Host-level capture tools exist for spot-validation and troubleshooting, not for running your own parallel capture pipeline. If it matters, it goes through Malcolm.
-- **Capture rights come from the `pcapture` group,** not root/sudo. `dumpcap` carries capabilities so group members can capture without elevation. If capture commands give permission errors, you're not in the group yet — ask the operator.
+- **Capturing on an interface needs `sudo`.** There is no capture group on this server. If your account has no `sudo`, ask the operator to run the spot check with you.
 - **You can't install anything.** The tool set is fixed per offline bundle ([why](access.md#air-gap-rules)). Missing something? Request it for the next bundle.
 - **Aim tests at the lab, not the management network.** Scans and traffic generators belong on lab segments.
 
@@ -13,19 +13,19 @@ The server carries a curated set of command-line tools for spot checks, validati
 
 ```bash
 # Live peek at an interface (no file written)
-tcpdump -i <iface> -nn -c 100
+sudo tcpdump -i <iface> -nn -c 100
 
 # ...filtered — BPF syntax
-tcpdump -i <iface> -nn 'host 10.10.20.5 and port 443'
+sudo tcpdump -i <iface> -nn 'host 10.10.20.5 and port 443'
 
 # Write a short capture to your workspace (dumpcap = most efficient writer)
-dumpcap -i <iface> -a duration:60 -w /srv/work/<you>/spotcheck.pcapng
+sudo dumpcap -i <iface> -a duration:60 -w /srv/work/<you>/spotcheck.pcapng
 
 # Ring buffer so a long spot-check can't fill the disk
-dumpcap -i <iface> -b filesize:100000 -b files:10 -w /srv/work/<you>/ring.pcapng
+sudo dumpcap -i <iface> -b filesize:100000 -b files:10 -w /srv/work/<you>/ring.pcapng
 
 # Quick protocol readout with display filters (Wireshark syntax)
-tshark -i <iface> -Y 'dns' -c 50
+sudo tshark -i <iface> -Y 'dns' -c 50
 ```
 
 Write captures to **your workspace** (`/srv/work/`) — never into `/data/pcap/raw/` (that's Arkime's) and not onto `/` (spot captures grow fast; use `-c`, `-a duration:` or a ring buffer, always).

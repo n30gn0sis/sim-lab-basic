@@ -32,7 +32,7 @@ The install is **not** a single sitting.
 |---|---|
 | Bundle-in prep: `preflight` `gate` `copy` `apt` `phone-home` `docker` `files` (shared by all three pipelines) | the storage layout's volumes mounted — `preflight` refuses otherwise |
 | GNS3 pipeline: `load` `venv` `secrets` `config` `service` `labnet` | bundle-in prep done; `python3-venv`, `python3-pip-whl` and `ubridge` installed from the local repo |
-| Malcolm pipeline: `load` `unpack` `configure` `secrets` `auth` `rebind` `start` | bundle-in prep done; `python3-ruamel.yaml` and `python3-dotenv` from the local repo; capture ports prepared (no address, promiscuous, offloads off) before `configure --capture-ifs` |
+| Malcolm pipeline: `load` `unpack` `capture` `configure` `secrets` `auth` `rebind` `start` | bundle-in prep done; `python3-ruamel.yaml` and `python3-dotenv` from the local repo (and `ethtool` once a physical capture port is named); physical capture ports named in `--capture-ifs` (the `capture` step prepares them; it refuses a port with an address, a master or the default route) |
 | Docs pipeline: `load` `build` | bundle-in prep done |
 | Front door: `ca` `cert` `htpasswd` `nginx` | `easy-rsa` and `nginx` from the local repo, and Malcolm's `auth` step already run |
 | validate | runs at any point; SKIPs what is not set up, naming it |
@@ -83,8 +83,19 @@ sudo <media>/<bundle>/kit/scripts/r770-install.sh run --yes  # import, gns3, mal
 rerun **that** copy with `run --yes --from <step>`. INSTALLED means every
 step was clean and `scripts/r770-e2e.sh` proved every scenario in Malcolm;
 anything less is NOT INSTALLED with the step to look at. The summary lands
-in `r770-evidence/install-<host>-<ts>.md`. The last action is
-`umount <media>`, as the summary prints.
+in `r770-evidence/install-<host>-<ts>.md`. Rehearsed 2026-11-10 on VM 9770:
+`docs/rehearsals/2026-11-10-installer-acceptance.md`. The last action is
+`umount <media>`, as the summary prints. On a bare host `plan` prints SKIP rows,
+each naming the step that provides it, for what the run itself will install or
+create (Docker, apt packages, the CA, Malcolm's login file), and still reads READY.
+On a first install the verdict is `READY WITH WARNINGS` (exit 2), and that is
+expected: the import preflight warns that docker is not present yet and that
+there is no previous bundle to roll back to. Any FAIL, or any other warning,
+is to be read before `run`.
+Malcolm's `capture` step is reviewed on its own row whenever Malcolm's review
+stops before it, so a capture port the step would refuse (missing, not
+physical, bridged, addressed, the management path) is a FAIL in `plan`, not a
+stop mid-run; that row is a SKIP naming the apt step while `ethtool` is absent.
 
 The per-pipeline procedures below stay as the reference for what each step
 does, and for running one by hand.
@@ -180,13 +191,14 @@ proxy. There is no registry to reach.
 
 - [ ] Disposition: every package the lab needs is in the curated set (an unplanned `apt install` will fail by design until the next bundle)
 
-`apt` points APT at the local repo; it installs nothing. The packages later
-steps need — `python3-venv` and `python3-pip-whl` (GNS3 `venv`),
-`python3-ruamel.yaml` and `python3-dotenv` (Malcolm `unpack`/`configure`),
-`ubridge` (GNS3 `service`), `easy-rsa` and `nginx` (front door) — are
-installed by hand from that repo (`apt-get install` against the local source,
-the only one there is), and each step
-refuses by name when its package is absent.
+`apt` points APT at the local repo, then installs from it (and only from it)
+whichever of the packages later steps need are missing — `python3-venv` and
+`python3-pip-whl` (GNS3 `venv`), `python3-ruamel.yaml` and `python3-dotenv`
+(Malcolm `unpack`/`configure`), `ubridge` (GNS3 `service`), `easy-rsa` and
+`nginx` (front door), `ethtool` (Malcolm `capture`, and the boot-time offload
+unit `labnet` and `capture` enable), `tcpdump` and `tshark` (scenario `record`
+and `verify`); the gate lists them. Each step still refuses by name when its
+package is absent.
 
 ### Step M7 — files
 
@@ -197,7 +209,7 @@ sudo ./scripts/r770-import-bundle.sh files --bundle /srv/bundles/bundle-YYYYMMDD
 | From the bundle | To | Note |
 |---|---|---|
 | `images/` | `/srv/vms/base` | `qemu-img info` when `qemu-img` is installed |
-| `gns3/definitions/*.gns3a` | `/srv/gns3/appliances` | definitions are free even where images are licensed |
+| `gns3/definitions/*.gns3a` | `/srv/gns3/appliances` | only for appliances whose image the bundle carries: the fetch ships no definition without its image, so licensed appliances (Cisco, FortiGate, Palo Alto) are imported by hand by the operator |
 | `gns3/appliances/` | `/srv/gns3/images` (+ `checksums/`) | `README.txt` skipped; a definition with no image WARNs — it would appear in the GUI and fail at boot |
 | `enrichment/` | `/opt/enrichment` (+ `rules/`) | staged only: Suricata is disabled by decision, GeoIP descoped |
 | `docs/` | `/srv/docs` | best-effort mirrors; reading material only |
@@ -223,18 +235,28 @@ A pair whose tags are already all present is skipped, so the step is safe to
 rerun. A missing tag means the tarball is incomplete: re-cut; never patch by
 hand.
 
-### Steps M9–M14 — unpack, configure, secrets, auth, rebind, start
+### Steps M9–M15 — unpack, capture, configure, secrets, auth, rebind, start  *(capture and auth are GATED)*
 
 ```bash
 B=/srv/bundles/bundle-YYYYMMDD
 sudo ./scripts/r770-malcolm-deploy.sh unpack --bundle $B       # needs python3-ruamel.yaml, python3-dotenv (apt/)
+sudo ./scripts/r770-malcolm-deploy.sh capture --capture-ifs "<if ...>"   # (GATED) physical capture ports only; SKIPs without --capture-ifs
 sudo ./scripts/r770-malcolm-deploy.sh configure --bundle $B    # renders the kit's config template, replays it through install.py
 #   add --capture-ifs lab_mirror0 for live capture of the lab (run GNS3's labnet first)
 sudo ./scripts/r770-malcolm-deploy.sh secrets                  # /etc/lab/secrets/malcolm-admin.pw, once
-sudo ./scripts/r770-malcolm-deploy.sh auth --bundle $B         # auth_setup, hashes generated on the box
+sudo ./scripts/r770-malcolm-deploy.sh auth --bundle $B         # (GATED) the stack's owner into the docker group if not in it; then auth_setup, hashes generated on the box
 sudo ./scripts/r770-malcolm-deploy.sh rebind                   # 0.0.0.0:443 -> 127.0.0.1:8443, the front door owns 443
 sudo ./scripts/r770-malcolm-deploy.sh start                    # Malcolm's ./scripts/start, then wait for health
 ```
+
+`capture` *(GATED)* writes `/etc/systemd/network/05-capture-<if>.network` (no address, no ARP, promiscuous) per physical port and enables `r770-capture-offloads@<if>.service`, then waits for networkd to settle (`CAPTURE_PORTS_WAIT_SECS`, default 10) and proves each port: promiscuous, offloads off and no address at all — link-local included, as `configure` requires. It refuses without `ethtool` (the apt step installs it). To undo, remove those files, run `systemctl disable r770-capture-offloads@<if>.service`, `networkctl reload` and `ip link set <if> promisc off arp on` (the reload leaves the live port promiscuous with ARP off; a reboot does the same); the gate prints the same rollback. The unit template stays: `labnet`'s `lab_mirror0` instance shares it. `lab_mirror0` is passed over (GNS3's `labnet` owns it).
+
+`auth` *(GATED)* first makes sure the stack's owner (the `PUID` user in `/opt/malcolm/malcolm/config/process.env`) is in the `docker` group: Malcolm's scripts run as that user and drive docker compose. The group exists only once the `docker` step has installed Docker Engine, so on a first install the owner is never in it yet. The gate shows the user's groups and the group's members, proposes `usermod -aG docker <user>`, and names the rollback, `gpasswd -d <user> docker`. Membership of `docker` is root-equivalent on this host — accept it knowingly. The step then carries on in the same run with no new login: the kit runs Malcolm's scripts through `runuser`, which reads the group database afresh. An owner already in the group meets no gate. With no `docker` group at all, `auth` refuses and names the `docker` step; the kit never creates the group. The gate applies even when the auth material is already there, so rerunning `auth` is the fix whenever `start` or `stop` find the owner outside the group.
+
+After a reboot the stack comes back by itself (restart policy `unless-stopped`,
+set at `configure`). `r770-malcolm-deploy.sh stop` takes it down until the next
+`start`. A box configured before this change needs `configure`, `rebind` and
+`start` rerun once.
 
 `configure` asserts every flag it passes against the bundled installer's
 `--help` and dies naming a missing one — a version bump fails by name, not by
@@ -254,7 +276,7 @@ accepts. The first `configure` runs the zip's `install.py` from
 stack (`/opt/malcolm/malcolm/scripts/install.py`). Malcolm's control scripts refuse root, so `auth`,
 `start` and `stop` run as the stack's owner — the `PUID`/`PGID` in
 `/opt/malcolm/malcolm/config/process.env`, which must not be root and must be in the `docker`
-group — and `configure`/`rebind` give that user the stack and the configured
+group (`auth` adds it, at its gate) — and `configure`/`rebind` give that user the stack and the configured
 index and PCAP directories. `rebind` is re-applied after every installer run
 because a compose override file is ignored. `configure` also sets
 `ARKIME_default__trackESP=true` in
@@ -399,14 +421,18 @@ Clouds carrying every scenario's traffic onto `lab_mirror0`.)
 
 The step installs `/etc/systemd/network/05-*lab*` files (the bridge with
 MAC learning and multicast snooping off, the veth, the TAPs, and
-`05-lab_mirror0.link`, which turns offloads off on the capture end) and runs
-`networkctl reload`; it refuses while systemd-networkd is inactive, before
+`05-lab_mirror0.link`, which turns offloads off on the capture end), installs
+the boot-time offload unit `/etc/systemd/system/r770-capture-offloads@.service`
+and enables its `r770-capture-offloads@lab_mirror0.service` instance (it runs
+`ethtool -K` each time the link appears, clearing the TSO sub-features the
+`.link` file cannot name), and runs `networkctl reload`; it refuses while systemd-networkd is inactive, before
 `config` has created the service user, and when one of its names already
 belongs to something else. After the reload it waits for the whole end state,
 then proves hub mode, no multicast snooping, the ports, that no physical
 interface joined the bridge directly or through a VLAN or bond (rule 8), that
-`lab_mirror0` is up, promiscuous and address-less with gro/lro/tso off, and
-whether Docker's `br_netfilter` + `FORWARD DROP` could drop bridged IP (a
+`lab_mirror0` is up, promiscuous and address-less with gro/lro/tso off (a
+WARN when `ethtool` is absent, since the enabled unit would fail at every
+boot), and whether Docker's `br_netfilter` + `FORWARD DROP` could drop bridged IP (a
 WARN with the rule to add by hand — the kit adds none). `GNS3_LAB_TAPS`
 changes the TAP count (default 4); lowering it removes the TAPs and files it
 no longer declares, through the gate. Files in place but interfaces missing
@@ -527,17 +553,42 @@ refused rather than taken down, a check that could not judge (Malcolm
 not answering) is a WARN, not a PASS, and a run in which no scenario ran
 is a FAIL.
 
-## IPsec & simulated-WAN scenarios (built, staging rehearsal pending)
+## IPsec & simulated-WAN scenarios (rehearsed 2026-11-10)
 
 The IPsec & WAN scenario spec is filed as
 `docs/superpowers/specs/2026-09-24-ipsec-scenarios-spec.md`; how the kit as
 built carries it out is `docs/superpowers/specs/2026-10-07-ipsec-wan-scenarios-kit-design.md`,
 and the work is sequenced in `docs/superpowers/plans/2026-10-07-ipsec-wan-scenarios.md`.
-Status: built, staging rehearsal pending (plan Task 11). `record` (its
-captures, idle tail, run directory, `--impair` and `--events`, and the ground
-truth under `gt/`), `verify` and `ingest` all exist and are covered offline by
-`tests/scenario.bats`; nothing here has yet run against a real GNS3, tcpdump or
-Malcolm, so this section is rewritten "as measured" after that rehearsal.
+Status: rehearsed 2026-11-10 on VM 9770, bundle `bundle-20261110`, with open
+findings — `docs/rehearsals/2026-11-10-ipsec-wan.md`. `record` (its captures,
+idle tail, run directory, `--impair` and `--events`, and the ground truth under
+`gt/`), `verify`, `ingest` and `check` ran against a real GNS3, tcpdump and
+Malcolm there.
+
+**As measured.**
+
+| What | Measured |
+|---|---|
+| S0 baseline (`s0-w1`) | RTT 0.87 ms average gateway to gateway; 50.0 Mbit/s per iperf3 stream, two streams; path MTU 1500; no kernel drops in five of six runs (the first run after a reboot dropped packets on two captures) |
+| `--impair <profile>@b` | shapes site A → site B: with `poor-broadband@b`, UDP offered at 20 Mbit/s arrived at 9.63 Mbit/s A → B and untouched B → A; RTT +80 ms |
+| Keys (X7) | absent: the bundled strongSwan image carries no save-keys plugin, so X7 is SKIP and the inner capture is the plaintext truth |
+| A real Ctrl-C during `record` | exit 130, `run.conf` closed `end=interrupted`, no verdict, no capture left, TAPs clean; `ingest` refuses that run. The traffic generator inside the node runs on until its own timer ends |
+| tcpdump when its own TAP goes link-down | keeps running |
+| Tags in Arkime after `ingest` | Malcolm splits the file name on `,` `-` `_` `.`: a run is found by its timestamp token (for example `tags == 20261110T1435Z`) plus `outer` or `inner` — not by `<run-id>` or `inner-<node>` |
+| `check` after `record` | judge a run that followed a fresh `up`: Arkime stops recording a long-lived ESP flow at its packet cap, so a later run on the same tunnel shows no ESP session in its window |
+| `wan-flap.txt` | every event ran; the IKE SA survived the 30 s outage (no DPD restart) |
+
+| Row | `s1-w1-ss-20261110T1435Z` | `s1-w1-ss-20261110T1726Z` |
+|---|---|---|
+| X1 IKE on udp/500 | PASS | PASS |
+| X2 nothing on udp/4500 | PASS | PASS |
+| X3 data as ESP | PASS | PASS |
+| X4 no site address outside | PASS | PASS |
+| X5 a CHILD_SA rekey | PASS | PASS |
+| X6 DPD in the idle tail | PASS | PASS |
+| X7 decryption | SKIP (keys absent) | SKIP (keys absent) |
+| X8 no kernel drops | PASS | PASS |
+| X9 `ingest`, then `check` | PASS | PASS |
 
 **What changes against the pack as it stands.** The spec assumes a
 two-bridge fabric (`br-lab-tNN` outer, `br-lab-iNN` inner) and host tools
@@ -605,8 +656,8 @@ TAPs the Clouds named `tap-a` and `tap-b` bind, read from GNS3 — with a profil
 `config/wan/profiles/` through `scripts/r770-wan.sh apply`, once every capture
 is open, so the capture holds the change; it is recorded in `run.conf` as
 `impair=<profile>@<a|b>:<tap>`. The direction rule: netem shapes what the
-host sends *into* a TAP, so `@b` shapes site A → site B (to be measured on
-staging — Task 11, H7). `--events <file>` runs `t|action|arg` lines, `t` in
+host sends *into* a TAP, so `@b` shapes site A → site B (measured on
+staging 2026-11-10). `--events <file>` runs `t|action|arg` lines, `t` in
 whole seconds after traffic start and never decreasing, alongside the
 traffic: `note <text>`, `wan-apply <profile>@a|b`, `wan-clear a|b`,
 `link-down a|b`, `link-up a|b`, `exec <node>|<command>` (`sh -c` in that
@@ -653,7 +704,7 @@ the same grammar. `tshark` comes from the bundle's apt set.
 captures to Malcolm. It copies only the files `run.conf` names in its `outer=`
 and `inner=` lines, by those explicit names and never a glob over the run
 directory, so `gt/` cannot travel. Each lands in Malcolm's upload drop-off
-(`<MALCOLM_HOME>/malcolm/pcap/upload/`, owned `1000:1000`) as
+(`<pcapDir>/upload/`, owned `1000:1000`; `<pcapDir>` is read from the `source:` of the bind mount whose `target:` is `/pcap` in `<MALCOLM_HOME>/malcolm/docker-compose.yml`, never assumed; each file is copied to `<pcapDir>/.r770-ingest.<pid>` and renamed in, so the watcher never sees a half-written file) as
 `<run-id>,<view>.pcapng` (`<run-id>,outer.pcapng`,
 `<run-id>,inner-<node>.pcapng`); Malcolm tags an upload from the
 comma-separated parts of its name, so the run id and the view become tags.
@@ -795,7 +846,9 @@ reused. `--force` redoes a stamped or generated step.
 | a `load` step names a MISSING tag | The tarball is incomplete. Re-cut; do not patch by hand |
 | `venv` dies naming `python3-venv` | The apt step did not run, or the curated set lacks it |
 | `configure` dies naming a flag | The bundled installer's interface moved; read `BUNDLE_NOTES.md`, update the kit, then rerun |
-| `auth`, `start` or `stop` refuses: `<user> is not in the docker group` | Malcolm's scripts run as the `PUID` user and drive docker. `usermod -aG docker <user>`, then rerun `--from auth`. A fresh box's operator account is not in `docker` |
+| `auth` stops at the gate `add <user> to the docker group` | Expected once on a fresh box: the `docker` group exists only after the `docker` step. Read current · proposed · rollback, then answer `y`, or rerun with `--yes` (`--from auth` under `full`). No new login is needed |
+| `auth` refuses: `the docker group does not exist` | Docker Engine is not installed yet: run the `docker` step (`full --from docker`), then `auth` |
+| `start` or `stop` refuses: `<user> is not in the docker group` | Malcolm's scripts run as the `PUID` user and drive docker. Rerun `r770-malcolm-deploy.sh auth --bundle <dir>` (or `full --from auth`): it adds the user at its gate. Then rerun the step |
 | `start` FAILs on unready services | Rerun `start` to keep waiting; then `docker compose logs` in the stack directory |
 | `service` FAILs on `0.0.0.0:3080` | The rendered config's host is not loopback; rerun `config` |
 | `nginx -t` rejects | Nothing was reloaded; the previous config is live. Fix the vhost, rerun |

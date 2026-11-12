@@ -1,0 +1,16 @@
+# Offloads off on one capture interface, every time the device appears.
+# The .link file covers what systemd.link can name; `ethtool -K <if> tso off`
+# also clears the TSO sub-features it cannot (acceptance 2026-11-10, A11).
+# Instance = interface name. Installed by r770-gns3-deploy.sh labnet (for
+# lab_mirror0) and r770-capture-ports.sh apply (for physical ports).
+[Unit]
+Description=Capture offloads off on %i (R770 lab kit)
+BindsTo=sys-subsystem-net-devices-%i.device
+After=sys-subsystem-net-devices-%i.device
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/ethtool -K %i tso off gso off gro off lro off
+
+[Install]
+WantedBy=sys-subsystem-net-devices-%i.device

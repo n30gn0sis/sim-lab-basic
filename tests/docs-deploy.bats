@@ -350,3 +350,14 @@ STUB
     [[ "$output" == *"DEPLOYED WITH WARNINGS"* ]]
     [[ "$output" == *"steps: apt"* ]]
 }
+
+@test "the wiki names no tool the kit does not put on the box, and every page is in the nav" {
+    cd "$BATS_TEST_DIRNAME/.."
+    run grep -rnE '\bwan-apply\b|\bwan-emu\b|lab-transit\.sh|br-lab-[ti][0-9N]' docs/wiki
+    echo "$output"
+    [ "$status" -ne 0 ]
+    for f in docs/wiki/*.md; do
+        grep -q "$(basename "$f")" config/docs/mkdocs.yml || { echo "not in nav: $f"; false; }
+    done
+    grep -q 'Getting started: getting-started.md' config/docs/mkdocs.yml
+}

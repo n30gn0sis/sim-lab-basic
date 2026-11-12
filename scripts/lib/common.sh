@@ -38,7 +38,9 @@ kit_init() {
     if [ "${KIT_NO_TEE:-0}" != "1" ]; then
         mkdir -p "$dir"
         KIT_LOG="$dir/${SELF}-$(hostname -s 2>/dev/null || echo host)-$(date +%Y%m%d-%H%M%S).log"
-        exec > >(tee -a "$KIT_LOG") 2>&1
+        # tee -i: the terminal's Ctrl-C reaches the whole foreground group; the tee must outlive it
+        # so the script's cleanup output still lands in the transcript (and is not SIGPIPEd)
+        exec > >(tee -i -a "$KIT_LOG") 2>&1
         echo "# $SELF — $(date -Is) — transcript $KIT_LOG"
     fi
     umask 022

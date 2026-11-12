@@ -1115,6 +1115,55 @@ while True: time.sleep(0.1)
     command sleep 0.3; ! pgrep -f "$CASES" >/dev/null; ! pgrep -f "$BATS_TEST_TMPDIR/ev.txt" >/dev/null
 }
 
+# sigint_launch <marker> <cmd...> — run cmd in its own session with SIGINT at its
+# default disposition (a background job of this shell would start with it
+# ignored, and bash cannot trap a signal ignored at entry), wait for <marker>
+# to appear, then send SIGINT to the whole process group like a terminal's
+# Ctrl-C. Prints "rc=<n>" (128+n for death by signal n).
+sigint_launch() {
+    local marker=$1; shift
+    python3 - "$marker" "$@" <<'PY'
+import os, signal, subprocess, sys, time
+marker, cmd = sys.argv[1], sys.argv[2:]
+p = subprocess.Popen(cmd, start_new_session=True,
+                     preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
+for _ in range(200):
+    if os.path.exists(marker): break
+    time.sleep(0.1)
+time.sleep(0.5)
+os.killpg(p.pid, signal.SIGINT)
+try: rc = p.wait(timeout=10)
+except subprocess.TimeoutExpired:
+    os.killpg(p.pid, signal.SIGKILL); rc = 999
+print("rc=%d" % (128 - rc if rc < 0 else rc))
+PY
+}
+# a docker exec that, like the real one on a terminal Ctrl-C, exits at once
+# (not dying of the signal), so bash carries on with the script
+sigint_docker_exec() {
+    sed -i '1a if [ "$1" = exec ] \&\& [ "$2" = -i ]; then trap "exit 0" INT; : > "$BATS_TEST_TMPDIR/exec-started"; while :; do sleep 0.3; done; fi' "$BIN/docker"
+}
+
+@test "record interrupted by a real SIGINT closes run.conf as end=interrupted, writes no verdict, stops the captures, exits 130" {
+    record_env; scenario up demo --bundle "$BUNDLE" >/dev/null
+    sigint_docker_exec
+    PATH="$KIT_PATH" run sigint_launch "$BATS_TEST_TMPDIR/exec-started" "$SCRIPT" record demo; echo "$output"
+    [[ "$output" == *"rc=130"* ]]
+    d=$(find "$CASES/demo" -mindepth 1 -maxdepth 1 -type d | head -1)
+    grep -q '^end=interrupted ' "$d/run.conf"
+    run grep -E '^(result=|end=20)' "$d/run.conf"; [ "$status" -ne 0 ]
+    [ -s "$d/capture-stats.txt" ]
+    command sleep 0.3; run pgrep -f "$CASES"; [ "$status" -ne 0 ]
+}
+
+@test "traffic interrupted by a real SIGINT writes no run record and exits 130" {
+    scenario up demo --bundle "$BUNDLE" >/dev/null
+    sigint_docker_exec
+    PATH="$KIT_PATH" run sigint_launch "$BATS_TEST_TMPDIR/exec-started" "$SCRIPT" traffic demo; echo "$output"
+    [[ "$output" == *"rc=130"* ]]
+    run bash -c "ls '$KIT_EVIDENCE_DIR'/scenario-demo-*.run 2>/dev/null"; [ "$status" -ne 0 ]
+}
+
 @test "record --events: a failed event is a WARN naming it, and the run exits 2" {
     record_env; scenario up demo --bundle "$BUNDLE" >/dev/null
     sed -i '1a case "$*" in *"sh -c boom"*) echo "docker $*" >> "$STUB_LOG"; exit 1 ;; esac' "$BIN/docker"
@@ -1172,10 +1221,70 @@ esac'
 }
 
 # ── ingest — into Malcolm's upload drop-off, never gt/ ──────────────────────
+ingest_compose() {  # ingest_compose <source> — Malcolm's compose file with a /pcap bind mount from <source>
+    mkdir -p "$ROOT/opt/malcolm/malcolm"
+    cat > "$ROOT/opt/malcolm/malcolm/docker-compose.yml" <<EOF
+services:
+  upload:
+    volumes:
+      - type: bind
+        source: ./config
+        target: /etc/cfg
+      - type: bind
+        source: $1
+        target: /pcap
+  other:
+    volumes:
+      - type: bind
+        source: $1
+        target: /data/pcap
+EOF
+}
+@test "ingest takes the drop-off from the compose file's /pcap source: absolute, never the stock pcap/upload" {
+    record_env; make_run_dir demo; stub chown ':'
+    ingest_compose /data/pcap/raw
+    mkdir -p "$ROOT/data/pcap/raw/upload" "$ROOT/opt/malcolm/malcolm/pcap/upload"
+    run scenario ingest "$RD"; echo "$output"; [ "$status" -eq 0 ]
+    [ -f "$ROOT/data/pcap/raw/upload/demo-20261001T1400Z,outer.pcapng" ]
+    [ "$(find "$ROOT/data/pcap/raw/upload" -type f | wc -l)" -eq 2 ]
+    [ "$(find "$ROOT/opt/malcolm/malcolm/pcap/upload" -type f | wc -l)" -eq 0 ]
+    [ "$(find "$ROOT/data/pcap/raw" -maxdepth 1 -name '.r770-ingest*' | wc -l)" -eq 0 ]
+}
+@test "ingest resolves a relative ./pcap source against the compose file's directory" {
+    record_env; make_run_dir demo; stub chown ':'
+    ingest_compose ./pcap; mkdir -p "$ROOT/opt/malcolm/malcolm/pcap/upload"
+    run scenario ingest "$RD"; echo "$output"; [ "$status" -eq 0 ]
+    [ -f "$ROOT/opt/malcolm/malcolm/pcap/upload/demo-20261001T1400Z,inner-a.pcapng" ]
+}
+@test "ingest dies naming the compose file when it is missing or names no /pcap mount, copying nothing" {
+    record_env; make_run_dir demo; stub chown ':'
+    mkdir -p "$ROOT/opt/malcolm/malcolm/pcap/upload"
+    run scenario ingest "$RD"; echo "$output"; [ "$status" -eq 1 ]
+    [[ "$output" == *"$ROOT/opt/malcolm/malcolm/docker-compose.yml"* ]]
+    printf 'services:\n  x:\n    volumes:\n      - type: bind\n        source: ./a\n        target: /other\n' > "$ROOT/opt/malcolm/malcolm/docker-compose.yml"
+    run scenario ingest "$RD"; echo "$output"; [ "$status" -eq 1 ]
+    [[ "$output" == *"docker-compose.yml"*"/pcap"* ]]
+    [ "$(find "$ROOT/opt/malcolm/malcolm/pcap/upload" -type f | wc -l)" -eq 0 ]
+    ingest_compose /data/pcap/raw    # source dir without upload/
+    run scenario ingest "$RD"; [ "$status" -eq 1 ]; [[ "$output" == *"$ROOT/data/pcap/raw/upload"* ]]
+}
+@test "ingest hands over atomically: cp never targets upload/, the name appears by rename, a failed cp leaves nothing" {
+    record_env; make_run_dir demo; stub chown ':'
+    ingest_compose /data/pcap/raw; mkdir -p "$ROOT/data/pcap/raw/upload"
+    real_cp=$(command -v cp)
+    stub cp "echo \"cp \$*\" >> \"\$STUB_LOG\"; [ -f \"\$BATS_TEST_TMPDIR/cp-fail\" ] && { printf part > \"\${@: -1}\"; exit 1; }; exec $real_cp \"\$@\""
+    run scenario ingest "$RD"; echo "$output"; [ "$status" -eq 0 ]
+    run grep -E '^cp .*/upload/' "$STUB_LOG"; [ "$status" -ne 0 ]
+    grep -q '^cp .*/data/pcap/raw/\.r770-ingest\.' "$STUB_LOG"
+    [ -f "$ROOT/data/pcap/raw/upload/demo-20261001T1400Z,outer.pcapng" ]
+    rm -f "$ROOT"/data/pcap/raw/upload/*; touch "$BATS_TEST_TMPDIR/cp-fail"
+    run scenario ingest "$RD"; echo "$output"; [ "$status" -eq 1 ]
+    [ "$(find "$ROOT/data/pcap/raw" -type f | wc -l)" -eq 0 ]
+}
 @test "ingest copies outer and inner captures with the run id as a tag, never anything under gt/" {
     record_env; make_run_dir demo
     mkdir -p "$RD/gt/a/keys"; echo k > "$RD/gt/a/keys/esp_sa"
-    up="$ROOT/opt/malcolm/malcolm/pcap/upload"; mkdir -p "$up"
+    up="$ROOT/opt/malcolm/malcolm/pcap/upload"; mkdir -p "$up"; ingest_compose ./pcap
     stub chown 'echo "chown $*" >> "$STUB_LOG"'
     run scenario ingest "$RD"; echo "$output"; [ "$status" -eq 0 ]
     [ -f "$up/demo-20261001T1400Z,outer.pcapng" ]; [ -f "$up/demo-20261001T1400Z,inner-a.pcapng" ]
@@ -1184,7 +1293,7 @@ esac'
     grep -q 'chown 1000:1000' "$STUB_LOG"; grep -q '^ingest=20' "$RD/run.conf"
 }
 @test "ingest refuses an empty capture or a run with no captures, copying nothing; and a host without Malcolm" {
-    record_env; make_run_dir demo; up="$ROOT/opt/malcolm/malcolm/pcap/upload"; mkdir -p "$up"
+    record_env; make_run_dir demo; up="$ROOT/opt/malcolm/malcolm/pcap/upload"; mkdir -p "$up"; ingest_compose ./pcap
     : > "$RD/outer-lab-tap0.pcapng"
     run scenario ingest "$RD"; [ "$status" -eq 1 ]; [[ "$output" == *"outer-lab-tap0.pcapng"*"empty"* ]]
     [ "$(find "$up" -type f | wc -l)" -eq 0 ]
@@ -1261,7 +1370,7 @@ while True:
     run scenario verify "$RD"; echo "$output"; [ "$status" -eq 1 ]; [[ "$output" == *"cannot write"*"expected.md"* ]]
 }
 @test "ingest refuses an interrupted run, copying nothing; WARNs (exit 2) on a result=FAIL run but copies it; --dry-run claims no PASS" {
-    record_env; make_run_dir demo; up="$ROOT/opt/malcolm/malcolm/pcap/upload"; mkdir -p "$up"; stub chown ':'
+    record_env; make_run_dir demo; up="$ROOT/opt/malcolm/malcolm/pcap/upload"; mkdir -p "$up"; ingest_compose ./pcap; stub chown ':'
     sed -i 's/^end=.*/end=interrupted 2026-10-01T14:03:00Z/' "$RD/run.conf"
     run scenario ingest "$RD"; echo "$output"; [ "$status" -eq 1 ]; [[ "$output" == *"interrupted run"* ]]
     [ "$(find "$up" -type f | wc -l)" -eq 0 ]

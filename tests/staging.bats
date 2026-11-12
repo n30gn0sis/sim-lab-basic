@@ -142,8 +142,28 @@ real_bundle() {
     done
 }
 
+@test "the fetch asks the GNS3 registry for the Alpine definition under its current name" {
+    # The registry renamed the definition; the old name is a 404 and one WARN,
+    # which fails the builder's strict gate (rehearsal 2026-11-10).
+    run grep -E '^[[:space:]]+vyos .* alpine-linux-virt ' staging/r770-offline-fetch.sh
+    [ "$status" -eq 0 ]
+    run grep -E '(^|[[:space:]])alpine-linux([[:space:]]|$)' staging/r770-offline-fetch.sh
+    [ "$status" -ne 0 ]
+}
+
 @test "the fetch's help names no SITE_ variable" {
     run ./staging/r770-offline-fetch.sh --help
     [ "$status" -eq 0 ]
     [[ "$output" != *"SITE_"* ]]
+}
+
+@test "A8: the fetch stages no definition whose image the bundle cannot carry" {
+    defs=$(sed -n '/^GNS3A_DEFS=(/,/^)/p' staging/r770-offline-fetch.sh)
+    [ -n "$defs" ]
+    for d in cisco-iosv cisco-iosvl2 cisco-asav fortigate pan-vm-fw; do
+        if grep -qw -- "$d" <<< "$defs"; then echo "still listed: $d"; false; fi
+    done
+    for d in vyos mikrotik-chr opnsense frr alpine-linux-virt tinycore-linux openwrt; do
+        grep -qw -- "$d" <<< "$defs" || { echo "lost: $d"; false; }
+    done
 }

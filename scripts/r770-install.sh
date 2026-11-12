@@ -24,7 +24,8 @@
 #                            (run --yes is unattended: it also implies --non-interactive)
 #
 #   INSTALL_IMPORT_CMD INSTALL_GNS3_CMD INSTALL_MALCOLM_CMD INSTALL_DOCS_CMD
-#   INSTALL_PORTAL_CMD INSTALL_VALIDATE_CMD INSTALL_E2E_CMD   the children (tests stub them)
+#   INSTALL_PORTAL_CMD INSTALL_VALIDATE_CMD INSTALL_E2E_CMD
+#   INSTALL_CAPTURE_CMD                                       the children (tests stub them)
 #
 #   0  INSTALLED · 2  finished with warnings (never INSTALLED) · 1  refused or failed
 #
@@ -49,6 +50,7 @@ DOCS="${INSTALL_DOCS_CMD:-$KIT_DIR/scripts/r770-docs-deploy.sh}"
 PORTAL="${INSTALL_PORTAL_CMD:-$KIT_DIR/scripts/r770-portal-deploy.sh}"
 VALIDATE="${INSTALL_VALIDATE_CMD:-$KIT_DIR/scripts/r770-validate.sh}"
 E2E="${INSTALL_E2E_CMD:-$KIT_DIR/scripts/r770-e2e.sh}"
+CAPTURE="${INSTALL_CAPTURE_CMD:-$KIT_DIR/scripts/r770-capture-ports.sh}"   # plan only: run reaches it through malcolm's capture step
 SUB=""; CONF_PATH=""; FROM=""; TO=""
 MEDIA_NEEDED=1   # 0 once a run starts past import: the media may be gone, the local copy stands in
 usage() { usage_from_header 3; exit 0; }
@@ -412,24 +414,99 @@ plan_child() {  # plan_child <label> <cmd...>
         *) fail "$label: refused under --dry-run (above) — fix before run" ;;
     esac
 }
+# A step whose prerequisite an EARLIER step of this same run creates cannot be
+# reviewed before that step has run; plan says so with a SKIP naming the
+# provider instead of reporting the child's refusal (acceptance 2026-11-10, A2).
+pkg_missing() {  # pkg_missing <pkg...> — prints " <pkg>" for each one not installed
+    local k m=""
+    for k in "$@"; do dpkg -s "$k" >/dev/null 2>&1 || m="$m $k"; done
+    printf '%s' "$m"
+}
+# plan_horizon <pipeline> — "<last reviewable step>|<what is missing and who provides it>",
+# or nothing when the whole pipeline can be reviewed on this host as it stands.
+plan_horizon() {
+    local m=""
+    if ! command -v docker >/dev/null 2>&1; then
+        printf 'files|docker — installed by the import steps (docker)'; return 0
+    fi
+    case "$1" in
+        gns3)    m=$(pkg_missing python3-venv python3-pip-whl ubridge) ;;
+        malcolm) m=$(pkg_missing python3-ruamel.yaml python3-dotenv) ;;
+    esac
+    [ -z "$m" ] || { printf 'load|package(s)%s — installed by the import steps (apt)' "$m"; return 0; }
+    # malcolm's capture step (after unpack) requires ethtool once a physical port is named
+    if [ "$1" = malcolm ] && [ -n "$(phys_capture_ifs)" ]; then
+        m=$(pkg_missing ethtool)
+        [ -z "$m" ] || printf 'unpack|package(s)%s — installed by the import steps (apt)' "$m"
+    fi
+}
+# phys_capture_ifs — the CAPTURE_IFS names r770-capture-ports.sh prepares (every one but labnet's)
+phys_capture_ifs() {
+    local i out=""
+    for i in $CONF_CAPTURE_IFS; do case " $LATE_IFS " in *" $i "*) ;; *) out="$out $i" ;; esac; done
+    printf '%s' "${out# }"
+}
+# plan_capture — Malcolm's capture step on its own, for a plan whose Malcolm
+# review stops before it. Its refusals (a port that is missing, not physical,
+# bridged, addressed or the management path) need nothing the import
+# installs, so even a bare host shows them here instead of mid-run; ethtool,
+# which the step requires, comes from the import's apt step.
+plan_capture() {
+    local m
+    m=$(pkg_missing ethtool)
+    if [ -n "$(phys_capture_ifs)" ] && [ -n "$m" ]; then
+        skip "malcolm capture ($(phys_capture_ifs)): needs package(s)$m — installed by the import steps (apt); run reviews it at its own gate"
+    else
+        plan_child "malcolm capture" "$CAPTURE" apply --capture-ifs "$CONF_CAPTURE_IFS" --dry-run
+    fi
+}
+# plan_pipeline <label> <exe> <bundle> — review as far as the horizon allows;
+# returns 0 when the whole pipeline can be reviewed, 1 when it was cut short
+plan_pipeline() {
+    local label=$1 exe=$2 b=$3 h
+    h=$(plan_horizon "$label")
+    if [ -n "$h" ]; then
+        plan_child "$label (to ${h%%|*})" "$exe" full --bundle "$b" --to "${h%%|*}" --dry-run
+        skip "$label after ${h%%|*}: needs ${h#*|}; run reviews the rest at its own gates"
+        return 1
+    fi
+    return 0
+}
 cmd_plan() {
     banner "plan — every change this install would make; nothing is applied"
     conf_ready
-    local b=$CONF_BUNDLE s
+    local b=$CONF_BUNDLE
     plan_child "storage" "$IMPORT" storage --bundle "$b"
     plan_child "import gate" "$IMPORT" gate --bundle "$b" --media "$CONF_MEDIA" --device "$CONF_DEVICE" --dry-run
     plan_child "import copy" "$IMPORT" copy --bundle "$b" --dry-run
-    plan_child "gns3" "$GNS3" full --bundle "$b" --dry-run
+    plan_pipeline gns3 "$GNS3" "$b" && plan_child "gns3" "$GNS3" full --bundle "$b" --dry-run
     local i late=""
     for i in $CONF_CAPTURE_IFS; do case " $LATE_IFS " in *" $i "*) has_line "$i" "$(host_ifs)" || late="$late $i" ;; esac; done
-    if [ -n "$late" ]; then
-        plan_child "malcolm (to unpack)" "$MALCOLM" full --bundle "$b" --to unpack --dry-run
-        skip "malcolm configure, secrets, auth, rebind, start: need${late} — created by the gns3 step's labnet; run reviews them at their own gates"
-    else
-        plan_child "malcolm" "$MALCOLM" full --bundle "$b" --capture-ifs "$CONF_CAPTURE_IFS" --dry-run
+    local capture_reviewed=0
+    if plan_pipeline malcolm "$MALCOLM" "$b"; then
+        if [ -n "$late" ]; then
+            plan_child "malcolm (to unpack)" "$MALCOLM" full --bundle "$b" --to unpack --dry-run
+            skip "malcolm configure, secrets, auth, rebind, start: need${late} — created by the gns3 step's labnet; run reviews them at their own gates"
+        else
+            plan_child "malcolm" "$MALCOLM" full --bundle "$b" --capture-ifs "$CONF_CAPTURE_IFS" --dry-run
+            capture_reviewed=1
+        fi
     fi
-    plan_child "docs" "$DOCS" full --bundle "$b" --dry-run
-    for s in ca cert htpasswd nginx; do plan_child "portal $s" "$PORTAL" "$s" --dry-run; done
+    [ "$capture_reviewed" = 1 ] || plan_capture
+    plan_pipeline docs "$DOCS" "$b" && plan_child "docs" "$DOCS" full --bundle "$b" --dry-run
+    local m
+    m=$(pkg_missing easy-rsa)
+    if [ -n "$m" ]; then skip "portal ca: needs package(s)$m — installed by the import steps (apt)"
+    else plan_child "portal ca" "$PORTAL" ca --dry-run; fi
+    if [ -e "$(p /etc/lab/ca/pki/ca.crt)" ]; then plan_child "portal cert" "$PORTAL" cert --dry-run
+    else skip "portal cert: needs the lab CA — created by portal ca"; fi
+    if [ -e "$(p /opt/malcolm/malcolm/nginx/htpasswd)" ]; then plan_child "portal htpasswd" "$PORTAL" htpasswd --dry-run
+    else skip "portal htpasswd: needs Malcolm's login file — created by the malcolm step's auth"; fi
+    m=$(pkg_missing nginx)
+    if [ -n "$m" ]; then skip "portal nginx: needs package(s)$m — installed by the import steps (apt)"
+    elif [ ! -e "$(p /etc/nginx/ssl/lab.crt)" ] || [ ! -e "$(p /etc/nginx/lab.htpasswd)" ]; then
+        skip "portal nginx: needs the certificate and the login file — created by portal cert and portal htpasswd"
+    else plan_child "portal nginx" "$PORTAL" nginx --dry-run; fi
     note "dashboards: installs saved objects and Arkime views after Malcolm is up — idempotent, not gated"
     note "validate, e2e: read-only checks and the scenario run — nothing to review; they prove the result"
     footer "plan"

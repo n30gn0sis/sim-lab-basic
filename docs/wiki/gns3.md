@@ -1,15 +1,15 @@
 # Network Simulation — GNS3
 
-GNS3 (server version pin owned by `scripts/r770-offline-fetch.sh` — see `OWNERS.md`) is the lab's topology builder: drag routers, firewalls, switches, and endpoints onto a canvas, wire them up, and run them as real software — QEMU virtual machines and Docker containers under the hood. Use it to reproduce a customer network, build a test bed for a protocol question, stage traffic for capture practice, or rehearse a change.
+GNS3 is the lab's topology builder: drag routers, firewalls, switches, and endpoints onto a canvas, wire them up, and run them as real software — QEMU virtual machines and Docker containers under the hood. Use it to reproduce a customer network, build a test bed for a protocol question, stage traffic for capture practice, or rehearse a change.
 
 ## Connecting
 
 Two ways in, same server, same projects:
 
-- **Web UI** — GNS3 v3 ships a built-in web interface, reached through the portal. Good for most topology work.
-- **Desktop GNS3 GUI** — install the GNS3 client on your workstation and point it at the lab server as a *remote server* through the portal address. Familiar if you've used GNS3 standalone; nothing runs on your workstation except the GUI.
+- **Web UI** — GNS3 v3 ships a built-in web interface, reached at `https://gns3.lab`. Good for most topology work.
+- **Desktop GNS3 GUI** — install the GNS3 client on your workstation and point it at the lab server as a *remote server* at `gns3.lab`. Familiar if you've used GNS3 standalone; nothing runs on your workstation except the GUI.
 
-Authentication is enforced by the server (accounts **TBD** until provisioning is defined — proposed design: `docs/superpowers/specs/2026-09-14-account-provisioning-design.md`). Projects live server-side under `/srv/gns3/projects` — they persist between sessions and are included in nightly backups, so your topology survives both logout and disaster.
+Authentication is enforced by the server: GNS3 has its own admin login, separate from the Malcolm and wiki login (ask the lab operator). Projects live server-side under `/srv/gns3/projects` — they persist between sessions, so your topology survives logout. They are not backed up: export a project you cannot afford to lose.
 
 ## What you can build with
 
@@ -20,12 +20,12 @@ Bundled free/open-source appliances, ready to use:
 | Appliance | Role |
 |---|---|
 | **VyOS** | General-purpose router — OSPF/BGP, VPN, firewall; the workhorse |
-| **MikroTik CHR** (RouterOS 7.21) | RouterOS environments |
-| **OPNsense** (pin: see `scripts/r770-offline-fetch.sh`) | Firewall/router with a full web UI (the no-license pfSense alternative) |
+| **MikroTik CHR** | RouterOS environments |
+| **OPNsense** | Firewall/router with a full web UI (the no-license pfSense alternative) |
 | **FRR** | Pure routing stack — lightweight BGP/OSPF/IS-IS nodes |
 | **OpenWrt** | CPE/edge-device behavior |
 
-Appliance *definitions* also exist for licensed images — Cisco IOSv/IOSvL2/ASAv, FortiGate, Palo Alto VM-Series — but the images themselves are entitlement-gated. Which ones are actually staged is **TBD**; check the appliance list in the UI or ask the operator before planning a Cisco-dependent lab.
+Licensed appliances — Cisco IOSv/IOSvL2/ASAv, FortiGate, Palo Alto VM-Series — are not in the bundle: their images are entitlement-gated, and the kit ships no definition for an appliance whose image it does not carry. The operator imports any of them by hand. Which ones are actually on this box is **TBD**; check the appliance list in the UI or ask the operator before planning a Cisco-dependent lab.
 
 ### Endpoints
 
@@ -41,22 +41,22 @@ This is a shared box. Router/firewall appliances cost real RAM (commonly 2–4 G
 
 - Prefer Docker nodes and built-in switches over VMs wherever the job allows.
 - Stop topologies when you're done for the day; projects keep their state.
-- Check the Grafana host dashboard before launching something huge.
+- Ask the operator before launching something huge.
 
 ## Analyzing lab traffic
 
 The lab's best trick: traffic inside your GNS3 topology can be fed into Malcolm and analyzed exactly like real captured traffic — Zeek logs, Arkime search, dashboards, the lot.
 
-Mechanically, one shared lab bridge (`br-lab`) is mirrored into a dedicated virtual feed that Malcolm captures alongside the physical TAPs (the capture ports themselves are never bridged into the lab — evidence and experiments stay separated). The workflow:
+Mechanically, one shared lab bridge (`br-lab`) is mirrored into a dedicated virtual feed, and that feed is what Malcolm captures live (the capture end itself is never a port of the lab bridge). The workflow:
 
 1. Build and start your topology; get traffic flowing.
 2. Put the segment you want analyzed on `br-lab`: add a GNS3 **Cloud** node and bind it through its **TAP** tab (not Ethernet) to a free `lab-tapN`; do the same with a second Cloud on the other end of the link. Everything crossing `br-lab` reaches Malcolm.
-3. Analyze in Malcolm. Filter by your lab's IP ranges or the mirror feed's interface/tag to isolate your traffic from the physical feeds.
+3. Analyze in Malcolm. Filter by your lab's IP ranges to isolate your traffic from other labs on the same bridge.
 
 For a quick look that doesn't need the full Malcolm treatment, GNS3 also has built-in per-link capture (right-click a link → capture) which writes a PCAP you can pull back to Wireshark — handy for a single link, no mirror needed.
 
 ## Ready-made scenarios
 
-The operator can run a scenario from the kit's pack instead of building one: `client-server`, `ipsec-esp`, `ipsec-ike`, `ospf` and `bgp`, each with its own address range and one link on `br-lab`. Ask for one by name; `r770-scenario.sh traffic` then generates a known window of traffic you can find in Malcolm by the scenario's range.
+The operator can run a scenario from the kit's pack instead of building one: `bgp`, `client-server`, `dns`, `ipsec-esp`, `ipsec-ike`, `ospf`, `s0-w1`, `s1-w1-ss`, `ssh` and `tls`, each with its own address range and one link on `br-lab`. Ask for one by name; `r770-scenario.sh traffic` then generates a known window of traffic you can find in Malcolm by the scenario's range.
 
 Combine with [WAN emulation](wan.md) to watch how protocols behave under latency and loss — captured and analyzed like any other traffic.
