@@ -1,5 +1,11 @@
 # sim-lab-basic — R770 offline deployment kit
 
+> **Status (2026-11-13):** closed to new scope. The bundle cut on 2026-11-12
+> installed to INSTALLED from a bare host on the staging VM, survived a reboot
+> and re-entered cleanly (`docs/rehearsals/2026-11-12-final-pass.md`). The one
+> step left is the operator's install on the real R770 with that bundle.
+> Everything deferred is listed in `docs/backlog.md`.
+
 Both sides of the air gap, in one clone. `staging/` builds the bundle on the
 internet-connected staging host; `scripts/` **takes the bundle onto the
 air-gapped Dell PowerEdge R770 and stands the services up** — verified, gated,
