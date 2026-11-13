@@ -50,6 +50,10 @@ Transcript names are files in the evidence directory, or inside
 | `r770-validate.sh --area network` after the reboot | capture rows PASS for both interfaces | 13 checks passed, 1 skipped (no `--mgmt-if` given) | PASS | pass 2: `reboot-validate-network.log` |
 | Re-entry: `run --yes --from malcolm` (A9) | INSTALLED | **INSTALLED**, exit 0; e2e 40 checks passed; no gate reopened | PASS | pass 2: `run-2.log`, `r770-evidence/install-r770-staging-20261112-161507.md` |
 | `umount` the media | clean | UNMOUNTED | PASS | (command output) |
+| Third pass, late 2026-11-12: the same bundle, from `bare2b-2026-11-12` again, one `run --yes` | INSTALLED | NOT INSTALLED, exit 1: every step clean except e2e, `up bgp` "did not become ready within 120s" (F6) | FAIL | pass 3: `run-manual.log`, `r770-evidence/install-r770-staging-20261112-235603/` |
+| Third pass: `run --yes --from e2e`, nothing changed | INSTALLED | **INSTALLED**, exit 0; e2e 40 checks passed | PASS | pass 3: `run-e2e2.log`, `r770-evidence/install-r770-staging-20261113-004909/` |
+| The bundle copied to the operator PC and verified there with its own verifier | `RESULT: PASS` | PASS | PASS | (command output) |
+| 2026-11-13, browser pane on the operator PC through the harness tunnel and a loopback proxy | each site answers | GNS3's web UI loaded to its login form; Malcolm answered 401 (sign-in left to the operator); the wiki, built locally by the bundle's own MkDocs image, rendered with no build warning | PASS | (screenshots in the session) |
 
 ## Findings
 
@@ -60,11 +64,14 @@ Transcript names are files in the evidence directory, or inside
 | F3 | `plan` on a first install exits 2 (READY WITH WARNINGS): the import preflight warns that docker is not present yet and that there is no previous bundle | none — the operator's ruling is that this is the expected verdict; the runbook says so | `650be15` (runbook only) | second cut | as expected |
 | F4 | After each reboot `systemd-networkd-wait-online` failed after its two-minute timeout, delaying Docker and the offload units by that long | none — the interface it waited for is the one the air gap holds link-down (a stand-in). On the R770: a configured NIC with no cable would do the same; check `systemctl --failed` after the first reboot | — | — | — |
 | F5 | `harness/r770-staging-vm.sh snapshot` twice took no snapshot and printed no verdict when `--description` held `;`, `=`, `:` or parentheses | none — `harness/` is frozen; **open**. Plain descriptions work | — | — | — |
+| F6 | Third pass: e2e's `up bgp` did not become ready within its 120 s wait; `--from e2e` with no change passed. Once in three installs of this bundle | none — **open** in `docs/backlog.md`; on the R770, rerun `--from e2e` if it recurs | — | — | pass 3: INSTALLED |
+| F7 | The lab CA built by `scripts/r770-portal-deploy.sh ca` (easy-rsa defaults) does not mark `basicConstraints` critical; browsers accept it, strict TLS clients reject the chain | none — **open** in `docs/backlog.md` | — | — | — |
 
 Operator slips, recorded because they shaped the snapshots: the snapshot
 `bare-2026-11-12` was taken live after `discover` (F5 lost the first attempt);
 `bare2-2026-11-12` was taken with Docker still installed (the purge had not
-run) and is mislabelled; `bare2b-2026-11-12` is the second pass's real start.
+run) and was mislabelled, so it was later deleted;
+`bare2b-2026-11-12` is the real start of the second and third passes.
 
 ## Not exercised
 
@@ -75,7 +82,8 @@ run) and is mislabelled; `bare2b-2026-11-12` is the second pass's real start.
   time for it; that wait was never the deciding factor here.
 - A boot without the air gap's link-down NIC (F4).
 - Real licensed appliance images; none are shipped or claimed.
-- Site checks in a browser; unchanged since 2026-11-10 and not repeated.
+- Signed-in site checks in a browser: on 2026-11-13 the sites were reached
+  (see Steps) but no one signed in through Claude.
 - `VALIDATE_AREAS` was `network capture gns3 storage portal airgap`, with the
   same SKIPs inside those areas as on 2026-11-10.
 - The IPsec and WAN scenario scripts beyond what `e2e` runs; that code is
@@ -84,10 +92,10 @@ run) and is mislabelled; `bare2b-2026-11-12` is the second pass's real start.
 ## Evidence
 
 Operator PC, outside git: `~/r770-rehearsals/2026-11-12-final-pass/`
-(`final-pass-2-evidence.tgz`, `final-pass-1-evidence.tgz`, the suite and cut
+(`final-pass-3-evidence.tgz`, `final-pass-2-evidence.tgz`,
+`final-pass-1-evidence.tgz`, the suite and cut
 logs, `preflight.log`, harness transcripts, `install.conf`,
 `standin-volumes.sh`) and `~/r770-rehearsals/a11-ethtool-k.txt` (the A11
 measurement of 2026-11-11). VM snapshots: `bare-2026-11-12`,
-`pass1-2026-11-12`, `bare2-2026-11-12` (mislabelled), `bare2b-2026-11-12`,
-`final-2026-11-12`. The bundle itself is on the VM at `final-2026-11-12`:
+`pass1-2026-11-12`, `bare2b-2026-11-12`, `final-2026-11-12`. The bundle itself is on the VM at `final-2026-11-12`:
 `/srv/bundles/bundle-20261112` and the loop media `/data/staging/media.img`.
