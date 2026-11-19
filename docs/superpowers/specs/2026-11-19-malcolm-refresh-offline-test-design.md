@@ -15,10 +15,12 @@ shown that a moved pin survives the whole path.
 The move under test is the Malcolm pin: from the release `bundle-20261112`
 carries to the newest upstream release, two releases later. The exact
 versions live in the pin block and in the rehearsal's transcripts, not here
-(`tests/no-pins.bats`). No other pin moves. The
-unpinned content (the apt set, the `latest` images, the free appliance
-images) is fetched fresh on every cut, so it will also be newer than in
-`bundle-20261112`; the record says which of it changed.
+(`tests/no-pins.bats`). No other pin moves.
+
+The apt set and the enrichment data are fetched fresh on every cut, so they
+will be newer than in `bundle-20261112`. Everything else that the seed can
+supply with a matching hash is reused; the record lists what was reused and
+what was fetched.
 
 ## Where it runs
 
