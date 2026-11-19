@@ -50,7 +50,7 @@
 set -euo pipefail
 
 # ── pins: review each refresh cycle ──────────────────────────────────────────
-MALCOLM_VER="${MALCOLM_VER:-26.08.0}"          # check https://github.com/idaholab/Malcolm/releases
+MALCOLM_VER="${MALCOLM_VER:-26.10.0}"          # check https://github.com/idaholab/Malcolm/releases
 UBUNTU_ISO_VER="${UBUNTU_ISO_VER:-24.04.4}"    # check https://releases.ubuntu.com/noble/
 UBUNTU_KEYRING="${UBUNTU_KEYRING:-/usr/share/keyrings/ubuntu-archive-keyring.gpg}"
     # shipped by the ubuntu-keyring package, present by default on Ubuntu
