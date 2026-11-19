@@ -167,3 +167,29 @@ real_bundle() {
         grep -qw -- "$d" <<< "$defs" || { echo "lost: $d"; false; }
     done
 }
+
+@test "seeding never reuses the Malcolm compose file: its name carries no version, so a moved pin would ship the old images" {
+    # Rehearsal 2026-11-19: with the pin moved, a seeded cut took the previous
+    # bundle's malcolm/docker-compose.yml, built its image list from it, and
+    # saved the OLD images under the new version's file name. The gate passed.
+    prev="$BATS_TEST_TMPDIR/bundle-prev"; new="$BATS_TEST_TMPDIR/bundle-new"
+    mkdir -p "$prev/malcolm" "$prev/isos" "$new"
+    echo "image: example/old" > "$prev/malcolm/docker-compose.yml"
+    echo "an iso"             > "$prev/isos/fixture.iso"
+    ( cd "$prev" && sha256sum ./malcolm/docker-compose.yml ./isos/fixture.iso > MANIFEST.sha256 )
+    fn=$(sed -n '/^seed() {/,/^}/p' staging/r770-offline-fetch.sh)
+    [ -n "$fn" ]
+    run bash -c '
+        set -euo pipefail
+        B="$1"; PREV_BUNDLE="$2"; FORCE=0
+        have() { [ -s "$1" ]; }
+        note() { echo ">> $*"; }
+        eval "$3"
+        seed "$B/malcolm/docker-compose.yml"
+        seed "$B/isos/fixture.iso"
+    ' _ "$new" "$prev" "$fn"
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [ -s "$new/isos/fixture.iso" ]                  # the control: seeding works here
+    [ ! -e "$new/malcolm/docker-compose.yml" ]      # and leaves the compose file to the fetch
+}
