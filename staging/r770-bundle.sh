@@ -243,6 +243,46 @@ check_required() {  # <dir>
     done
 }
 
+# The Malcolm payload is three files that must name ONE release: the install
+# package and the image tarball carry it in their names, the image list in its
+# tags. check_required proves the files exist; the hashes prove they match the
+# manifest. Neither notices a new install package beside the previous release's
+# images, which is what a seeded cut shipped on 2026-11-19 (rehearsal F8/F9)
+# under "RESULT: PASS". The release is read from the bundle, never stated here.
+# The tarball is judged by its name: opening it costs minutes, and the R770
+# import checks the loaded tags against the list.
+check_malcolm_release() {  # <dir>
+    local d="$1/malcolm" f rel trel bad n
+    local zips=() tars=()
+    for f in "$d"/malcolm-*-docker_install.zip; do [ -e "$f" ] && zips+=("$f"); done
+    for f in "$d"/malcolm-images-*.tar.gz;      do [ -e "$f" ] && tars+=("$f"); done
+    [ "${#zips[@]}" -eq 0 ] && [ "${#tars[@]}" -eq 0 ] && [ ! -e "$d/image-list.txt" ] && return 0
+
+    if [ "${#zips[@]}" -ne 1 ]; then
+        fail "malcolm/ holds ${#zips[@]} install package(s) (malcolm-*-docker_install.zip) — exactly one release may travel"
+        return 0
+    fi
+    if [ "${#tars[@]}" -ne 1 ]; then
+        fail "malcolm/ holds ${#tars[@]} image tarball(s) (malcolm-images-*.tar.gz) — exactly one release may travel"
+        return 0
+    fi
+    rel=$(basename "${zips[0]}");  rel=${rel#malcolm-};         rel=${rel%-docker_install.zip}
+    trel=$(basename "${tars[0]}"); trel=${trel#malcolm-images-}; trel=${trel%.tar.gz}
+    if [ "$trel" != "$rel" ]; then
+        fail "malcolm/$(basename "${tars[0]}") is not the install package's release ($rel) — a mixed-release Malcolm payload"
+        return 0
+    fi
+    [ -s "$d/image-list.txt" ] || return 0     # check_required has already failed this
+    bad=$(awk -v t=":$rel" 'NF && substr($0, length($0) - length(t) + 1) != t' "$d/image-list.txt")
+    if [ -n "$bad" ]; then
+        n=$(printf '%s\n' "$bad" | wc -l)
+        printf '%s\n' "$bad" | sed 's/^/      /'
+        fail "malcolm/image-list.txt has $n image(s) not tagged $rel, e.g. $(printf '%s\n' "$bad" | head -1) — the images are not the install package's release"
+        return 0
+    fi
+    pass "malcolm/ is one release ($rel): install package, image tarball, image list"
+}
+
 summary() {  # <strict>
     echo
     if [ "$FAILS" -gt 0 ]; then
@@ -288,6 +328,7 @@ cmd_verify() {
     check_coverage "$dir" "$manifest"
     check_parts    "$dir"
     check_required "$dir"
+    check_malcolm_release "$dir"
     check_notes    "$dir"
     check_manual   "$dir"
     check_kit      "$dir"

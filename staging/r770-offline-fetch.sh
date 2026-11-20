@@ -50,7 +50,7 @@
 set -euo pipefail
 
 # ── pins: review each refresh cycle ──────────────────────────────────────────
-MALCOLM_VER="${MALCOLM_VER:-26.08.0}"          # check https://github.com/idaholab/Malcolm/releases
+MALCOLM_VER="${MALCOLM_VER:-26.10.0}"          # check https://github.com/idaholab/Malcolm/releases
 UBUNTU_ISO_VER="${UBUNTU_ISO_VER:-24.04.4}"    # check https://releases.ubuntu.com/noble/
 UBUNTU_KEYRING="${UBUNTU_KEYRING:-/usr/share/keyrings/ubuntu-archive-keyring.gpg}"
     # shipped by the ubuntu-keyring package, present by default on Ubuntu
@@ -413,7 +413,11 @@ seed() {  # seed <abs path under $B> — link/copy the file from PREV_BUNDLE if 
     # a prior bundle's tarball may still carry the monitoring images this kit
     # trimmed — seeding it would reunite a docs-image-only list with an
     # untrimmed payload. It's one small image now, so re-pulling costs little.
-    case "$rel" in apt/*|enrichment/*|docker/monitoring-images.tar.gz) return 0 ;; esac
+    # malcolm/docker-compose.yml: the release's own image list, under a name
+    # that carries no version. Seeded across a pin move it yields the previous
+    # release's images saved under the new release's file name, and the gate
+    # cannot tell (rehearsal 2026-11-19). It is small: always fetch it.
+    case "$rel" in apt/*|enrichment/*|docker/monitoring-images.tar.gz|malcolm/docker-compose.yml) return 0 ;; esac
     src="$PREV_BUNDLE/$rel"
     [ -s "$src" ] || return 0
     manifest="$PREV_BUNDLE/MANIFEST.sha256"
