@@ -193,3 +193,63 @@ real_bundle() {
     [ -s "$new/isos/fixture.iso" ]                  # the control: seeding works here
     [ ! -e "$new/malcolm/docker-compose.yml" ]      # and leaves the compose file to the fetch
 }
+
+# F9 (rehearsal 2026-11-19): the three Malcolm files must name one release.
+# The install package and the image tarball carry it in their names, the image
+# list in its tags.
+@test "the verifier passes a Malcolm payload whose three files name one release, and says so" {
+    B="$BATS_TEST_TMPDIR/bundle-fixture"
+    real_bundle "$B"
+    ./staging/r770-bundle.sh manifest "$B"
+    run ./staging/r770-bundle.sh verify "$B" --strict
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"ok    malcolm/ is one release"* ]]
+}
+
+@test "F9: the verifier fails a bundle whose Malcolm image list carries another release's tags" {
+    # F8's exact shape: new install package, tarball named for the new release,
+    # the image list (and so the saved images) from the previous one.
+    B="$BATS_TEST_TMPDIR/bundle-fixture"
+    real_bundle "$B"
+    sed -i 's/:[^:]*$/:previous/' "$B/malcolm/image-list.txt"
+    ./staging/r770-bundle.sh manifest "$B"
+    run ./staging/r770-bundle.sh verify "$B" --strict
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"FAIL"*"malcolm/image-list.txt"*"previous"* ]]
+    [[ "$output" == *"Do not import this bundle"* ]]
+}
+
+@test "F9: the verifier fails a bundle whose Malcolm image tarball is named for another release" {
+    B="$BATS_TEST_TMPDIR/bundle-fixture"
+    real_bundle "$B"
+    mv "$B"/malcolm/malcolm-images-*.tar.gz "$B/malcolm/malcolm-images-previous.tar.gz"
+    ./staging/r770-bundle.sh manifest "$B"
+    run ./staging/r770-bundle.sh verify "$B" --strict
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"FAIL"*"malcolm-images-previous.tar.gz"* ]]
+}
+
+@test "F9: the verifier fails a bundle that carries two Malcolm install packages" {
+    B="$BATS_TEST_TMPDIR/bundle-fixture"
+    real_bundle "$B"
+    echo "fake zip" > "$B/malcolm/malcolm-previous-docker_install.zip"
+    ./staging/r770-bundle.sh manifest "$B"
+    run ./staging/r770-bundle.sh verify "$B" --strict
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"FAIL"*"install package"* ]]
+}
+
+@test "a bundle with no Malcolm category is not asked about its release" {
+    B="$BATS_TEST_TMPDIR/bundle-fixture"
+    real_bundle "$B"
+    rm -rf "$B/malcolm"
+    ./staging/r770-bundle.sh manifest "$B"
+    run ./staging/r770-bundle.sh verify "$B" --strict
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"one release"* ]]
+}
