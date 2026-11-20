@@ -29,12 +29,6 @@ finish line.
   Browsers accept it; strict TLS clients (recent Python releases among them)
   reject the chain. Fix by marking the extension critical when the CA is
   built; an existing CA needs `ca --force` and a reissued certificate.
-- **F9 — the strict gate cannot tell a mixed-release Malcolm payload.** On
-  2026-11-19 a seeded cut carried the previous release's images under the new
-  release's file names and `verify --strict` passed (F8, since fixed at its
-  cause in `staging/r770-offline-fetch.sh`). Nothing yet checks that the
-  Malcolm image list, the image tarball and the install package belong to one
-  release (`docs/rehearsals/2026-11-19-malcolm-refresh.md`).
 
 ## Open findings against frozen work
 
