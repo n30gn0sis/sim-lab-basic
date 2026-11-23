@@ -204,14 +204,15 @@ report() { cat "$OUT"/validation-*.md; }
     [ "$status" -eq 1 ]
 }
 
-# fake_lab_sys [ageing] [physical-port] [multicast_snooping] — br-lab with
-# lab-mon0 as a port whose veth peer is lab_mirror0 (ifindex 21 <-> iflink
-# 21), under $ROOT
+# fake_lab_sys [ageing] [physical-port] [multicast_snooping] [operstate] —
+# br-lab with lab-mon0 as a port whose veth peer is lab_mirror0 (ifindex 21
+# <-> iflink 21), under $ROOT
 fake_lab_sys() {
     local s="$ROOT/sys/class/net"
     mkdir -p "$s/br-lab/bridge" "$s/br-lab/brif" "$s/lab-mon0" "$s/lab_mirror0" "$s/lab-tap0"
     echo "${1:-0}" > "$s/br-lab/bridge/ageing_time"
     echo "${3:-0}" > "$s/br-lab/bridge/multicast_snooping"
+    echo "${4:-up}" > "$s/br-lab/operstate"
     touch "$s/br-lab/brif/lab-mon0" "$s/br-lab/brif/lab-tap0"
     echo 21 > "$s/lab-mon0/ifindex"; echo 22 > "$s/lab-mon0/iflink"
     echo 22 > "$s/lab_mirror0/ifindex"; echo 21 > "$s/lab_mirror0/iflink"
@@ -232,6 +233,7 @@ fake_lab_sys() {
     run validate --area network --lab-bridge br-lab --capture-ifs lab_mirror0
     echo "$output"
     [ "$status" -eq 0 ]
+    [[ "$output" == *"PASS  network/lab-bridge br-lab operstate: up"* ]]
     [[ "$output" == *"PASS  network/lab-bridge br-lab hub"* ]]
     [[ "$output" == *"PASS  network/lab-bridge br-lab multicast snooping"* ]]
     [[ "$output" == *"PASS  network/lab-bridge br-lab physical ports"* ]]
@@ -314,4 +316,183 @@ fake_lab_sys() {
     [[ "$output" == *"FAIL  network/capture cap0 master: br-lab"* ]]
     run report
     [[ "$output" == *"never bridged to the lab fabric"* ]]
+}
+
+@test "the mirror's capture end enslaved to the lab bridge is a FAIL by name, never counted as fed (rule 8)" {
+    fake_lab_sys
+    stub ip 'case "$*" in *"link show lab_mirror0"*) echo "22: lab_mirror0@lab-mon0: <PROMISC,UP>";; esac; exit 0'
+    touch "$ROOT/sys/class/net/br-lab/brif/lab_mirror0"
+    ln -s ../br-lab "$ROOT/sys/class/net/lab_mirror0/master"
+    run validate --area network --lab-bridge br-lab --capture-ifs lab_mirror0
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"FAIL  network/lab-mirror lab_mirror0 bridge port: a port of br-lab"* ]]
+    [[ "$output" == *"FAIL  network/lab-bridge br-lab mirror: no --capture-ifs interface is fed by a port of br-lab"* ]]
+    [[ "$output" == *"FAIL  network/capture lab_mirror0 master: br-lab"* ]]
+    [[ "$output" != *"PASS  network/lab-bridge br-lab mirror"* ]]
+    run report
+    [[ "$output" == *"fed BY br-lab through lab-mon0"* ]]
+}
+
+@test "a lab bridge that exists but is not up is a FAIL naming the mirror pair" {
+    fake_lab_sys 0 "" 0 down
+    stub ip 'case "$*" in *"link show lab_mirror0"*) echo "22: lab_mirror0@lab-mon0: <PROMISC>";; esac; exit 0'
+    run validate --area network --lab-bridge br-lab --capture-ifs lab_mirror0
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"FAIL  network/lab-bridge br-lab operstate: down"* ]]
+    run report
+    [[ "$output" == *"networkctl status br-lab lab-mon0 lab_mirror0"* ]]
+}
+
+# mgmt_ip <route-dev> — ip as seen from a box whose mgmt interface is mgmt0
+# (198.51.100.10/24; documentation addresses only), routing the peer via <route-dev>
+mgmt_ip() {
+    stub ip "case \"\$*\" in
+        *\"route get\"*) echo \"198.51.100.1 dev ${1:-mgmt0} src 198.51.100.10 uid 0\";;
+        *\"link show mgmt0\"*) echo \"2: mgmt0: <BROADCAST,UP> mtu 1500 state UP\";;
+        *\"-4 addr show mgmt0\"*) echo \"2: mgmt0    inet 198.51.100.10/24 brd 198.51.100.255 scope global mgmt0\";;
+    esac; exit 0"
+}
+
+@test "mgmt reachability is never guessed: without --mgmt-peer, or without --mgmt-if, it SKIPs" {
+    run validate --area network
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"SKIP  network/mgmt-peer: no --mgmt-peer given (peers are never guessed)"* ]]
+    run validate --area network --mgmt-peer 198.51.100.1
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"SKIP  network/mgmt-peer 198.51.100.1: no --mgmt-if given"* ]]
+}
+
+@test "mgmt reachability PASSes when the route leaves by --mgmt-if and the peer answers 3/3" {
+    mgmt_ip mgmt0
+    stub ping 'echo "3 packets transmitted, 3 received, 0% packet loss, time 2003ms"'
+    run validate --area network --mgmt-if mgmt0 --mgmt-peer 198.51.100.1
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"PASS  network/mgmt mgmt0: UP 198.51.100.10/24"* ]]
+    [[ "$output" == *"PASS  network/mgmt-peer 198.51.100.1 route: dev mgmt0"* ]]
+    [[ "$output" == *"PASS  network/mgmt-peer 198.51.100.1 answers: 3/3"* ]]
+}
+
+@test "a route to the mgmt peer out of another interface is a FAIL, and no ping is sent" {
+    mgmt_ip eth9
+    stub_log ping
+    run validate --area network --mgmt-if mgmt0 --mgmt-peer 198.51.100.1
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"FAIL  network/mgmt-peer 198.51.100.1 route: dev eth9"* ]]
+    ! grep -q '^ping ' "$STUB_LOG"
+    run report
+    [[ "$output" == *"ip route get 198.51.100.1"* ]]
+}
+
+@test "a mgmt peer that loses some replies is a WARN; one that answers none is a FAIL pointing at ARP" {
+    mgmt_ip mgmt0
+    stub ping 'echo "3 packets transmitted, 2 received, 33% packet loss"'
+    run validate --area network --mgmt-if mgmt0 --mgmt-peer 198.51.100.1
+    echo "$output"
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"WARN  network/mgmt-peer 198.51.100.1 answers: 2/3"* ]]
+    stub ping 'echo "3 packets transmitted, 0 received, 100% packet loss"; exit 1'
+    run validate --area network --mgmt-if mgmt0 --mgmt-peer 198.51.100.1
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"FAIL  network/mgmt-peer 198.51.100.1 answers: 0/3"* ]]
+    run report
+    [[ "$output" == *"ip neigh show dev mgmt0"* ]]
+}
+
+@test "--mgmt-peer that is not an address is refused before anything runs" {
+    for bad in '-f' 'abc' '198.51.100.1.5' 'dead.beef'; do
+        run validate --area network --mgmt-if mgmt0 --mgmt-peer "$bad"
+        echo "$output"
+        [ "$status" -eq 1 ]
+        [[ "$output" == *"--mgmt-peer must be an IPv4 or IPv6 address"* ]]
+    done
+    mgmt_ip mgmt0
+    stub ping 'echo "3 packets transmitted, 3 received"'
+    run validate --area network --mgmt-if mgmt0 --mgmt-peer 2001:db8::1
+    echo "$output"
+    [[ "$output" == *"network/mgmt-peer 2001:db8::1 route"* ]]
+}
+
+# portal_box <getent-body> <curl-code-for-a-resolved-request> — the lab CA in
+# place, the box owning 198.51.100.10, every vhost answering 200 on loopback
+portal_box() {
+    mkdir -p "$ROOT/etc/nginx/ssl"; echo fixture > "$ROOT/etc/nginx/ssl/ca.crt"
+    stub getent "$1"
+    stub ip 'case "$*" in "-o addr show") echo "1: lo    inet 127.0.0.1/8 scope host lo"; echo "2: mgmt0    inet 198.51.100.10/24 scope global mgmt0";; esac; exit 0'
+    stub curl "case \"\$*\" in *--resolve*) printf 'HTTP/1.1 200 OK\r\n\r\n';; *) printf '%s' '$2';; esac"
+    stub ss 'echo "LISTEN 0 511 0.0.0.0:443 0.0.0.0:* users:((\"nginx\",pid=1,fd=6))"'
+}
+
+@test "each .lab name answers through the portal at the address DNS gives it" {
+    portal_box 'echo "198.51.100.10   $2"' 200
+    run validate --area portal
+    echo "$output"
+    [ "$status" -eq 0 ]
+    for n in malcolm.lab gns3.lab docs.lab; do
+        [[ "$output" == *"PASS  portal/vhost $n: HTTP 200"* ]]
+        [[ "$output" == *"PASS  portal/vhost $n via DNS: HTTP 200 at 198.51.100.10"* ]]
+    done
+}
+
+@test "a .lab name resolving off-box is a FAIL; one answering on loopback only is a FAIL; an unresolved one SKIPs to host/lab-dns" {
+    portal_box 'echo "203.0.113.7   $2"' 200
+    run validate --area portal
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"FAIL  portal/vhost docs.lab via DNS: 203.0.113.7, not on this box"* ]]
+    portal_box 'echo "198.51.100.10   $2"' 000
+    run validate --area portal
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"FAIL  portal/vhost gns3.lab via DNS: HTTP 000 at 198.51.100.10"* ]]
+    run report
+    [[ "$output" == *"nginx listens on loopback only"* ]]
+    portal_box 'exit 2' 200
+    run validate --area portal
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"SKIP  portal/vhost malcolm.lab via DNS: does not resolve (host/lab-dns proves resolution)"* ]]
+}
+
+@test "host/lab-dns: the three .lab names resolve; a missing one is a FAIL by name; without dnsmasq it SKIPs" {
+    stub dpkg 'exit 0'
+    stub getent 'echo "198.51.100.10   $2"'
+    run validate --area host
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"PASS  host/lab-dns: all resolve"* ]]
+    stub getent 'case "$2" in gns3.lab) exit 2;; *) echo "198.51.100.10   $2";; esac'
+    run validate --area host
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"FAIL  host/lab-dns: unresolved: gns3.lab"* ]]
+    run report
+    [[ "$output" == *"not authoritative for these names"* ]]
+    stub dpkg 'exit 1'
+    run validate --area host
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"SKIP  host/lab-dns: dnsmasq not installed"* ]]
+}
+
+@test "the airgap area folds in the route verdict under its own name" {
+    stub airgap-stub 'echo "FAIL  routes: default via 203.0.113.1 dev eth0 is live and outside 198.51.100.0/24 — a path to the outside is open"; exit 1'
+    run validate --area airgap --mgmt-cidr 198.51.100.0/24
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"FAIL  airgap/routes: default via 203.0.113.1 dev eth0 is live"* ]]
+}
+
+@test "a .lab name resolving to loopback SKIPs its via-DNS row: the loopback row already proves that path" {
+    portal_box 'echo "127.0.0.1   $2"' 200
+    run validate --area portal
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"SKIP  portal/vhost docs.lab via DNS: 127.0.0.1, loopback"* ]]
 }

@@ -31,3 +31,16 @@ r770-bundle-builder.sh
 
 # Reference-run ground truth (SA dumps, ESP/IKE keys) — lab-only, never in git
 **/gt/
+.mcp.json
+.agentsroom/handoff-transcript-*.txt
+.agentsroom/handoff-summary-*.md
+.agentsroom/fork-context-*.txt
+.agentsroom/transfer-context-*.txt
+.agentsroom/handoff-context-*.txt
+
+# Leftovers other agent tools write under .claude/: old worktree copies of the
+# whole kit, and a tool's own config (it carries a version pin). Never kit
+# source; tests/no-pins.bats scans what git tracks or would track, so ignoring
+# them here is what keeps them out of the pin checks.
+.claude/worktrees/
+.claude/proven-config.json

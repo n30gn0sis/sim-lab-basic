@@ -116,3 +116,74 @@ airgap() { kit_run "$SCRIPT" "$@"; }
     run airgap --mgmt-cidr 10.10.10.0
     [ "$status" -eq 1 ]
 }
+
+# default_route <ipv4-line> [operstate] [ipv6-line] — the kernel's default
+# routes, and the operstate of eth0 under $ROOT (documentation addresses only)
+default_route() {
+    stub ip "case \"\$*\" in \"-o -4 route show default\") echo \"$1\";; \"-o -6 route show default\") echo \"${3:-}\";; esac; exit 0"
+    mkdir -p "$ROOT/sys/class/net/eth0"; echo "${2:-up}" > "$ROOT/sys/class/net/eth0/operstate"
+}
+
+@test "routes: no default route PASSes; without ip the route SKIPs rather than passes" {
+    stub ip 'exit 0'
+    run airgap
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"PASS  routes: no default route"* ]]
+    unstub ip
+    run airgap
+    echo "$output"
+    [[ "$output" == *"SKIP  routes: ip not found"* ]]
+}
+
+@test "routes: a live default route outside --mgmt-cidr is a FAIL; without --mgmt-cidr it is SKIPPED, never guessed" {
+    default_route "default via 203.0.113.1 dev eth0 proto dhcp metric 100"
+    run airgap --mgmt-cidr 198.51.100.0/24
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"FAIL  routes: default via 203.0.113.1 dev eth0 is live and outside 198.51.100.0/24"* ]]
+    run airgap
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"SKIP  routes: default via 203.0.113.1 dev eth0 is live and no --mgmt-cidr"* ]]
+}
+
+@test "routes: a gateway inside --mgmt-cidr PASSes and says whose policy it is" {
+    default_route "default via 198.51.100.1 dev eth0 proto static"
+    run airgap --mgmt-cidr 198.51.100.0/24
+    echo "$output"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"PASS  routes: default via 198.51.100.1 dev eth0, a gateway inside 198.51.100.0/24"* ]]
+}
+
+@test "routes: a default route on a downed link is a WARN — the gap is physical only" {
+    default_route "default via 203.0.113.1 dev eth0 proto dhcp linkdown"
+    run airgap --mgmt-cidr 198.51.100.0/24
+    echo "$output"
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"WARN  routes: default via 203.0.113.1 dev eth0, link down"* ]]
+    default_route "default via 203.0.113.1 dev eth0 proto dhcp" down
+    run airgap --mgmt-cidr 198.51.100.0/24
+    echo "$output"
+    [ "$status" -eq 2 ]
+    [[ "$output" == *"WARN  routes: default via 203.0.113.1 dev eth0, link down"* ]]
+}
+
+@test "routes: an unreachable, blackhole or prohibit default is good posture and PASSes" {
+    for t in unreachable blackhole prohibit; do
+        default_route "$t default proto static metric 1024"
+        run airgap --mgmt-cidr 198.51.100.0/24
+        echo "$output"
+        [ "$status" -eq 0 ]
+        [[ "$output" == *"PASS  routes: $t default — the kernel drops off-lab traffic itself"* ]]
+    done
+}
+
+@test "routes: a live IPv6 default (a router advertisement's link-local gateway) is a FAIL that says IPv6" {
+    default_route "" up "default via fe80::1 dev eth0 proto ra metric 1024 expires 1799sec pref medium"
+    run airgap --mgmt-cidr 198.51.100.0/24
+    echo "$output"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"FAIL  routes: IPv6 default via fe80::1 dev eth0 is live"*"IPv6AcceptRA=no"* ]]
+    [[ "$output" != *"outside 198.51.100.0/24"* ]]
+}

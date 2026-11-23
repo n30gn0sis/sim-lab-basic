@@ -6,7 +6,8 @@
 #   r770-airgap-check.sh [--mgmt-cidr <a.b.c.d/n>]
 #
 #   --mgmt-cidr   the management subnet; resolvers outside it (and outside
-#                 loopback) fail. Without it the resolver checks are SKIPPED,
+#                 loopback) fail, and so does a live default route through a
+#                 gateway outside it. Without it those checks are SKIPPED,
 #                 never guessed.
 #
 #   0  air-gapped · 2  warnings to disposition · 1  a path to the outside is open
@@ -125,6 +126,43 @@ check_resolv() {
     if [ "$bad" -gt 0 ]; then fail "resolv.conf: $bad of $n resolver(s) point outside the lab"; else pass "resolv.conf: $n resolver(s), all loopback/management"; fi
 }
 
+# The egress path, read from the kernel and never probed: no packet leaves the
+# box to prove it. No default route means an off-lab destination has nowhere to
+# go. A default route on a link that is down is a gap one cable away from
+# open (WARN); one through a gateway inside the management subnet hands the
+# decision to that network, which the kit does not own (PASS, said so); a live
+# one anywhere else is an open path (FAIL).
+check_routes() {
+    command -v ip >/dev/null 2>&1 || { skip "routes: ip not found — the default route cannot be read"; return; }
+    local defs line dev via state n=0 bad=0
+    defs=$( { ip -o -4 route show default 2>/dev/null; ip -o -6 route show default 2>/dev/null; } | grep . || true)
+    if [ -z "$defs" ]; then pass "routes: no default route — an off-lab destination has no path"; return; fi
+    while IFS= read -r line; do
+        n=$((n + 1))
+        # a typed default route forwards nothing: the kernel answers it itself
+        case "${line%% *}" in
+            unreachable|blackhole|prohibit) pass "routes: ${line%% *} default — the kernel drops off-lab traffic itself"; continue ;;
+            throw) skip "routes: throw default — the lookup continues in another policy table; read 'ip rule' and that table"; continue ;;
+        esac
+        dev=$(printf '%s' "$line" | awk '{for (i = 1; i < NF; i++) if ($i == "dev") {print $(i + 1); exit}}')
+        via=$(printf '%s' "$line" | awk '{for (i = 1; i < NF; i++) if ($i == "via") {print $(i + 1); exit}}')
+        state=$(cat "$(p /sys/class/net)/$dev/operstate" 2>/dev/null || echo unknown)
+        if [[ $line == *linkdown* ]] || [ "$state" = "down" ]; then
+            warn "routes: default via ${via:-none} dev $dev, link down — the gap is physical only; remove the route so it is routed too"
+        elif [[ $via == *:* ]]; then
+            # --mgmt-cidr is IPv4: it cannot vouch for an IPv6 gateway, link-local (a router advertisement) or not
+            bad=$((bad + 1)); fail "routes: IPv6 default via $via dev $dev is live — an IPv6 path the IPv4 --mgmt-cidr cannot vouch for; set IPv6AcceptRA=no on $dev, or remove the route"
+        elif [ -n "$via" ] && [ -n "$MGMT_CIDR" ] && in_cidr "$via" "$MGMT_CIDR"; then
+            pass "routes: default via $via dev $dev, a gateway inside $MGMT_CIDR — egress beyond it is the management network's policy"
+        elif [ -z "$MGMT_CIDR" ]; then
+            skip "routes: default via ${via:-none} dev $dev is live and no --mgmt-cidr to judge it by (never guessed)"
+        else
+            bad=$((bad + 1)); fail "routes: default via ${via:-none} dev $dev is live and outside $MGMT_CIDR — a path to the outside is open"
+        fi
+    done <<< "$defs"
+    [ "$bad" -eq 0 ] || note "$bad of $n default route(s) lead off-lab"
+}
+
 check_pip() {
     if [ -n "${PIP_INDEX_URL:-}${PIP_EXTRA_INDEX_URL:-}" ]; then fail "pip: PIP_INDEX_URL/PIP_EXTRA_INDEX_URL set in the environment"; else pass "pip: no index in the environment"; fi
     local f; for f in "$(p /etc/pip.conf)" "$(p /etc/pip/pip.conf)"; do
@@ -150,5 +188,5 @@ done
 [ -z "$MGMT_CIDR" ] || [[ $MGMT_CIDR =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$ ]] || die "--mgmt-cidr must look like a.b.c.d/n"
 kit_init "r770-airgap-check"
 banner "air-gap posture"
-check_apt; check_snapd; check_units; check_docker; check_dns; check_resolv; check_pip; check_pro
+check_apt; check_snapd; check_units; check_docker; check_dns; check_resolv; check_routes; check_pip; check_pro
 footer "air-gap posture"
