@@ -11,7 +11,8 @@
 #
 #   --expect-threads N    --expect-ram-gb N     what the chassis should show
 #   --mgmt-if IF          --capture-ifs "a b"   interfaces, given — never guessed
-#   --mgmt-cidr a.b.c.d/n                       for the air-gap resolver checks
+#   --mgmt-cidr a.b.c.d/n                       for the air-gap resolver and route checks
+#   --mgmt-peer ADDR                            an address on the mgmt net that must answer via --mgmt-if
 #   --allow-vm --lab-bridge BR                  boot and destroy a throwaway VM
 #   --allow-wan                                 (not automated: impair with r770-wan.sh, measure by hand)
 #   --feed IF --pcap FILE                       tcpreplay a reference PCAP into a feed
@@ -30,7 +31,7 @@ set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/lib/common.sh"
 
 ALL_AREAS="host cpu-ram storage network virtualization gns3 wan capture backup airgap portal"
-AREAS=""; EXPECT_THREADS=""; EXPECT_RAM=""; MGMT_IF=""; CAPTURE_IFS=""; MGMT_CIDR=""
+AREAS=""; EXPECT_THREADS=""; EXPECT_RAM=""; MGMT_IF=""; CAPTURE_IFS=""; MGMT_CIDR=""; MGMT_PEER=""
 ALLOW_VM=0; LAB_BRIDGE=""; ALLOW_WAN=0; FEED=""; PCAP=""; OUT=""
 LVS="/var/lib/docker /data/pcap /data/index /data/staging /srv/vms /srv/gns3 /srv/work /srv/backup"
 SANS="malcolm.lab gns3.lab docs.lab"
@@ -143,6 +144,11 @@ area_network_lab() {
         diag "lab-bridge $LAB_BRIDGE" "the lab bridge does not exist — r770-gns3-deploy.sh labnet creates it"
         return
     fi
+    # A bridge is operationally up once one of its ports is: lab-mon0 is up
+    # whenever its veth peer lab_mirror0 is, so "down" means the mirror pair is.
+    local os; os=$(cat "$b/operstate" 2>/dev/null || echo unreadable)
+    if [ "$os" = "up" ]; then row "lab-bridge $LAB_BRIDGE operstate" "up" "up" PASS "cat /sys/class/net/$LAB_BRIDGE/operstate"
+    else row "lab-bridge $LAB_BRIDGE operstate" "up" "$os" FAIL "cat /sys/class/net/$LAB_BRIDGE/operstate"; diag "lab-bridge $LAB_BRIDGE operstate" "the bridge exists but no port is up, so nothing crosses it — networkctl status $LAB_BRIDGE lab-mon0 lab_mirror0"; fi
     at=$(cat "$b/bridge/ageing_time" 2>/dev/null || echo unreadable)
     if [ "$at" = "0" ]; then row "lab-bridge $LAB_BRIDGE hub" "ageing_time 0" "ageing_time 0" PASS "cat /sys/class/net/$LAB_BRIDGE/bridge/ageing_time"
     else row "lab-bridge $LAB_BRIDGE hub" "ageing_time 0" "ageing_time $at" FAIL "cat /sys/class/net/$LAB_BRIDGE/bridge/ageing_time"; diag "lab-bridge $LAB_BRIDGE hub" "a learning bridge forwards port-to-port frames past the mirror — rerun r770-gns3-deploy.sh labnet"; fi
@@ -154,6 +160,13 @@ area_network_lab() {
     else row "lab-bridge $LAB_BRIDGE physical ports" "none" "$phys" FAIL "ls /sys/class/net/$LAB_BRIDGE/brif"; diag "lab-bridge $LAB_BRIDGE physical ports" "rule 8: the lab fabric never touches a physical port — remove it from the bridge"; fi
     read -ra ifs <<< "$CAPTURE_IFS"
     for i in "${ifs[@]}"; do
+        # Rule 8: the capture end is fed BY the fabric, never part of it — one
+        # that is itself a port of the bridge sees switched traffic, not a mirror.
+        if [ -e "$b/brif/$i" ]; then
+            row "lab-mirror $i bridge port" "not a port of $LAB_BRIDGE" "a port of $LAB_BRIDGE" FAIL "ls /sys/class/net/$LAB_BRIDGE/brif"
+            diag "lab-mirror $i bridge port" "rule 8: $i is fed BY $LAB_BRIDGE through lab-mon0, its veth peer, and is never a port of it — remove $i from the bridge and rerun r770-gns3-deploy.sh labnet"
+            continue
+        fi
         pidx=$(cat "$sys/$i/iflink" 2>/dev/null || true)
         [ -n "$pidx" ] || continue
         for port in "$b"/brif/*; do
@@ -172,6 +185,26 @@ area_network_lab() {
     done
 }
 
+# Management reachability, control plane then data plane: the kernel's route
+# to --mgmt-peer must leave by --mgmt-if (a route out of another interface is
+# an asymmetric path, whatever the ping says), then the peer must answer.
+area_network_mgmt_peer() {
+    if [ -z "$MGMT_PEER" ]; then row "mgmt-peer" "route via --mgmt-if, peer answers" "no --mgmt-peer given" SKIP "peers are never guessed"; return; fi
+    if [ -z "$MGMT_IF" ]; then row "mgmt-peer $MGMT_PEER" "route via --mgmt-if, peer answers" "no --mgmt-if given" SKIP "the egress cannot be judged without --mgmt-if"; return; fi
+    local rt dev
+    rt=$(ip -o route get "$MGMT_PEER" 2>/dev/null | head -1)
+    dev=$(printf '%s' "$rt" | awk '{for (i = 1; i < NF; i++) if ($i == "dev") {print $(i + 1); exit}}')
+    if [ "$dev" = "$MGMT_IF" ]; then row "mgmt-peer $MGMT_PEER route" "dev $MGMT_IF" "dev $dev" PASS "ip -o route get $MGMT_PEER"
+    else row "mgmt-peer $MGMT_PEER route" "dev $MGMT_IF" "${dev:+dev $dev}${dev:-no route}" FAIL "ip -o route get $MGMT_PEER"; diag "mgmt-peer $MGMT_PEER route" "the kernel would not reach the peer through the management interface — check the mgmt prefix and any more-specific route: ip route show; ip route get $MGMT_PEER"; return; fi
+    command -v ping >/dev/null 2>&1 || { row "mgmt-peer $MGMT_PEER answers" "3/3 echo replies" "ping not installed" SKIP "needs iputils-ping"; return; }
+    local got
+    got=$(ping -n -c 3 -W 2 -I "$MGMT_IF" "$MGMT_PEER" 2>/dev/null | grep -oE '[0-9]+ (packets )?received' | grep -oE '^[0-9]+' | head -1)
+    got=${got:-0}
+    if [ "$got" -eq 3 ]; then row "mgmt-peer $MGMT_PEER answers" "3/3 echo replies" "3/3" PASS "ping -c 3 -I $MGMT_IF $MGMT_PEER"
+    elif [ "$got" -gt 0 ]; then row "mgmt-peer $MGMT_PEER answers" "3/3 echo replies" "$got/3" WARN "ping -c 3 -I $MGMT_IF $MGMT_PEER"
+    else row "mgmt-peer $MGMT_PEER answers" "3/3 echo replies" "0/3" FAIL "ping -c 3 -I $MGMT_IF $MGMT_PEER"; diag "mgmt-peer $MGMT_PEER answers" "the route is right but nothing answers — ARP first (ip neigh show dev $MGMT_IF), then the peer's own firewall"; fi
+}
+
 area_network() {
     AREA=network
     if [ -n "$MGMT_IF" ]; then
@@ -180,6 +213,7 @@ area_network() {
         a=$(ip -o -4 addr show "$MGMT_IF" 2>/dev/null | awk '{print $4}' | head -1)
         if [ "$l" = "UP" ] && [ -n "$a" ]; then row "mgmt $MGMT_IF" "UP with an address" "$l $a" PASS "ip -o addr show $MGMT_IF"; else row "mgmt $MGMT_IF" "UP with an address" "${l:-absent} ${a:-no address}" FAIL "ip -o addr show $MGMT_IF"; diag "mgmt $MGMT_IF" "the management interface is not up with an address — if you are reading this over SSH, a different interface carries the session"; fi
     else row "mgmt" "UP with an address" "no --mgmt-if given" SKIP "interfaces are never guessed"; fi
+    area_network_mgmt_peer
     area_network_lab
     if [ -z "$CAPTURE_IFS" ]; then row "capture" "no address, no master, promisc, offloads off" "no --capture-ifs given" SKIP "interfaces are never guessed"; return; fi
     local i addrs link offl master ifs=()
@@ -315,6 +349,28 @@ area_portal() {
             *) row "vhost $n" "answers with the lab CA" "HTTP ${code:-000}" FAIL "curl --cacert ca.crt --resolve $n:443:127.0.0.1"; diag "vhost $n" "no TLS answer (000) or a gateway error (502) — nginx -t, then the backend for this name" ;;
         esac
     done
+    # The rows above pin each name to 127.0.0.1, which proves the vhost but not
+    # the path a client takes. Here the name goes through the resolver: it must
+    # land on an address of this box and answer there. Resolution itself is
+    # host/lab-dns's row, so an unresolved name SKIPs here rather than FAILs twice.
+    local addr locals ev
+    locals=$(ip -o addr show 2>/dev/null | awk '{sub(/\/.*/, "", $4); print $4}')
+    for n in $SANS; do
+        addr=$(getent hosts "$n" 2>/dev/null | awk '{print $1; exit}')
+        if [ -z "$addr" ]; then row "vhost $n via DNS" "resolves to this box and answers" "does not resolve" SKIP "host/lab-dns proves resolution"; continue; fi
+        case "$addr" in
+            127.*|::1) row "vhost $n via DNS" "an address clients can reach" "$addr, loopback" SKIP "the --resolve 127.0.0.1 row above already proves this path"; continue ;;
+            *) if ! printf '%s\n' "$locals" | grep -qxF "$addr"; then
+                   row "vhost $n via DNS" "an address of this box" "$addr, not on this box" FAIL "getent hosts $n; ip -o addr show"
+                   diag "vhost $n via DNS" "the name resolves off-box, so clients never reach this portal — fix its .lab address record"; continue
+               fi ;;
+        esac
+        ev="getent hosts $n; curl --cacert ca.crt https://$n/"; code=$(curl -s --max-time 10 --cacert "$ca" -o /dev/null -w '%{http_code}' "https://$n/" 2>/dev/null || true)
+        case "$code" in
+            200|301|302|307|308|401) row "vhost $n via DNS" "answers at its resolved address" "HTTP $code at $addr" PASS "$ev" ;;
+            *) row "vhost $n via DNS" "answers at its resolved address" "HTTP ${code:-000} at $addr" FAIL "$ev"; diag "vhost $n via DNS" "the vhost answers on 127.0.0.1 but not at $addr — nginx listens on loopback only, or a host firewall drops 443 on that address: ss -ltn sport = :443" ;;
+        esac
+    done
     local owners; owners=$(ss -ltnp 2>/dev/null | grep -E '(0\.0\.0\.0|\*):443 ' | grep -oE 'users:\(\("[^"]+"' | cut -d'"' -f2 | sort -u | tr '\n' ' ')
     if [ "$(printf '%s' "$owners" | wc -w)" -eq 1 ] && [[ "$owners" == nginx* ]]; then row "port-443" "only nginx" "$owners" PASS "ss -ltnp"; else row "port-443" "only nginx" "${owners:-nothing}" FAIL "ss -ltnp"; diag port-443 "something other than the front door owns 0.0.0.0:443 — if it is Malcolm's nginx-proxy the rebind did not take"; fi
 }
@@ -356,6 +412,7 @@ while [ $# -gt 0 ]; do
         --mgmt-if)        MGMT_IF="${2:-}"; shift ;;
         --capture-ifs)    CAPTURE_IFS="${2:-}"; shift ;;
         --mgmt-cidr)      MGMT_CIDR="${2:-}"; shift ;;
+        --mgmt-peer)      MGMT_PEER="${2:-}"; shift ;;
         --allow-vm)       ALLOW_VM=1 ;;
         --lab-bridge)     LAB_BRIDGE="${2:-}"; shift ;;
         --allow-wan)      ALLOW_WAN=1 ;;
@@ -367,6 +424,7 @@ while [ $# -gt 0 ]; do
     esac
     shift
 done
+[ -z "$MGMT_PEER" ] || { [[ $MGMT_PEER =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || [[ $MGMT_PEER =~ ^[0-9A-Fa-f:]*:[0-9A-Fa-f:]*$ ]]; } || die "--mgmt-peer must be an IPv4 or IPv6 address"
 [ -n "$AREAS" ] || AREAS="$ALL_AREAS"
 for a in $AREAS; do case " $ALL_AREAS " in *" $a "*) ;; *) die "unknown area: $a (--list shows them)" ;; esac; done
 kit_init "r770-validate"

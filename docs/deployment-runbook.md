@@ -815,7 +815,8 @@ escapes to a loopback port, and only nginx owns `0.0.0.0:443`. See
 ```bash
 sudo ./scripts/r770-airgap-check.sh --mgmt-cidr <management subnet>
 sudo ./scripts/r770-validate.sh --expect-threads <n> --expect-ram-gb <n> \
-    --mgmt-if <if> --capture-ifs "<if> <if> ..." --mgmt-cidr <subnet>
+    --mgmt-if <if> --capture-ifs "<if> <if> ..." --mgmt-cidr <subnet> \
+    [--mgmt-peer <an address on the management net that must answer>]
 ```
 
 Every value is an argument taken from discovery; the kit never guesses one.
@@ -836,6 +837,75 @@ reused. `--force` redoes a stamped or generated step.
 - [ ] Copy `r770-evidence/` off the box and archive it next to the bundle it ran against (the transcripts and the validation report are the evidence)
 - [ ] Record the cycle with it: verifier exit code and `RESULT:` line, WARN dispositions, courier, whether it imported
 - [ ] Keep the previous bundle under `/srv/bundles` until this one has validated end to end
+
+## Rehearsal: the whole lab on a throwaway Proxmox clone
+
+Operator machine only; never the R770 and never the staging host.
+`harness/r770-proxmox-e2e.sh` clones a prepared template, installs the bundle
+on the clone with the same `r770-install.sh` this runbook uses, proves it, and
+destroys the clone. Transport is ssh + `qm` on the Proxmox host, as for
+`harness/r770-staging-vm.sh`; there is no API token.
+
+**Prepare once, by hand, on the Proxmox host** (the script checks what it can
+and changes none of it):
+
+- [ ] A **template VM** (`template: 1`) of Ubuntu 24.04 with a cloud-init
+      drive. It must already carry what the import preflight demands of the
+      R770: `/var/lib/docker`, `/data/pcap`, `/data/index`, `/data/staging`,
+      `/srv/vms`, `/srv/gns3`, `/srv/work` and `/srv/backup`, each its own mount
+      point. It also needs one extra NIC as the capture stand-in, as in the
+      2026-11-12 rehearsal. Slot `scsi9` stays free: the media disk takes it.
+- [ ] A **host-only bridge** (no physical port) for net0, the clone's
+      management address, and for every NIC the template carries. A bridge with
+      a physical port, even behind a VLAN or a bond, is refused. That is the
+      hypervisor-side proof of the air gap. A `vmbr` holding the host's uplink
+      NIC is a real FAIL for this run, not a false one: give the clone a
+      host-only bridge rather than weakening the check.
+- [ ] A **public key file on the Proxmox host** (`--sshkeys`) for the
+      cloud-init user (`--guest-user`; cloud-init gives it passwordless sudo).
+- [ ] A **VMID range** the cluster does not use; a taken `--vmid` is refused.
+- [ ] An **install.conf for the template's hardware**. Provision one clone,
+      run `r770-install.sh discover` in it, and fill `CAPTURE_IFS`,
+      `LAB_BRIDGE`, `MGMT_IF` and `MGMT_CIDR` from its output. Leave `BUNDLE`,
+      `MEDIA` and `DEVICE` empty: the harness fills them from each clone it makes.
+
+**Run it**
+
+```bash
+./harness/r770-proxmox-e2e.sh all --dry-run \
+    --pve <ssh-host> --node <node> --template-vmid <T> --vmid <V> \
+    --storage <storage> --bridge <host-only-bridge> \
+    --guest-ip <a.b.c.d/n> --guest-user <user> --sshkeys <path-on-pve> \
+    --media-size <GB> --bundle <bundle-dir> --install-conf <file> \
+    --media-mnt <guest-mount-point>        # reads the hypervisor, changes nothing
+# then the same line with --yes instead of --dry-run, or one phase at a time:
+#   provision → deploy → verify → teardown
+```
+
+- `provision` shows the clone gate (current · proposed · rollback). It writes
+  a run marker to `r770-evidence/` **before** it clones. `qm clone` itself
+  stamps the run id into the clone's description as it creates the VM, and the
+  tag `r770-e2e` follows. Every later phase refuses a VM whose description is
+  not exactly the marker's run id. A clone whose `qm set` failed still
+  qualifies, without its tag. `provision` also refuses when `--storage` already
+  holds a volume of that VMID.
+- `deploy` exits 2 on a first install, because `plan` reads READY WITH
+  WARNINGS there (no Docker yet, no previous bundle). That is expected.
+- `verify` runs the installed bundle's `r770-validate.sh` on the areas host,
+  network, portal and airgap. It takes the interfaces from the guest's
+  `/etc/lab/install.conf`, writes its report to `/var/tmp/r770-e2e-verify`,
+  and passes `--mgmt-peer` only when given and the bundle's validate knows it.
+- `all` attempts `teardown` every time, after a failure and after Ctrl-C,
+  but only of the clone **that invocation** made. It never removes an earlier
+  run's leftover; that takes an explicit `teardown` naming its VMID.
+  Unattended, it needs `--yes`, or the destroy gate would leave the clone
+  behind.
+- `teardown` destroys only the disks the clone's config references
+  (`--destroy-unreferenced-disks 0`). A volume of that VMID still on the
+  storage afterwards is reported as a WARN and left for you to judge. Guest evidence lands as `r770-proxmox-e2e-<V>-*.tar` in
+  `r770-evidence/` before anything is destroyed.
+- If a run is cut short, run `teardown --pve <ssh-host> --vmid <V>` from the
+  same machine. The marker is what lets it act.
 
 ## If it goes wrong
 

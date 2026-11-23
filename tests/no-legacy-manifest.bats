@@ -22,7 +22,7 @@ setup() { cd "$BATS_TEST_DIRNAME/.."; }
 }
 
 @test "the verifier exists only under staging/ (the copy the fetch places into the bundle)" {
-    run find . -path ./.git -prune -o -name 'r770-bundle.sh' -print
+    run find . \( -path ./.git -o -path ./.claude/worktrees \) -prune -o -name 'r770-bundle.sh' -print
     echo "$output"
     [ "$output" = "./staging/r770-bundle.sh" ]
 }
