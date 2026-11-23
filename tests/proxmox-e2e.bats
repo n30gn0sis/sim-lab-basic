@@ -34,6 +34,7 @@ if [ "$tgt" = pve ]; then
                                       [ "${ORPHAN:-0}" = 1 ] && echo "local-lvm:vm-9771-disk-7 raw images 1073741824 9771"
                                       exit 0 ;;
         "test -r "*)                  exit "${KEY_RC:-0}" ;;
+        "bash -s -- isolation "*)     cat > /dev/null; echo "${ISO:-0 1}"; exit 0 ;;   # forwarding, disable_ipv6
         "bash -s -- "*)               cat > /dev/null; br=${cmd##* }
                                       line=$(grep "^$br:" "$S/bridges") || { echo NOBRIDGE; exit 0; }
                                       printf "%s" "${line#*:}" | tr " " "\n"; exit 0 ;;
@@ -169,6 +170,20 @@ changed() { grep -E 'pve qm (clone|set|start|stop|destroy) ' "$STUB_LOG"; }
     run changed; [ "$status" -ne 0 ]
 }
 
+@test "provision re-reads the bridge's isolation and refuses forwarding, IPv6, or an unreadable value before cloning" {
+    ISO="1 1" run e2e provision "${PV[@]}"
+    echo "$output"; [ "$status" -eq 1 ]
+    [[ "$output" == *"FAIL  --bridge: bridge vmbr9 forwards IPv4 on pve (net.ipv4.conf.vmbr9.forwarding=1)"*"r770-proxmox-prep.sh bridge"* ]]
+    ISO="0 0" run e2e provision "${PV[@]}"
+    [ "$status" -eq 1 ]; [[ "$output" == *"FAIL  --bridge: bridge vmbr9 has IPv6 on (net.ipv6.conf.vmbr9.disable_ipv6=0)"* ]]
+    ISO="? 1" run e2e provision "${PV[@]}"
+    [ "$status" -eq 1 ]; [[ "$output" == *"FAIL  --bridge: cannot read net.ipv4.conf.vmbr9.forwarding on pve"* ]]
+    run changed; [ "$status" -ne 0 ]
+    [ ! -e "$MARKER" ]
+    ISO="0 none" run e2e provision "${PV[@]}" --dry-run   # no IPv6 on the host at all is fine
+    echo "$output"; [ "$status" -eq 0 ]; [[ "$output" == *"PASS  --bridge: bridge vmbr9 does not forward"* ]]
+}
+
 @test "the clone is gated: unattended without --yes, the gate is shown and nothing is cloned" {
     KIT_YES=0 run e2e provision "${PV[@]}"
     echo "$output"; [ "$status" -eq 1 ]
@@ -184,8 +199,9 @@ changed() { grep -E 'pve qm (clone|set|start|stop|destroy) ' "$STUB_LOG"; }
     id=$(cat "$MARKER")
     grep -q "pve qm clone 9000 9771 --full 1 --name r770-e2e-9771 --description r770-e2e-run=$id --storage local-lvm$" "$STUB_LOG"
     grep -q 'pve qm set 9771 --tags r770-e2e --net0 virtio,bridge=vmbr9 --ipconfig0 ip=192.0.2.10/24 --ciuser lab --sshkeys /root/e2e.pub --scsi9 local-lvm:200,serial=r770e2emedia$' "$STUB_LOG"
-    seq=$(grep -oE 'qm (clone|set|start)|bash -s -- vmbr9' "$STUB_LOG" | tr '\n' ' ')
-    [ "$seq" = "bash -s -- vmbr9 qm clone qm set bash -s -- vmbr9 qm start " ]
+    seq=$(grep -oE 'qm (clone|set|start)|bash -s -- (isolation )?vmbr9' "$STUB_LOG" | tr '\n' ' ')
+    [ "$seq" = "bash -s -- vmbr9 bash -s -- isolation vmbr9 qm clone qm set bash -s -- vmbr9 bash -s -- isolation vmbr9 qm start " ]
+    [[ "$output" == *"PASS  --bridge: bridge vmbr9 does not forward"* ]]
     [[ "$output" == *"PASS  guest answers on lab@192.0.2.10"* && "$output" == *"PASS  cloud-init finished"* ]]
 }
 

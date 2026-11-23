@@ -152,6 +152,34 @@ check_bridge() {  # check_bridge <bridge> <what> — FAIL unless host-only
     if [ -n "$out" ]; then fail "$2: bridge $1 has physical port(s) $(printf '%s' "$out" | tr '\n' ' ')— not host-only, the clone would not be air-gapped"; return 1; fi
     pass "$2: bridge $1 has no physical port (host-only)"
 }
+# bridge_isolation <bridge> — on the hypervisor: "<forwarding> <disable_ipv6>", the
+# second "none" when the host has no IPv6 at all. Read on every run: the kernel resets
+# a bridge's forwarding whenever net.ipv4.ip_forward changes (a daemon starting, say),
+# so what r770-proxmox-prep.sh proved at ifup may not hold today.
+bridge_isolation() {
+    pve bash -s -- isolation "$1" <<'EOF'
+br=$2
+v4=$(cat "/proc/sys/net/ipv4/conf/$br/forwarding" 2>/dev/null) || v4="?"
+f6=/proc/sys/net/ipv6/conf/$br/disable_ipv6
+if [ -e "$f6" ]; then v6=$(cat "$f6" 2>/dev/null) || v6="?"; else v6=none; fi
+echo "${v4:-?} ${v6:-?}"
+EOF
+}
+check_isolation() {  # check_isolation <bridge> <what> — FAIL unless the bridge forwards nothing off the host
+    local out v4 v6
+    out=$(bridge_isolation "$1") || { fail "$2: could not read bridge $1's forwarding on $PVE"; return 1; }
+    read -r v4 v6 <<< "$out"
+    case "$v4" in
+        0) ;;
+        1) fail "$2: bridge $1 forwards IPv4 on $PVE (net.ipv4.conf.$1.forwarding=1) — a clone could be routed off the host; rerun r770-proxmox-prep.sh bridge on $NODE (or sysctl -w net/ipv4/conf/$1/forwarding=0 there)"; return 1 ;;
+        *) fail "$2: cannot read net.ipv4.conf.$1.forwarding on $PVE — the clone's isolation is not proven"; return 1 ;;
+    esac
+    case "$v6" in
+        1|none) ;;
+        *) fail "$2: bridge $1 has IPv6 on (net.ipv6.conf.$1.disable_ipv6=$v6) — a clone could be routed off the host over IPv6; rerun r770-proxmox-prep.sh bridge on $NODE (or sysctl -w net/ipv6/conf/$1/disable_ipv6=1 there)"; return 1 ;;
+    esac
+    pass "$2: bridge $1 does not forward (IPv4 forwarding 0, IPv6 ${v6/1/off})"
+}
 
 # ── provision ───────────────────────────────────────────────────────────────
 TPL_CFG=""
@@ -192,6 +220,7 @@ cmd_provision() {
     pve test -r "$SSHKEYS" || die "$SSHKEYS is not a readable file on $PVE — --sshkeys is a path on the Proxmox host"
     pass "public key file $SSHKEYS is readable on $PVE"
     check_bridge "$BRIDGE" "--bridge" || footer "provision"
+    check_isolation "$BRIDGE" "--bridge" || footer "provision"
 
     # all passes its own RUN_ID down, so it can tell its clone from an earlier run's
     [ -n "$RUN_ID" ] || RUN_ID="$(date +%Y%m%d%H%M%S)-$RANDOM$RANDOM"
@@ -222,7 +251,7 @@ cmd_provision() {
     [ -n "$nets" ] || { fail "could not read VM $VMID's NICs — not starting it"; footer "provision"; }
     for b in $nets; do
         [[ "$b" =~ ^[A-Za-z][A-Za-z0-9_.-]{0,14}$ ]] || { fail "VM $VMID has a bridge name '$b' this script will not send through a shell"; continue; }
-        check_bridge "$b" "VM $VMID NIC"
+        check_bridge "$b" "VM $VMID NIC" && check_isolation "$b" "VM $VMID NIC"
     done
     [ "$FAILED" -eq 0 ] || { note "VM $VMID is NOT started; remove it with teardown"; footer "provision"; }
 

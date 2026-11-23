@@ -846,8 +846,31 @@ on the clone with the same `r770-install.sh` this runbook uses, proves it, and
 destroys the clone. Transport is ssh + `qm` on the Proxmox host, as for
 `harness/r770-staging-vm.sh`; there is no API token.
 
-**Prepare once, by hand, on the Proxmox host** (the script checks what it can
-and changes none of it):
+**Prepare once, on the Proxmox host.** `harness/r770-proxmox-prep.sh` does
+the first three items below. The operator runs it there as root; an agent
+never does. Every change is gated, and a rerun reports what is already in
+place and leaves it alone. The E2E driver checks what it can and changes none
+of it.
+
+```bash
+# on the operator machine: the script and the library it sources, and the key
+tar -cf - harness/r770-proxmox-prep.sh scripts/lib/common.sh | ssh <pve> 'mkdir -p /root/r770-prep && tar -C /root/r770-prep -xf -'
+scp ~/.ssh/<key>.pub <pve>:/root/r770-prep/operator.pub
+# on the Proxmox host: the Ubuntu 24.04 cloud image, checked against Ubuntu's SHA256SUMS
+#   noble-server-cloudimg-amd64.img → /var/lib/vz/template/iso/ (or anywhere)
+cd /root/r770-prep
+./harness/r770-proxmox-prep.sh all --dry-run \
+    --node <node> --bridge <new-bridge> --bridge-cidr <host-ip/n> \
+    --pubkey /root/r770-prep/operator.pub --sshkeys /root/r770-e2e.pub \
+    --template-vmid <T> --storage <images-storage> --snippet-storage <snippets-storage> \
+    --image <path-to-noble-img> --root-size 64 --data-size 460
+# then the same line without --dry-run (each gate asks), or one step at a time: bridge, key, template
+```
+
+The template is never booted. Each clone's first boot builds the volumes
+listed below from vendor data (`cicustom vendor=`): one volume group on the
+data disk with serial `r770e2edata`, plus `/var/lib/containerd`, as in the
+2026-11-10 rehearsal.
 
 - [ ] A **template VM** (`template: 1`) of Ubuntu 24.04 with a cloud-init
       drive. It must already carry what the import preflight demands of the
@@ -868,6 +891,58 @@ and changes none of it):
       run `r770-install.sh discover` in it, and fill `CAPTURE_IFS`,
       `LAB_BRIDGE`, `MGMT_IF` and `MGMT_CIDR` from its output. Leave `BUNDLE`,
       `MEDIA` and `DEVICE` empty: the harness fills them from each clone it makes.
+
+**Reaching the guest: ssh ProxyJump through the Proxmox host, not a route.**
+The driver runs a plain `ssh <guest-user>@<guest-ip>` from the operator
+machine. A bridge with no physical port cannot be routed to, and is not meant
+to be. The Proxmox host holds an address on it (`--bridge-cidr`); give each
+clone `--guest-ip` in that subnet and no `--guest-gw`. Then, on the operator
+machine, in `~/.ssh/config` (`bridge` prints this stanza):
+
+```
+Host <a>.<b>.<c>.*             # one pattern per /24 inside --bridge-cidr (/16 to /30 accepted)
+    ProxyJump <pve-ssh-alias>
+```
+
+The driver's own options (its per-clone known_hosts file, BatchMode) still
+apply to the guest hop. The Proxmox host needs `AllowTcpForwarding` set to yes
+or local; `bridge` checks this and, when it is refused, stops before changing
+anything. A route was rejected. It needs IP forwarding on the Proxmox host and
+a route on the operator machine, which together give the host-only subnet a
+path off the host. The air-gap proof rests on that path not existing.
+`--mgmt-peer` can be the host's bridge address: the one peer the guest can
+reach.
+
+`bridge` enforces that, rather than trusting it. The new subnet is refused if
+it overlaps any address, route or gateway the host already has, either way
+round: a subnet nested inside the host's own LAN would take that range, the
+gateway with it, off the uplink. The bridge's stanza turns IPv4 forwarding off
+on it (`post-up sysctl -qw net/ipv4/conf/<bridge>/forwarding=0`) and IPv6 off
+on it (`disable_ipv6=1`). Once it is up, `bridge` FAILs unless forwarding is
+off there and no NAT rule (`iptables-save -t nat`, `nft list ruleset`) names
+the bridge or covers its subnet. A masquerade with no source match (the usual
+uplink form, `-o vmbr0 -j MASQUERADE`) covers every source, so it FAILs too, as
+does one whose source is a named nft set; a negated source that excludes the
+whole lab subnet (`! -s <wider-range>`) passes; an nft negated set
+(`saddr != { … }`) is not read and FAILs, which is safe. If `ip` reads no
+address at all, or neither `iptables-save` nor `nft` can be read, the check
+FAILs rather than passing on nothing. The overlap check reads only the main
+routing table, so before the first run also check by hand that
+`ip -4 route show table all | grep -F <net>` prints nothing. A host that
+forwards for other reasons (Docker, Ludus) is fine, as long as this bridge does
+not. The kernel resets every per-interface forwarding value whenever
+`net.ipv4.ip_forward` changes, as a daemon starting can do, so
+`harness/r770-proxmox-e2e.sh provision` re-reads the bridge's `forwarding`
+(must be 0) and `disable_ipv6` (must be 1, or no IPv6 on the host) before it clones, and again for
+every NIC before it starts the clone, and refuses otherwise. When it refuses,
+rerun `bridge` on the Proxmox host: it changes nothing on a prepared bridge,
+and its FAIL names the `sysctl -w` line that restores the setting.
+
+Forwarding off stops a guest's traffic from leaving the host, which is the air
+gap. It does not stop a guest from reaching the host itself on the bridge
+address (ssh, the web UI on 8006): that is local delivery, not forwarding. The
+clones are the kit's own, so this is accepted; restricting it (a Proxmox host
+firewall rule on the bridge) is a later hardening step.
 
 **Run it**
 
@@ -906,6 +981,30 @@ and changes none of it):
   `r770-evidence/` before anything is destroyed.
 - If a run is cut short, run `teardown --pve <ssh-host> --vmid <V>` from the
   same machine. The marker is what lets it act.
+
+**A staging host on the same Proxmox, if you have none.** The bundle the
+E2E run installs is cut on an internet-connected staging host, which is not
+part of the air-gapped lab. `harness/r770-proxmox-prep.sh staging-vm` makes
+one: a plain Ubuntu 24.04 cloud-init VM from the same cloud image, on the
+bridge that carries the host's uplink, left stopped. It takes every value as
+an argument, is gated (current · proposed · rollback), and is never part of
+`all`.
+
+```bash
+./harness/r770-proxmox-prep.sh staging-vm --dry-run \
+    --node <node> --vmid <S> --storage <images-storage> --bridge <uplink-bridge> \
+    --image <path-to-noble-img> --disk-size 300 --memory 8192 --cores 4 \
+    --guest-user <user> --sshkeys /root/r770-e2e.pub --ip dhcp      # or --ip <a.b.c.d/n> --gw <gw>
+# then the same line without --dry-run; then, from the operator machine:
+#   ./harness/r770-staging-vm.sh start --pve <ssh-host> --vmid <S>
+```
+
+Its one disk holds the OS, the container image store and the bundle; under
+200 GB is a WARN. A host-only `--bridge` is a WARN: the VM would reach the
+internet only through this host's routing, and it must never sit on the E2E
+clones' bridge. Inside it, install Docker CE and run
+`staging/r770-staging-preflight.sh`; that judges the box, including free
+space on the runtime's image store when it is not the bundle's filesystem.
 
 ## If it goes wrong
 
