@@ -893,16 +893,43 @@ data disk with serial `r770e2edata`, plus `/var/lib/containerd`, as in the
       `MEDIA` and `DEVICE` empty: the harness fills them from each clone it makes.
 
 **Reaching the guest: ssh ProxyJump through the Proxmox host, not a route.**
-The driver runs a plain `ssh <guest-user>@<guest-ip>` from the operator
-machine. A bridge with no physical port cannot be routed to, and is not meant
-to be. The Proxmox host holds an address on it (`--bridge-cidr`); give each
-clone `--guest-ip` in that subnet and no `--guest-gw`. Then, on the operator
-machine, in `~/.ssh/config` (`bridge` prints this stanza):
+A bridge with no physical port cannot be routed to, and is not meant to be.
+The Proxmox host holds an address on it (`--bridge-cidr`); give each clone
+`--guest-ip` in that subnet and no `--guest-gw`. The driver reaches the clone
+by ProxyJump through the host, from an ssh config **it writes for each run**:
+`r770-evidence/r770-proxmox-e2e-<pve>-<V>.ssh_config`, rewritten from the
+arguments on every run and removed by `teardown`. Every ssh the driver makes
+goes through it with `ssh -F`, so `~/.ssh/config` is never read and never
+edited, and nothing needs adding to it. The file looks like this:
 
 ```
-Host <a>.<b>.<c>.*             # one pattern per /24 inside --bridge-cidr (/16 to /30 accepted)
-    ProxyJump <pve-ssh-alias>
+Host r770-e2e-pve                       # the hypervisor
+    HostName <--pve>
+    User <--pve-user>
+    IdentityFile "<--identity>"         # the key's path only: the file holds no secret
+    IdentitiesOnly yes
+    BatchMode yes
+    ConnectTimeout 10
+    StrictHostKeyChecking yes           # checked against your known_hosts, never accepted blind
+Host <--guest-ip's address>             # the clone, and only through the hypervisor
+    ProxyJump r770-e2e-pve
+    IdentityFile "<--identity>"
+    IdentitiesOnly yes
+    BatchMode yes
+    ConnectTimeout 10
+    ServerAliveInterval 30
+    StrictHostKeyChecking accept-new    # a new clone, a new host key: its own known_hosts
+    UserKnownHostsFile "r770-evidence/r770-proxmox-e2e-<pve>-<V>.known_hosts"
 ```
+
+`--identity` is the dedicated key's private half on the operator machine,
+an absolute path; its public half is the one `key` installed as `--sshkeys`,
+so the same key opens the host and the clone. The Proxmox host's own key must
+already be in your `known_hosts`. Connect once by hand with that key and check
+the fingerprint against the host's console
+(`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` there). `bridge` still
+prints a `Host <a>.<b>.<c>.*` / `ProxyJump` stanza, for reaching a guest by
+hand from your own ssh config. The driver does not need it.
 
 **The clone's resolver is yours to name, never the host's.** Left unset,
 Proxmox's cloud-init copies the host's `resolv.conf` (its LAN resolver and
@@ -958,7 +985,7 @@ firewall rule on the bridge) is a later hardening step.
 
 ```bash
 ./harness/r770-proxmox-e2e.sh all --dry-run \
-    --pve <ssh-host> --node <node> --template-vmid <T> --vmid <V> \
+    --pve <pve-address> --pve-user <user> --identity <abs-path-to-key>     --node <node> --template-vmid <T> --vmid <V> \
     --storage <storage> --bridge <host-only-bridge> \
     --guest-ip <a.b.c.d/n> --guest-user <user> --sshkeys <path-on-pve> \
     --nameserver <bridge-host-address> --searchdomain <domain> \
@@ -990,8 +1017,9 @@ firewall rule on the bridge) is a later hardening step.
   (`--destroy-unreferenced-disks 0`). A volume of that VMID still on the
   storage afterwards is reported as a WARN and left for you to judge. Guest evidence lands as `r770-proxmox-e2e-<V>-*.tar` in
   `r770-evidence/` before anything is destroyed.
-- If a run is cut short, run `teardown --pve <ssh-host> --vmid <V>` from the
-  same machine. The marker is what lets it act.
+- If a run is cut short, run `teardown --pve <pve-address> --pve-user <user>
+  --identity <key> --vmid <V>` from the same machine. The marker is what lets
+  it act.
 
 **A staging host on the same Proxmox, if you have none.** The bundle the
 E2E run installs is cut on an internet-connected staging host, which is not

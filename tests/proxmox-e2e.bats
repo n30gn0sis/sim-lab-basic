@@ -11,15 +11,15 @@ setup() {
     export S="$BATS_TEST_TMPDIR/pve"; mkdir -p "$S"
     printf 'name: ubuntu-2404-tpl\ntemplate: 1\nmemory: 32768\nnet0: virtio=BC:24:11:00:00:01,bridge=vmbr9\nide2: local-lvm:vm-9000-cloudinit,media=cdrom\nscsi0: local-lvm:base-9000-disk-0,size=200G\n' > "$S/template.conf"
     printf 'vmbr9:\nvmbr8:\nvmbr0:eno1\n' > "$S/bridges"     # bridge:physical ports
-    # ssh: the first non-option argument is the target — "pve" is the hypervisor,
-    # anything else the guest. Knobs: TAKEN (a VMID the cluster has), PVE_NODE,
+    # ssh: the first non-option argument is the target — the per-run config's
+    # alias "r770-e2e-pve" is the hypervisor, anything else the guest. Knobs: TAKEN (a VMID the cluster has), PVE_NODE,
     # STORAGE_RC, KEY_RC, DESTROY_KEEPS, GUEST_RC, CI_RC, PLAN_RC, RUN_RC,
     # VALIDATE_RC, FOREIGN_FS.
     stub ssh '
 echo "ssh $*" >> "$STUB_LOG"
-while [ $# -gt 0 ]; do case "$1" in -o) shift 2 ;; -*) shift ;; *) break ;; esac; done
+while [ $# -gt 0 ]; do case "$1" in -o|-F) shift 2 ;; -*) shift ;; *) break ;; esac; done
 tgt=$1; shift; cmd="$*"
-if [ "$tgt" = pve ]; then
+if [ "$tgt" = r770-e2e-pve ]; then
     case "$cmd" in
         hostname)                     echo "${PVE_NODE:-pve1}" ;;
         "qm config 9000"*)            cat "$S/template.conf" ;;
@@ -83,10 +83,20 @@ exit 0'
     CONF="$BATS_TEST_TMPDIR/install.conf"
     printf '# from discover on a clone\nCAPTURE_IFS="lab_mirror0 ens20"\nLAB_BRIDGE=br-lab\nMGMT_IF=ens18\nMGMT_CIDR=192.0.2.0/24\nBUNDLE=\nMEDIA=\nDEVICE=\n' > "$CONF"
     MARKER="$KIT_EVIDENCE_DIR/r770-proxmox-e2e-pve-9771.run"
-    PV=(--pve pve --node pve1 --template-vmid 9000 --vmid 9771 --storage local-lvm --bridge vmbr9
+    SSHCFG="$KIT_EVIDENCE_DIR/r770-proxmox-e2e-pve-9771.ssh_config"
+    # the dedicated key's private half, on the operator's machine (a fixture: never a real key)
+    KEY="$BATS_TEST_TMPDIR/keys/e2e_agent"; mkdir -p "${KEY%/*}"
+    printf -- '-----BEGIN OPENSSH %s KEY-----
+fixture-key-material
+-----END OPENSSH %s KEY-----
+' PRIVATE PRIVATE > "$KEY"
+    printf 'ssh-ed25519 AAAAfixture e2e
+' > "$KEY.pub"
+    PV=(--pve pve --pve-user root --identity "$KEY" --node pve1 --template-vmid 9000 --vmid 9771 --storage local-lvm --bridge vmbr9
         --guest-ip 192.0.2.10/24 --guest-user lab --sshkeys /root/e2e.pub --media-size 200 --boot-wait 0
         --nameserver 192.0.2.1 --searchdomain lab)
-    GU=(--pve pve --vmid 9771 --guest-ip 192.0.2.10/24 --guest-user lab)
+    TD=(--pve pve --pve-user root --identity "$KEY" --vmid 9771)
+    GU=(--pve pve --pve-user root --identity "$KEY" --vmid 9771 --guest-ip 192.0.2.10/24 --guest-user lab)
     DP=("${GU[@]}" --bundle "$BUNDLE" --install-conf "$CONF" --media-mnt /mnt/r770-media)
     cd "$BATS_TEST_TMPDIR"
 }
@@ -223,7 +233,7 @@ changed() { grep -E 'pve qm (clone|set|start|stop|destroy) ' "$STUB_LOG"; }
     KIT_YES=0 run e2e provision "${PV[@]}"
     echo "$output"; [ "$status" -eq 1 ]
     [[ "$output" == *"GATE: full clone of template 9000 as VM 9771"* ]]
-    [[ "$output" == *"-- current --"*"name: ubuntu-2404-tpl"*"-- proposed --"*"qm clone 9000 9771 --full 1"*"-- rollback --"*"teardown --pve pve --vmid 9771"* ]]
+    [[ "$output" == *"-- current --"*"name: ubuntu-2404-tpl"*"-- proposed --"*"qm clone 9000 9771 --full 1"*"-- rollback --"*"teardown --pve pve --pve-user root --identity $KEY --vmid 9771"* ]]
     [[ "$output" == *"-- proposed --"*"qm set 9771 "*"--ipconfig0 ip=192.0.2.10/24 --nameserver 192.0.2.1 --searchdomain lab "*"-- rollback --"* ]]
     run changed; [ "$status" -ne 0 ]
     [ ! -e "$MARKER" ]
@@ -277,22 +287,22 @@ changed() { grep -E 'pve qm (clone|set|start|stop|destroy) ' "$STUB_LOG"; }
 
 @test "teardown refuses a VM this machine did not provision: no marker, another run id, a run id only as a substring, a template" {
     own_vm; rm -f "$MARKER"
-    run e2e teardown --pve pve --vmid 9771
+    run e2e teardown "${TD[@]}"
     [ "$status" -eq 1 ]; [[ "$output" == *"no run marker"* ]]
     own_vm; echo "20990101000000-1" > "$MARKER"
-    run e2e teardown --pve pve --vmid 9771
+    run e2e teardown "${TD[@]}"
     [ "$status" -eq 1 ]; [[ "$output" == *"is not exactly r770-e2e-run=20990101000000-1"* ]]
     own_vm; sed -i 's/^description: .*/description: r770-e2e-run=20261120150000-42420/' "$S/vm.conf"
-    run e2e teardown --pve pve --vmid 9771
+    run e2e teardown "${TD[@]}"
     [ "$status" -eq 1 ]; [[ "$output" == *"is not exactly"* ]]
     own_vm; sed -i 's/^description: .*/description: x r770-e2e-run=20261120150000-4242/' "$S/vm.conf"
-    run e2e teardown --pve pve --vmid 9771
+    run e2e teardown "${TD[@]}"
     [ "$status" -eq 1 ]; [[ "$output" == *"is not exactly"* ]]
     own_vm; echo 'template: 1' >> "$S/vm.conf"
-    run e2e teardown --pve pve --vmid 9771
+    run e2e teardown "${TD[@]}"
     [ "$status" -eq 1 ]; [[ "$output" == *"is a template"* ]]
     own_vm; echo 'not-a-run-id' > "$MARKER"
-    run e2e teardown --pve pve --vmid 9771
+    run e2e teardown "${TD[@]}"
     [ "$status" -eq 1 ]; [[ "$output" == *"does not hold a run id"* ]]
     run changed; [ "$status" -ne 0 ]
 }
@@ -300,9 +310,9 @@ changed() { grep -E 'pve qm (clone|set|start|stop|destroy) ' "$STUB_LOG"; }
 @test "a clone whose qm set failed is still removable: no tag is a WARN, the run id in its description decides" {
     QMSET_RC=5 run e2e provision "${PV[@]}"
     echo "$output"; [ "$status" -eq 1 ]
-    [[ "$output" == *"qm set failed"*"teardown --pve pve --vmid 9771"* ]]
+    [[ "$output" == *"qm set failed"*"teardown --pve pve --pve-user root --identity $KEY --vmid 9771"* ]]
     ! grep -q '^tags:' "$S/vm.conf"
-    run e2e teardown --pve pve --vmid 9771
+    run e2e teardown "${TD[@]}"
     echo "$output"; [ "$status" -eq 2 ]
     [[ "$output" == *"WARN  VM 9771 is this run's clone"*"lacks the tag r770-e2e"* && "$output" == *"PASS  VM 9771 no longer exists"* ]]
     [ ! -e "$S/vm.conf" ]
@@ -310,7 +320,7 @@ changed() { grep -E 'pve qm (clone|set|start|stop|destroy) ' "$STUB_LOG"; }
 
 @test "the description's '=' may come back percent-encoded" {
     own_vm; sed -i 's/^description: r770-e2e-run=/description: r770-e2e-run%3D/' "$S/vm.conf"
-    run e2e teardown --pve pve --vmid 9771
+    run e2e teardown "${TD[@]}"
     [ "$status" -eq 0 ]; [[ "$output" == *"PASS  VM 9771 no longer exists"* ]]
 }
 
@@ -322,7 +332,7 @@ changed() { grep -E 'pve qm (clone|set|start|stop|destroy) ' "$STUB_LOG"; }
     run changed; [ "$status" -ne 0 ]
     own_vm; printf 'local-lvm
 ' >> "$MARKER"
-    PVESM_LIST_RC=2 run e2e teardown --pve pve --vmid 9771
+    PVESM_LIST_RC=2 run e2e teardown "${TD[@]}"
     echo "$output"; [ "$status" -eq 1 ]
     [[ "$output" == *"FAIL  could not list storage local-lvm after the destroy"* && "$output" != *"holds no volume"* ]]
 }
@@ -333,7 +343,7 @@ changed() { grep -E 'pve qm (clone|set|start|stop|destroy) ' "$STUB_LOG"; }
     run changed; [ "$status" -ne 0 ]
     own_vm; printf 'local-lvm
 ' >> "$MARKER"
-    ORPHAN=1 run e2e teardown --pve pve --vmid 9771
+    ORPHAN=1 run e2e teardown "${TD[@]}"
     echo "$output"; [ "$status" -eq 2 ]
     [[ "$output" == *"WARN  storage local-lvm still holds volume(s) of VMID 9771: local-lvm:vm-9771-disk-7 — not removed"* ]]
     ! grep -q 'pvesm free' "$STUB_LOG"
@@ -342,7 +352,7 @@ changed() { grep -E 'pve qm (clone|set|start|stop|destroy) ' "$STUB_LOG"; }
 
 @test "teardown is gated: unattended without --yes, nothing is stopped or destroyed" {
     own_vm
-    KIT_YES=0 run e2e teardown --pve pve --vmid 9771
+    KIT_YES=0 run e2e teardown "${TD[@]}"
     echo "$output"; [ "$status" -eq 1 ]
     [[ "$output" == *"GATE: destroy VM 9771"*"-- current --"*"is running"*"tags: r770-e2e"*"-- proposed --"*"qm destroy 9771 --purge 1"*"-- rollback --"* ]]
     run changed; [ "$status" -ne 0 ]
@@ -350,7 +360,7 @@ changed() { grep -E 'pve qm (clone|set|start|stop|destroy) ' "$STUB_LOG"; }
 
 @test "teardown --yes stops, destroys with --purge, proves the VM is gone, and clears the marker" {
     own_vm
-    run e2e teardown --pve pve --vmid 9771
+    run e2e teardown "${TD[@]}"
     echo "$output"; [ "$status" -eq 0 ]
     grep -q 'pve qm stop 9771$' "$STUB_LOG"
     grep -q 'pve qm destroy 9771 --purge 1 --destroy-unreferenced-disks 0$' "$STUB_LOG"
@@ -360,7 +370,7 @@ changed() { grep -E 'pve qm (clone|set|start|stop|destroy) ' "$STUB_LOG"; }
 
 @test "teardown FAILs when the VM is still there after qm destroy, and keeps the marker" {
     own_vm stopped
-    DESTROY_KEEPS=1 run e2e teardown --pve pve --vmid 9771
+    DESTROY_KEEPS=1 run e2e teardown "${TD[@]}"
     [ "$status" -eq 1 ]; [[ "$output" == *"FAIL  VM 9771 still exists"* ]]
     ! grep -q 'pve qm stop' "$STUB_LOG"   # already stopped
     [ -s "$MARKER" ]
@@ -529,4 +539,75 @@ changed() { grep -E 'pve qm (clone|set|start|stop|destroy) ' "$STUB_LOG"; }
     [ "$(printf '%s\n' "$output" | grep -vc 'pve_run qm destroy "\$VMID" ')" -eq 0 ]
     run grep -nE 'pct |qm (set|destroy|rollback|delsnapshot) "?\$TEMPLATE|lvremove|zfs destroy' "$SCRIPT"
     [ "$status" -ne 0 ]
+}
+
+# ── the per-run ssh config ──────────────────────────────────────────────────
+
+@test "--pve-user and --identity are required, shape-checked, and the identity must be a private key on this machine" {
+    for f in --pve-user --identity; do
+        args=(); skipnext=0
+        for a in "${PV[@]}"; do
+            if [ "$skipnext" = 1 ]; then skipnext=0; continue; fi
+            [ "$a" = "$f" ] && { skipnext=1; continue; }
+            args+=("$a")
+        done
+        run e2e provision "${args[@]}"
+        [ "$status" -eq 1 ]; [[ "$output" == *"needs $f"* ]]
+    done
+    run e2e teardown --pve pve --vmid 9771 --identity "$KEY"
+    [ "$status" -eq 1 ]; [[ "$output" == *"needs --pve-user"* ]]
+    run e2e provision "${PV[@]}" --pve-user 'root;reboot'
+    [ "$status" -eq 1 ]; [[ "$output" == *"--pve-user"* ]]
+    run e2e provision "${PV[@]}" --identity "$BATS_TEST_TMPDIR/keys/no such key"
+    [ "$status" -eq 1 ]; [[ "$output" == *"--identity"* ]]
+    run e2e provision "${PV[@]}" --identity "$BATS_TEST_TMPDIR/keys/absent"
+    [ "$status" -eq 1 ]; [[ "$output" == *"--identity"*"no such readable file"* ]]
+    run e2e provision "${PV[@]}" --identity "$KEY.pub"
+    [ "$status" -eq 1 ]; [[ "$output" == *"--identity"*"not a private key"* ]]
+    ! grep -q '^ssh' "$STUB_LOG"
+    [ ! -e "$SSHCFG" ]
+}
+
+@test "the per-run ssh config: an alias for the hypervisor with the dedicated key, the guest only through it, the per-clone known_hosts, no secret" {
+    run e2e provision "${PV[@]}"
+    echo "$output"; [ "$status" -eq 0 ]
+    [ -f "$SSHCFG" ]
+    cat "$SSHCFG"
+    run awk '/^Host /{h=$2} h=="r770-e2e-pve" && NF {print $1, $2}' "$SSHCFG"
+    [[ "$output" == *"HostName pve"* && "$output" == *"User root"* ]]
+    [[ "$output" == *"IdentityFile \"$KEY\""* && "$output" == *"IdentitiesOnly yes"* ]]
+    [[ "$output" == *"BatchMode yes"* && "$output" == *"StrictHostKeyChecking yes"* ]]
+    [[ "$output" != *"UserKnownHostsFile"* ]]          # the hypervisor's key: the operator's known_hosts, never accept-new
+    run awk '/^Host /{h=$2} h=="192.0.2.10" && NF {print $1, $2}' "$SSHCFG"
+    [[ "$output" == *"ProxyJump r770-e2e-pve"* && "$output" == *"IdentityFile \"$KEY\""* ]]
+    [[ "$output" == *"UserKnownHostsFile \"$KIT_EVIDENCE_DIR/r770-proxmox-e2e-pve-9771.known_hosts\""* ]]
+    [[ "$output" == *"StrictHostKeyChecking accept-new"* && "$output" == *"BatchMode yes"* ]]
+    # only those two hosts: no catch-all a stray name could fall into
+    [ "$(grep -c '^Host ' "$SSHCFG")" -eq 2 ]
+    ! grep -q 'fixture-key-material\|PRIVATE' "$SSHCFG"
+}
+
+@test "every ssh call goes through the per-run config with -F, and the operator's ~/.ssh is never touched" {
+    export HOME="$BATS_TEST_TMPDIR/home"; mkdir -p "$HOME/.ssh"
+    printf 'Host *\n    User someone-else\n' > "$HOME/.ssh/config"
+    before=$(ls -la "$HOME/.ssh"; cat "$HOME/.ssh/config")
+    run e2e all "${PV[@]}" --bundle "$BUNDLE" --install-conf "$CONF" --media-mnt /mnt/r770-media
+    echo "$output"; [ "$status" -eq 0 ]
+    grep -q 'r770-e2e-pve qm clone' "$STUB_LOG"; grep -q 'lab@192.0.2.10 sudo mkfs.ext4' "$STUB_LOG"
+    run grep -c '^ssh ' "$STUB_LOG"; [ "$output" -gt 0 ]
+    run grep -vc "^ssh -F $SSHCFG " "$STUB_LOG"; [ "$output" = 0 ]
+    [ "$before" = "$(ls -la "$HOME/.ssh"; cat "$HOME/.ssh/config")" ]
+    # teardown removed the clone, so its config goes with its marker and known_hosts
+    [ ! -e "$SSHCFG" ] && [ ! -e "$MARKER" ]
+    # no scp, no bare ssh anywhere in the script: the only callers are pve/pve_run/guest/guest_run
+    run grep -nE '(^|[^-])\bscp\b|(run |^|[|(] *)ssh (-o|"\$)' "$SCRIPT"
+    [ "$status" -ne 0 ]
+}
+
+@test "the per-run config is rewritten from the arguments on every run, never trusted from disk" {
+    mkdir -p "$KIT_EVIDENCE_DIR"; printf 'Host r770-e2e-pve\n    HostName 198.51.100.66\n' > "$SSHCFG"
+    run e2e provision "${PV[@]}" --dry-run
+    echo "$output"; [ "$status" -eq 0 ]
+    ! grep -q 198.51.100.66 "$SSHCFG"
+    grep -q '^    HostName pve$' "$SSHCFG"
 }

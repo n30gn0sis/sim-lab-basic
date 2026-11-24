@@ -70,10 +70,11 @@
 # gives the capture stand-in no address. scsi9 is left free for the media disk.
 #
 # Reaching a guest: the guests sit on a bridge with no physical port, so the
-# operator's machine cannot route to them, and is not meant to. bridge prints
-# the ssh_config stanza (ProxyJump through this host) that lets
-# r770-proxmox-e2e.sh's plain `ssh <user>@<guest-ip>` arrive; that needs
-# AllowTcpForwarding in this host's sshd, which bridge checks. No route is
+# operator's machine cannot route to them, and is not meant to.
+# r770-proxmox-e2e.sh reaches them by ssh ProxyJump through this host, from
+# an ssh config it writes for each run; bridge prints the same stanza for
+# reaching a guest by hand. Both need AllowTcpForwarding in this host's sshd,
+# which bridge checks. No route is
 # added, and the bridge's stanza turns IPv4 forwarding off on it (and IPv6 off
 # altogether): bridge then FAILs unless forwarding is off there and no NAT rule
 # names the bridge or its subnet, so the guests stay unable to leave the host.
@@ -185,8 +186,8 @@ host_patterns() {  # ssh_config Host patterns covering --bridge-cidr: one a.b.c.
     echo "${out# }"
 }
 jump_hint() {
-    note "On the OPERATOR'S machine, in ~/.ssh/config, so that the E2E driver's plain"
-    note "'ssh <user>@<guest-ip>' goes through this host (give each clone an address in $BRIDGE_CIDR):"
+    note "The E2E driver writes its own ssh config for each run (ProxyJump through this host): add nothing for it."
+    note "To reach a guest BY HAND from the operator's machine, in your own ssh config (each clone has an address in $BRIDGE_CIDR):"
     note "  Host $(host_patterns)"
     note "      ProxyJump <your ssh alias for $NODE>"
     [ "$((10#${BRIDGE_CIDR#*/}))" -gt 24 ] \

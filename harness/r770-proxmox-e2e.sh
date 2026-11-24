@@ -5,6 +5,7 @@
 # with the kit's own installer, prove it, then destroy the clone. Runs on the
 # OPERATOR'S machine; every change to the hypervisor is one `qm` command sent
 # over ssh, the channel harness/r770-staging-vm.sh uses. No API token.
+# Every subcommand also takes --pve-user U --identity KEY (shown once here).
 #
 #   r770-proxmox-e2e.sh provision --pve H --node N --template-vmid T --vmid V
 #                       --storage S --bridge B --guest-ip CIDR --guest-user U
@@ -18,7 +19,14 @@
 #   r770-proxmox-e2e.sh teardown  --pve H --vmid V                  (GATED: destroy)
 #   r770-proxmox-e2e.sh all       every flag above; teardown is ALWAYS attempted
 #
-#   --pve H            the hypervisor's ssh host (key login; never a password)
+#   --pve H            the hypervisor's address or DNS name (key login; never a
+#                      password). Not an alias from ~/.ssh/config: that file
+#                      is never read, and never written
+#   --pve-user U       the account on H (root for qm, or one allowed to run it)
+#   --identity KEY     the dedicated key's PRIVATE half on THIS machine, an
+#                      absolute path; used for H and for the guest (whose
+#                      public half --sshkeys names). Only its path is written
+#                      anywhere
 #   --node N           the node name `hostname` prints there; checked, so a
 #                      cluster member reached by mistake is refused
 #   --template-vmid T  the prepared template (must carry `template: 1` and a
@@ -62,12 +70,22 @@
 # gated `teardown`. Volumes no config references are reported, never deleted.
 # The media disk is found in the guest by the serial provision gave it.
 # Evidence from the guest is pulled back before anything is destroyed.
+#
+# ssh: every run writes its own ssh config, r770-evidence/r770-proxmox-e2e-
+# <pve>-<vmid>.ssh_config, from the arguments alone, and every ssh call goes
+# through it with -F, so the operator's ~/.ssh/config is neither read nor
+# changed. It holds two hosts: the alias r770-e2e-pve (--pve, --pve-user,
+# --identity; its host key checked against the operator's known_hosts, never
+# accepted blind), and the guest's address, reached only by ProxyJump through
+# that alias (the host-only bridge has no route) and checked against the
+# clone's own known_hosts. It names the key file and holds no secret; teardown
+# removes it with the run's marker.
 set -uo pipefail
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=../scripts/lib/common.sh
 . "$(dirname "${BASH_SOURCE[0]}")/../scripts/lib/common.sh"
 
-PVE=""; NODE=""; TEMPLATE=""; VMID=""; STORAGE=""; BRIDGE=""; GUEST_IP=""; GUEST_GW=""
+PVE=""; PVE_USER=""; IDENTITY=""; NODE=""; TEMPLATE=""; VMID=""; STORAGE=""; BRIDGE=""; GUEST_IP=""; GUEST_GW=""
 NAMESERVER=""; SEARCHDOMAIN=""
 GUEST_USER=""; SSHKEYS=""; MEDIA_SIZE=""; BUNDLE=""; INSTALL_CONF=""; MEDIA_MNT=""
 MGMT_PEER=""; BOOT_WAIT=600; RUN_ID=""; GUEST=""
@@ -75,6 +93,7 @@ TAG="r770-e2e"
 MEDIA_SERIAL="r770e2emedia"     # the media disk's serial: how the guest finds it
 MEDIA_SLOT="scsi9"              # the clone's media disk slot; refused if the template uses it
 MEDIA_LABEL="R770E2E"
+PVE_ALIAS="r770-e2e-pve"       # the hypervisor's Host in the per-run ssh config
 GUEST_EVIDENCE="/var/tmp/r770-e2e-evidence"
 VERIFY_OUT="/var/tmp/r770-e2e-verify"        # r770-validate.sh --out, as agreed for #2
 GUEST_CONF="/etc/lab/install.conf"
@@ -97,20 +116,44 @@ valid_ipv4() {  # valid_ipv4 <flag> <a.b.c.d[/n]> — octets 0-255, prefix 1-32
         || die "$1 '$v' is not acceptable (the prefix must be 1-32)" ;; esac
 }
 
-pve()     { ssh -o BatchMode=yes -o ConnectTimeout=10 "$PVE" "$@"; }          # reads
-pve_run() { run ssh -o BatchMode=yes -o ConnectTimeout=10 "$PVE" "$@"; }      # changes; honours --dry-run
+SSHCFG=""                       # this run's ssh config: every ssh below goes through it
+pve()     { ssh -F "$SSHCFG" "$PVE_ALIAS" "$@"; }          # reads
+pve_run() { run ssh -F "$SSHCFG" "$PVE_ALIAS" "$@"; }      # changes; honours --dry-run
 known_hosts() { printf '%s/r770-proxmox-e2e-%s-%s.known_hosts' "$STATE_DIR" "$PVE" "$VMID"; }
+ssh_config() { printf '%s/r770-proxmox-e2e-%s-%s.ssh_config' "$STATE_DIR" "$PVE" "$VMID"; }
 # The guest: a fresh clone has a fresh host key on a reused address, so each
-# clone gets its own known_hosts file, never the operator's.
-KH=""
-guest_init() { KH=$(known_hosts); GUEST="${GUEST_USER}@${GUEST_IP%/*}"; }
-guest() {
-    ssh -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=30 \
-        -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=$KH" "$GUEST" "$@"
-}
-guest_run() {
-    run ssh -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=30 \
-        -o StrictHostKeyChecking=accept-new -o "UserKnownHostsFile=$KH" "$GUEST" "$@"
+# clone gets its own known_hosts file (in the ssh config), never the operator's.
+guest_init() { GUEST="${GUEST_USER}@${GUEST_IP%/*}"; }
+guest()     { ssh -F "$SSHCFG" "$GUEST" "$@"; }
+guest_run() { run ssh -F "$SSHCFG" "$GUEST" "$@"; }
+td_hint() { printf 'teardown --pve %s --pve-user %s --identity %s --vmid %s' "$PVE" "$PVE_USER" "$IDENTITY" "$VMID"; }
+# write_ssh_config — this run's ssh config, rewritten from the arguments every
+# run (a file left on disk is never trusted). Written under --dry-run too: the
+# dry run still reads the hypervisor, and the file changes nothing anywhere.
+write_ssh_config() {
+    local tmp
+    SSHCFG=$(ssh_config)
+    case "$SSHCFG" in *'"'*|*%*) die "the evidence directory $STATE_DIR holds a '\"' or '%' — ssh_config cannot name files there" ;; esac
+    mkdir -p "$STATE_DIR" || die "cannot create $STATE_DIR"
+    tmp="$SSHCFG.tmp.$$"
+    ( umask 077
+      printf '# Written by r770-proxmox-e2e.sh for VM %s on %s, from its arguments, on every\n' "$VMID" "$PVE"
+      printf '# run; read only through ssh -F. It names the key file and holds no secret.\n'
+      printf 'Host %s\n' "$PVE_ALIAS"
+      printf '    HostName %s\n    User %s\n' "$PVE" "$PVE_USER"
+      printf '    IdentityFile "%s"\n    IdentitiesOnly yes\n' "$IDENTITY"
+      printf '    BatchMode yes\n    ConnectTimeout 10\n'
+      printf '    StrictHostKeyChecking yes\n'      # the hypervisor's key: the operator's known_hosts, as already trusted
+      if [ -n "$GUEST_IP" ]; then
+          printf 'Host %s\n' "${GUEST_IP%/*}"
+          printf '    ProxyJump %s\n' "$PVE_ALIAS"   # the host-only bridge has no route: only through the hypervisor
+          printf '    IdentityFile "%s"\n    IdentitiesOnly yes\n' "$IDENTITY"
+          printf '    BatchMode yes\n    ConnectTimeout 10\n    ServerAliveInterval 30\n'
+          printf '    StrictHostKeyChecking accept-new\n'
+          printf '    UserKnownHostsFile "%s"\n' "$(known_hosts)"
+      fi ) > "$tmp" || { rm -f "$tmp"; die "cannot write the run's ssh config $SSHCFG"; }
+    mv -f "$tmp" "$SSHCFG" || { rm -f "$tmp"; die "cannot write the run's ssh config $SSHCFG"; }
+    note "ssh config for this run: $SSHCFG"
 }
 marker() { printf '%s/r770-proxmox-e2e-%s-%s.run' "$STATE_DIR" "$PVE" "$VMID"; }
 
@@ -245,7 +288,7 @@ cmd_provision() {
     # all passes its own RUN_ID down, so it can tell its clone from an earlier run's
     [ -n "$RUN_ID" ] || RUN_ID="$(date +%Y%m%d%H%M%S)-$RANDOM$RANDOM"
     gate "full clone of template $TEMPLATE as VM $VMID" pv_current pv_proposed \
-        "r770-proxmox-e2e.sh teardown --pve $PVE --vmid $VMID — stops and destroys only this clone and its disks (run id $RUN_ID); template $TEMPLATE is never changed"
+        "r770-proxmox-e2e.sh $(td_hint) — stops and destroys only this clone and its disks (run id $RUN_ID); template $TEMPLATE is never changed"
     if [ "$DRY" != "1" ]; then
         mkdir -p "$STATE_DIR"
         # BEFORE the clone: `qm clone` stamps the run id into the description as
@@ -256,11 +299,11 @@ cmd_provision() {
     fi
     pve_run qm clone "$TEMPLATE" "$VMID" --full 1 --name "r770-e2e-$VMID" \
         --description "r770-e2e-run=$RUN_ID" --storage "$STORAGE" \
-        || die "qm clone failed — read the line above; if a VM $VMID was left, run: teardown --pve $PVE --vmid $VMID"
+        || die "qm clone failed — read the line above; if a VM $VMID was left, run: $(td_hint)"
     pve_run qm set "$VMID" --tags "$TAG" --net0 "virtio,bridge=$BRIDGE" --ipconfig0 "$(ipconfig)" \
         --nameserver "$NAMESERVER" --searchdomain "$SEARCHDOMAIN" \
         --ciuser "$GUEST_USER" --sshkeys "$SSHKEYS" "--$MEDIA_SLOT" "$STORAGE:$MEDIA_SIZE,serial=$MEDIA_SERIAL" \
-        || die "qm set failed — VM $VMID is left stopped; remove it with: teardown --pve $PVE --vmid $VMID (its run id is in its description)"
+        || die "qm set failed — VM $VMID is left stopped; remove it with: $(td_hint) (its run id is in its description)"
     if [ "$DRY" = "1" ]; then
         pve_run qm start "$VMID"
         note "DRY-RUN: every NIC's bridge would be proven host-only before the start, then ssh awaited for ${BOOT_WAIT}s and cloud-init's end"
@@ -499,7 +542,7 @@ cmd_teardown() {
                 else pass "storage $storage holds no volume of VMID $VMID"; fi
             fi
         fi
-        rm -f "$(marker)" "$(known_hosts)"
+        rm -f "$(marker)" "$(known_hosts)" "$SSHCFG"
     fi
     footer "teardown"
 }
@@ -551,6 +594,8 @@ while [ $# -gt 0 ]; do
     case "$1" in
         -h|--help)        usage ;;
         --pve)            PVE="${2:-}"; shift ;;
+        --pve-user)       PVE_USER="${2:-}"; shift ;;
+        --identity)       IDENTITY="${2:-}"; shift ;;
         --node)           NODE="${2:-}"; shift ;;
         --template-vmid)  TEMPLATE="${2:-}"; shift ;;
         --vmid)           VMID="${2:-}"; shift ;;
@@ -578,6 +623,8 @@ SELF="r770-proxmox-e2e"
 # These regexes are the shell-safety guarantee for every value interpolated into
 # a remote command: loosening one needs the remote quoting re-audited.
 valid --pve "$PVE" '^[A-Za-z0-9][A-Za-z0-9._-]*$'
+valid --pve-user "$PVE_USER" '^[a-z_][a-z0-9_-]{0,31}$'
+valid --identity "$IDENTITY" '^/[A-Za-z0-9._/-]+$'
 valid --node "$NODE" '^[A-Za-z0-9][A-Za-z0-9.-]*$'
 valid --template-vmid "$TEMPLATE" '^[1-9][0-9]{2,8}$'
 valid --vmid "$VMID" '^[1-9][0-9]{2,8}$'
@@ -595,7 +642,10 @@ valid --media-mnt "$MEDIA_MNT" '^/[A-Za-z0-9._/-]+$'
 valid --boot-wait "$BOOT_WAIT" '^[0-9]+$'
 [ -n "$TEMPLATE" ] && [ "$TEMPLATE" = "$VMID" ] && die "--vmid and --template-vmid are the same — the template is never a clone target"
 case "$SUB" in provision|deploy|verify|teardown|all) ;; *) die "unknown subcommand: $SUB (try --help)" ;; esac
-need_arg --pve "$PVE"; need_arg --vmid "$VMID"
+need_arg --pve "$PVE"; need_arg --pve-user "$PVE_USER"; need_arg --identity "$IDENTITY"; need_arg --vmid "$VMID"
+{ [ -f "$IDENTITY" ] && [ -r "$IDENTITY" ]; } || die "--identity $IDENTITY: no such readable file on this machine"
+head -1 "$IDENTITY" | grep -qE '^-----BEGIN [A-Z ]*PRIVATE KEY-----' \
+    || die "--identity $IDENTITY is not a private key (give the key file itself, not its .pub)"
 case "$SUB" in provision|all)
     need_arg --node "$NODE"; need_arg --template-vmid "$TEMPLATE"; need_arg --storage "$STORAGE"
     need_arg --bridge "$BRIDGE"; need_arg --sshkeys "$SSHKEYS"; need_arg --media-size "$MEDIA_SIZE"
@@ -609,4 +659,5 @@ case "$SUB" in provision|all)
 case "$SUB" in provision|deploy|verify|all) need_arg --guest-ip "$GUEST_IP"; need_arg --guest-user "$GUEST_USER" ;; esac
 case "$SUB" in deploy|all) need_arg --bundle "$BUNDLE"; need_arg --install-conf "$INSTALL_CONF"; need_arg --media-mnt "$MEDIA_MNT" ;; esac
 kit_init "r770-proxmox-e2e"
+write_ssh_config
 "cmd_$SUB"
