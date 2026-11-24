@@ -1007,7 +1007,7 @@ an argument, is gated (current · proposed · rollback), and is never part of
     --image <path-to-noble-img> --disk-size 300 --memory 8192 --cores 4 \
     --guest-user <user> --sshkeys /root/r770-e2e.pub --ip dhcp      # or --ip <a.b.c.d/n> --gw <gw>
 # then the same line without --dry-run; then, from the operator machine:
-#   ./harness/r770-staging-vm.sh start --pve <ssh-host> --vmid <S>
+#   ./harness/r770-staging-vm.sh start --pve <ssh-host> --vmid <S>   # gated: current · proposed · rollback
 ```
 
 Its one disk holds the OS, the container image store and the bundle; under

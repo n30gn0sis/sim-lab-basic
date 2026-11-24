@@ -81,7 +81,11 @@ vm() { kit_run "$SCRIPT" "$@"; }
     [ "$status" -eq 0 ]; [[ "$output" == *"DRY-RUN:"*"qm rollback 9770 clean-a"* ]]
     VM_STATE=stopped run vm start --pve pve --vmid 9770 --dry-run
     [ "$status" -eq 0 ]; [[ "$output" == *"DRY-RUN:"*"qm start 9770"* ]]
-    ! grep -qE ' qm (start|rollback) ' "$STUB_LOG"
+    [[ "$output" == *"== GATE: start VM 9770 =="*"-- proposed --"*"qm start 9770"*"-- rollback --"*"DRY-RUN:"* ]]
+    VM_STATE=running run vm stop --pve pve --vmid 9770 --dry-run
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"== GATE: stop VM 9770 =="*"-- proposed --"*"qm shutdown 9770 --timeout 180"*"-- rollback --"*"DRY-RUN:"*"qm shutdown 9770"* ]]
+    ! grep -qE ' qm (start|shutdown|rollback) ' "$STUB_LOG"
 }
 
 @test "start and stop are idempotent" {
@@ -94,6 +98,39 @@ vm() { kit_run "$SCRIPT" "$@"; }
     [ "$status" -eq 0 ]; grep -q 'pve qm start 9770$' "$STUB_LOG"
     VM_STATE=running run vm stop --pve pve --vmid 9770
     [ "$status" -eq 0 ]; grep -q 'pve qm shutdown 9770 --timeout 180$' "$STUB_LOG"
+}
+
+@test "start is gated: real state, the exact qm line, stop as rollback; unattended without --yes nothing starts" {
+    VM_STATE=stopped KIT_YES=0 run vm start --pve pve --vmid 9770
+    echo "$output"; [ "$status" -eq 1 ]
+    [[ "$output" == *"== GATE: start VM 9770 =="* && "$output" == *"-- current --"*"vm 9770 on pve is stopped"*"name: r770-test"* ]]
+    [[ "$output" == *"-- proposed --"*"qm start 9770"* && "$output" == *"-- rollback --"*"r770-staging-vm.sh stop --pve pve --vmid 9770"* ]]
+    [[ "$output" == *"non-interactive"* ]]
+    run grep -q ' qm start ' "$STUB_LOG"; [ "$status" -ne 0 ]
+    VM_STATE=stopped KIT_YES=0 run vm start --pve pve --vmid 9770 --yes
+    echo "$output"; [ "$status" -eq 0 ]
+    [[ "$output" == *"-- accepted via --yes --"* && "$output" == *"PASS  VM 9770 started"* ]]
+    grep -q 'pve qm start 9770$' "$STUB_LOG"
+}
+
+@test "stop is gated: real state, the exact qm line, start as rollback; unattended without --yes nothing shuts down" {
+    VM_STATE=running KIT_YES=0 run vm stop --pve pve --vmid 9770
+    echo "$output"; [ "$status" -eq 1 ]
+    [[ "$output" == *"== GATE: stop VM 9770 =="* && "$output" == *"-- current --"*"vm 9770 on pve is running"* ]]
+    [[ "$output" == *"-- proposed --"*"qm shutdown 9770 --timeout 180"* && "$output" == *"-- rollback --"*"r770-staging-vm.sh start --pve pve --vmid 9770"* ]]
+    [[ "$output" == *"-- proposed --"*"unsaved state in the guest is lost"*"-- rollback --"* ]]
+    rb=${output##*-- rollback --}; [[ "${rb%%$'\n'non-interactive*}" != *"lost"* ]]
+    run grep -q ' qm shutdown ' "$STUB_LOG"; [ "$status" -ne 0 ]
+    VM_STATE=running KIT_YES=0 run vm stop --pve pve --vmid 9770 --yes
+    [ "$status" -eq 0 ]; [[ "$output" == *"-- accepted via --yes --"* ]]
+    grep -q 'pve qm shutdown 9770 --timeout 180$' "$STUB_LOG"
+}
+
+@test "start and stop that change nothing meet no gate, even unattended without --yes" {
+    VM_STATE=running KIT_YES=0 run vm start --pve pve --vmid 9770
+    [ "$status" -eq 0 ]; [[ "$output" == *"PASS  VM 9770 already running"* && "$output" != *"GATE"* ]]
+    VM_STATE=stopped KIT_YES=0 run vm stop --pve pve --vmid 9770
+    [ "$status" -eq 0 ]; [[ "$output" == *"PASS  VM 9770 already stopped"* && "$output" != *"GATE"* ]]
 }
 
 @test "snapshot never overwrites: an existing name is refused, a new one is taken with its description quoted" {
@@ -265,8 +302,47 @@ up_cfg() { sed -i 's|,link_down=1||' "$QM_CONFIG"; }
 @test "airgap --dry-run changes nothing, probes nothing and claims nothing" {
     run vm airgap on "${AG[@]}" --dry-run
     [ "$status" -eq 0 ]; [[ "$output" == *"DRY-RUN:"*"link_down=1"* ]]
+    [[ "$output" == *"== GATE: air-gap VM 9770 (net0 link-down) =="*"-- proposed --"*"qm set 9770 --net0 "*"-- rollback --"*"DRY-RUN:"* ]]
     [[ "$output" != *"PASS  "* ]]
     run grep -qE ' qm set |/dev/tcp/' "$STUB_LOG"; [ "$status" -ne 0 ]
+}
+
+@test "airgap on is gated after the positive control: the live net0, the exact qm set, airgap off as rollback" {
+    KIT_YES=0 run vm airgap on "${AG[@]}"
+    echo "$output"; [ "$status" -eq 1 ]
+    [[ "$output" == *"PASS  "*"positive control"* ]]     # read-only, so it runs before the question
+    [[ "$output" == *"== GATE: air-gap VM 9770 (net0 link-down) =="* ]]
+    [[ "$output" == *"-- current --"*"net0: virtio=BC:24:11:00:00:01,bridge=vmbr0"* ]]
+    [[ "$output" == *"-- proposed --"*"qm set 9770 --net0 virtio=BC:24:11:00:00:01,bridge=vmbr0,link_down=1"* ]]
+    [[ "$output" == *"-- rollback --"*"r770-staging-vm.sh airgap off --pve pve --vmid 9770 --wan-net net0"*"an equivalent net0 value (Proxmox may reorder its keys)"* ]]
+    run grep -q ' qm set ' "$STUB_LOG"; [ "$status" -ne 0 ]
+    KIT_YES=0 run vm airgap on "${AG[@]}" --yes
+    echo "$output"; [ "$status" -eq 0 ]; [[ "$output" == *"-- accepted via --yes --"* ]]
+    grep -q 'pve qm set 9770 --net0 virtio=BC:24:11:00:00:01,bridge=vmbr0,link_down=1$' "$STUB_LOG"
+}
+
+@test "airgap off is gated: the live net0, the exact qm set, airgap on as rollback" {
+    down_cfg
+    KIT_YES=0 run vm airgap off "${AG[@]}"
+    echo "$output"; [ "$status" -eq 1 ]
+    [[ "$output" == *"== GATE: reconnect VM 9770 (net0 link-up) =="* ]]
+    [[ "$output" == *"-- current --"*"net0: virtio=BC:24:11:00:00:01,bridge=vmbr0,link_down=1"* ]]
+    [[ "$output" == *"-- proposed --"*"qm set 9770 --net0 virtio=BC:24:11:00:00:01,bridge=vmbr0"* ]]
+    [[ "$output" == *"-- rollback --"*"r770-staging-vm.sh airgap on --pve pve --vmid 9770 --wan-net net0"* ]]
+    run grep -q ' qm set ' "$STUB_LOG"; [ "$status" -ne 0 ]
+    KIT_YES=0 run vm airgap off "${AG[@]}" --yes
+    [ "$status" -eq 0 ]; grep -q 'pve qm set 9770 --net0 virtio=BC:24:11:00:00:01,bridge=vmbr0$' "$STUB_LOG"
+}
+
+@test "airgap already in the asked state meets no gate, even unattended without --yes" {
+    KIT_YES=0 run vm airgap off "${AG[@]}"
+    echo "$output"; [ "$status" -eq 0 ]
+    [[ "$output" != *"GATE"* && "$output" == *"PASS  "*"guest reaches 192.0.2.1:80"* ]]
+    down_cfg
+    KIT_YES=0 run vm airgap on "${AG[@]}"
+    echo "$output"; [ "$status" -eq 2 ]
+    [[ "$output" != *"GATE"* && "$output" == *"PASS  "*"cannot reach 192.0.2.1:80"* ]]
+    run grep -q ' qm set ' "$STUB_LOG"; [ "$status" -ne 0 ]
 }
 
 @test "wait-ssh passes when the guest answers, also after a failed attempt, and fails when the time runs out" {
