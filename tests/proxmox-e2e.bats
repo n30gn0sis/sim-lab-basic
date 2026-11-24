@@ -84,7 +84,8 @@ exit 0'
     printf '# from discover on a clone\nCAPTURE_IFS="lab_mirror0 ens20"\nLAB_BRIDGE=br-lab\nMGMT_IF=ens18\nMGMT_CIDR=192.0.2.0/24\nBUNDLE=\nMEDIA=\nDEVICE=\n' > "$CONF"
     MARKER="$KIT_EVIDENCE_DIR/r770-proxmox-e2e-pve-9771.run"
     PV=(--pve pve --node pve1 --template-vmid 9000 --vmid 9771 --storage local-lvm --bridge vmbr9
-        --guest-ip 192.0.2.10/24 --guest-user lab --sshkeys /root/e2e.pub --media-size 200 --boot-wait 0)
+        --guest-ip 192.0.2.10/24 --guest-user lab --sshkeys /root/e2e.pub --media-size 200 --boot-wait 0
+        --nameserver 192.0.2.1 --searchdomain lab)
     GU=(--pve pve --vmid 9771 --guest-ip 192.0.2.10/24 --guest-user lab)
     DP=("${GU[@]}" --bundle "$BUNDLE" --install-conf "$CONF" --media-mnt /mnt/r770-media)
     cd "$BATS_TEST_TMPDIR"
@@ -111,7 +112,7 @@ changed() { grep -E 'pve qm (clone|set|start|stop|destroy) ' "$STUB_LOG"; }
     [ "$status" -eq 1 ]; [[ "$output" == *"--sshkeys"* ]]
     run e2e provision "${PV[@]}" --vmid 9000
     [ "$status" -eq 1 ]; [[ "$output" == *"template is never a clone target"* ]]
-    for f in --node --template-vmid --storage --bridge --sshkeys --media-size; do
+    for f in --node --template-vmid --storage --bridge --sshkeys --media-size --nameserver --searchdomain; do
         args=(); skipnext=0
         for a in "${PV[@]}"; do
             if [ "$skipnext" = 1 ]; then skipnext=0; continue; fi
@@ -124,6 +125,40 @@ changed() { grep -E 'pve qm (clone|set|start|stop|destroy) ' "$STUB_LOG"; }
     run e2e deploy "${GU[@]}" --bundle "$BUNDLE" --media-mnt /mnt/r770-media
     [ "$status" -eq 1 ]; [[ "$output" == *"needs --install-conf"* ]]
     ! grep -q '^ssh' "$STUB_LOG"
+}
+
+@test "the clone's resolver is the operator's: off the guest's subnet without --guest-gw, or malformed, is refused before any ssh" {
+    # an unset nameserver/searchdomain makes Proxmox copy the HOST's resolv.conf into the clone
+    run e2e provision "${PV[@]}" --nameserver 198.51.100.1
+    [ "$status" -eq 1 ]; [[ "$output" == *"--nameserver 198.51.100.1 is not on --guest-ip 192.0.2.10/24"* ]]
+    # a /32 guest has no neighbour: only its own address or loopback is on its subnet
+    run e2e provision "${PV[@]}" --guest-ip 192.0.2.10/32
+    [ "$status" -eq 1 ]; [[ "$output" == *"--nameserver 192.0.2.1 is not on --guest-ip 192.0.2.10/32"* ]]
+    # the unspecified address is no resolver, with or without a gateway
+    for gw in "" "--guest-gw 192.0.2.254"; do
+        # shellcheck disable=SC2086
+        run e2e provision "${PV[@]}" --nameserver 0.0.0.0 $gw
+        [ "$status" -eq 1 ]; [[ "$output" == *"--nameserver 0.0.0.0 is the unspecified address"* ]]
+    done
+    run e2e provision "${PV[@]}" --nameserver '192.0.2.1;reboot'
+    [ "$status" -eq 1 ]; [[ "$output" == *"--nameserver"* ]]
+    run e2e provision "${PV[@]}" --nameserver 192.0.2.256
+    [ "$status" -eq 1 ]; [[ "$output" == *"--nameserver"* ]]
+    for d in 'lab;reboot' '-lab' 'lab.' 'la b' 'a..b'; do
+        run e2e provision "${PV[@]}" --searchdomain "$d"
+        [ "$status" -eq 1 ]; [[ "$output" == *"--searchdomain"* ]]
+    done
+    ! grep -q '^ssh' "$STUB_LOG"
+}
+
+@test "provision passes --nameserver and --searchdomain to qm set: loopback, and an off-subnet one when --guest-gw routes to it" {
+    run e2e provision "${PV[@]}" --nameserver 127.0.0.1 --searchdomain e2e.lab
+    echo "$output"; [ "$status" -eq 0 ]
+    grep -q -- '--ipconfig0 ip=192.0.2.10/24 --nameserver 127.0.0.1 --searchdomain e2e.lab --ciuser lab ' "$STUB_LOG"
+    rm -f "$S/vm.conf"
+    run e2e provision "${PV[@]}" --guest-gw 192.0.2.254 --nameserver 198.51.100.53
+    echo "$output"; [ "$status" -eq 0 ]
+    grep -q -- '--ipconfig0 ip=192.0.2.10/24,gw=192.0.2.254 --nameserver 198.51.100.53 --searchdomain lab ' "$STUB_LOG"
 }
 
 @test "the help prints the whole header" {
@@ -189,6 +224,7 @@ changed() { grep -E 'pve qm (clone|set|start|stop|destroy) ' "$STUB_LOG"; }
     echo "$output"; [ "$status" -eq 1 ]
     [[ "$output" == *"GATE: full clone of template 9000 as VM 9771"* ]]
     [[ "$output" == *"-- current --"*"name: ubuntu-2404-tpl"*"-- proposed --"*"qm clone 9000 9771 --full 1"*"-- rollback --"*"teardown --pve pve --vmid 9771"* ]]
+    [[ "$output" == *"-- proposed --"*"qm set 9771 "*"--ipconfig0 ip=192.0.2.10/24 --nameserver 192.0.2.1 --searchdomain lab "*"-- rollback --"* ]]
     run changed; [ "$status" -ne 0 ]
     [ ! -e "$MARKER" ]
 }
@@ -198,7 +234,7 @@ changed() { grep -E 'pve qm (clone|set|start|stop|destroy) ' "$STUB_LOG"; }
     echo "$output"; [ "$status" -eq 0 ]
     id=$(cat "$MARKER")
     grep -q "pve qm clone 9000 9771 --full 1 --name r770-e2e-9771 --description r770-e2e-run=$id --storage local-lvm$" "$STUB_LOG"
-    grep -q 'pve qm set 9771 --tags r770-e2e --net0 virtio,bridge=vmbr9 --ipconfig0 ip=192.0.2.10/24 --ciuser lab --sshkeys /root/e2e.pub --scsi9 local-lvm:200,serial=r770e2emedia$' "$STUB_LOG"
+    grep -q 'pve qm set 9771 --tags r770-e2e --net0 virtio,bridge=vmbr9 --ipconfig0 ip=192.0.2.10/24 --nameserver 192.0.2.1 --searchdomain lab --ciuser lab --sshkeys /root/e2e.pub --scsi9 local-lvm:200,serial=r770e2emedia$' "$STUB_LOG"
     seq=$(grep -oE 'qm (clone|set|start)|bash -s -- (isolation )?vmbr9' "$STUB_LOG" | tr '\n' ' ')
     [ "$seq" = "bash -s -- vmbr9 bash -s -- isolation vmbr9 qm clone qm set bash -s -- vmbr9 bash -s -- isolation vmbr9 qm start " ]
     [[ "$output" == *"PASS  --bridge: bridge vmbr9 does not forward"* ]]

@@ -152,6 +152,7 @@ changes() { grep -E '^(qm (create|set|disk|template)|ifup) ' "$STUB_LOG"; }
     [[ "$output" == *"PASS  after ifup: bridge vmbr9 has no physical port"* ]]
     cidr=${BR[5]}   # the guests' /24, built from the CIDR (a literal a.b.c reads as a pin to no-pins.bats)
     [[ "$output" == *"Host ${cidr%.*}.*"*"ProxyJump <your ssh alias for pve1>"* ]]
+    [[ "$output" == *"--nameserver ${cidr%/*} --searchdomain <domain>"* ]]   # the clones' resolver: this host's bridge address
     grep -qP '^\tpost-up sysctl -qw net/ipv4/conf/vmbr9/forwarding=0$' "$f"
     grep -qP '^\tpost-up sysctl -qw net/ipv6/conf/vmbr9/disable_ipv6=1$' "$f"
     [[ "$output" == *"PASS  vmbr9: IPv4 forwarding is off"* ]]
@@ -442,7 +443,7 @@ changes() { grep -E '^(qm (create|set|disk|template)|ifup) ' "$STUB_LOG"; }
     echo "$output"; [ "$status" -eq 0 ]
     [ -f "$ROOT/etc/network/interfaces.d/vmbr9" ]; [ -f "$ROOT/root/r770-e2e.pub" ]; [ -f "$SNIP" ]
     grep -q 'template: 1' "$S/vm-9000.conf"
-    [[ "$output" == *"prepared for r770-proxmox-e2e.sh (--bridge vmbr9 --sshkeys /root/r770-e2e.pub --template-vmid 9000)"* ]]
+    [[ "$output" == *"prepared for r770-proxmox-e2e.sh (--bridge vmbr9 --sshkeys /root/r770-e2e.pub --template-vmid 9000 --nameserver 192.0.2.1 --searchdomain <domain>)"* ]]
 }
 
 # ── staging-vm ──────────────────────────────────────────────────────────────

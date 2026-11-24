@@ -192,6 +192,7 @@ jump_hint() {
     [ "$((10#${BRIDGE_CIDR#*/}))" -gt 24 ] \
         && note "(a /${BRIDGE_CIDR#*/} is narrower than the pattern: addresses beside it in that /24 would jump through this host too)"
     note "No route to the subnet, and forwarding is off on $BRIDGE: the guests stay unable to leave this host."
+    note "Give each clone this host's bridge address as its resolver, never the LAN's: provision ... --nameserver ${BRIDGE_CIDR%/*} --searchdomain <domain>"
 }
 
 # ── bridge ──────────────────────────────────────────────────────────────────
@@ -637,7 +638,7 @@ cmd_all() {
         skip "dry run: nothing was prepared — rerun without --dry-run to prepare it"
         footer "all"
     fi
-    pass "this host is prepared for r770-proxmox-e2e.sh (--bridge $BRIDGE --sshkeys $SSHKEYS --template-vmid $TEMPLATE)"
+    pass "this host is prepared for r770-proxmox-e2e.sh (--bridge $BRIDGE --sshkeys $SSHKEYS --template-vmid $TEMPLATE --nameserver ${BRIDGE_CIDR%/*} --searchdomain <domain>)"
     footer "all"
 }
 
