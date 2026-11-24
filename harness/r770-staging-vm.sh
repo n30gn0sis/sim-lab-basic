@@ -7,10 +7,11 @@
 #
 #   r770-staging-vm.sh status    --pve H --vmid N
 #   r770-staging-vm.sh rollback  --pve H --vmid N --snapshot NAME        (GATED: discards the VM's state)
-#   r770-staging-vm.sh start     --pve H --vmid N
-#   r770-staging-vm.sh stop      --pve H --vmid N
+#   r770-staging-vm.sh start     --pve H --vmid N                     (GATED unless already running)
+#   r770-staging-vm.sh stop      --pve H --vmid N                     (GATED unless already stopped)
 #   r770-staging-vm.sh snapshot  --pve H --vmid N --snapshot NAME [--description TEXT]
 #   r770-staging-vm.sh airgap on|off --pve H --vmid N --wan-net netN --mgmt-host G --probe IP:PORT
+#                                                  (GATED unless the NIC is already as asked)
 #   r770-staging-vm.sh wait-ssh SECONDS --mgmt-host G
 #   r770-staging-vm.sh tunnel    --mgmt-host G --local-port N           (foreground; Ctrl-C ends it)
 #
@@ -26,11 +27,15 @@
 # airgap proves what it did, and proves the probe can tell the difference.
 #   on   NIC link-up: the probe is run FIRST in the guest and must succeed (the
 #        positive control); if it does not, FAIL and nothing is sent ("probe
-#        cannot prove the gap"). Only then is link_down=1 set, read back with
+#        cannot prove the gap"). Only then is the gate shown (the live NIC
+#        value, the exact qm set, `airgap off` as rollback), link_down=1 set, read back with
 #        `qm config --current` (the live value, not a pending one), and the
 #        probe run again: it must now fail. NIC already link-down: there is no
 #        positive control to run, so a WARN says so and the run ends 2, not 0.
-#   off  link_down is removed, read back, and the probe must succeed.
+#   off  behind its gate (`airgap on` as rollback), link_down is removed, read
+#        back, and the probe must succeed.
+# start, stop and airgap each show current · proposed · rollback and need
+# --yes or a y, as rollback does; one that would change nothing meets no gate.
 # Probe exit 0 = reachable; only 1 and 124 (timeout) = unreachable; any other
 # code is a FAIL ("probe could not be run"). An empty read-back is a FAIL
 # ("could not read"). A guest that cannot be asked is a FAIL, never a pass.
@@ -101,9 +106,17 @@ cmd_rollback() {
     footer "rollback"
 }
 
+power_current() {
+    printf 'vm %s on %s is %s\n' "$VMID" "$PVE" "$STATE"
+    pve qm config "$VMID" --current | grep -E '^name:' || echo "name: (could not be read — is --vmid right?)"
+}
+start_proposed() { printf 'qm start %s\n' "$VMID"; }
+stop_proposed()  { printf 'qm shutdown %s --timeout 180 — a clean guest power-off, never a hard stop; unsaved state in the guest is lost\n' "$VMID"; }
 cmd_start() {
     state_or_die
     if [ "$STATE" = "running" ]; then pass "VM $VMID already running"; footer "start"; fi
+    gate "start VM $VMID" power_current start_proposed \
+        "r770-staging-vm.sh stop --pve $PVE --vmid $VMID — shuts the guest down cleanly again"
     pve_run qm start "$VMID" || die "qm start failed"
     if [ "$DRY" = "1" ]; then note "DRY-RUN: VM $VMID would be started"; else pass "VM $VMID started"; fi
     footer "start"
@@ -112,6 +125,8 @@ cmd_start() {
 cmd_stop() {
     state_or_die
     if [ "$STATE" = "stopped" ]; then pass "VM $VMID already stopped"; footer "stop"; fi
+    gate "stop VM $VMID" power_current stop_proposed \
+        "r770-staging-vm.sh start --pve $PVE --vmid $VMID — boots it again"
     pve_run qm shutdown "$VMID" --timeout 180 || die "qm shutdown failed or timed out — the guest did not power off"
     if [ "$DRY" = "1" ]; then note "DRY-RUN: VM $VMID would be shut down"; else pass "VM $VMID shut down"; fi
     footer "stop"
@@ -129,6 +144,15 @@ cmd_snapshot() {
 guest() { ssh -o BatchMode=yes -o ConnectTimeout=5 "$MGMT" "$@"; }
 net_value() { pve qm config "$VMID" --current | sed -n "s/^${WAN_NET}: //p"; }
 probe() { guest "timeout 5 bash -c 'exec 3<>/dev/tcp/${PROBE%:*}/${PROBE##*:}'"; }
+AG_CUR=""; AG_TARGET=""
+ag_current()  { printf 'vm %s on %s, live config:\n%s: %s\n' "$VMID" "$PVE" "$WAN_NET" "$AG_CUR"; }
+ag_proposed() { printf 'qm set %s --%s %s\n' "$VMID" "$WAN_NET" "$AG_TARGET"; }
+airgap_gate() {  # airgap_gate on|off — the question before the one qm set that changes the NIC
+    local back=off title="air-gap VM $VMID ($WAN_NET link-down)"
+    [ "$1" = "off" ] && { back=on; title="reconnect VM $VMID ($WAN_NET link-up)"; }
+    gate "$title" ag_current ag_proposed \
+        "r770-staging-vm.sh airgap $back --pve $PVE --vmid $VMID --wan-net $WAN_NET --mgmt-host $MGMT --probe $PROBE — sets $WAN_NET back to an equivalent $WAN_NET value (Proxmox may reorder its keys), and proves it with the same probe"
+}
 
 cmd_airgap() {
     local want="${ARGS[0]:-}" cur target now prc was_down=0
@@ -143,9 +167,10 @@ cmd_airgap() {
     else
         target=${cur//,link_down=1/}
     fi
+    AG_CUR=$cur; AG_TARGET=$target
 
     if [ "$DRY" = "1" ]; then
-        if [ "$target" != "$cur" ]; then pve_run qm set "$VMID" "--$WAN_NET" "$target"
+        if [ "$target" != "$cur" ]; then airgap_gate "$want"; pve_run qm set "$VMID" "--$WAN_NET" "$target"
         else note "$WAN_NET is already as wanted"; fi
         note "DRY-RUN: $WAN_NET would be set link-$want; nothing was probed"
         footer "airgap $want"
@@ -164,7 +189,9 @@ cmd_airgap() {
         warn "$WAN_NET was already link-down: no positive control could be run, so a failing probe cannot be told from a broken one"
     fi
 
-    if [ "$target" != "$cur" ]; then pve_run qm set "$VMID" "--$WAN_NET" "$target" || die "qm set failed"
+    if [ "$target" != "$cur" ]; then
+        airgap_gate "$want"
+        pve_run qm set "$VMID" "--$WAN_NET" "$target" || die "qm set failed"
     else note "$WAN_NET already link-$want"; fi
 
     now=$(net_value)
