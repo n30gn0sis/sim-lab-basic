@@ -8,7 +8,8 @@
 #
 #   r770-proxmox-e2e.sh provision --pve H --node N --template-vmid T --vmid V
 #                       --storage S --bridge B --guest-ip CIDR --guest-user U
-#                       --sshkeys PVE-PATH --media-size GB [--guest-gw IP]
+#                       --sshkeys PVE-PATH --media-size GB --nameserver IP
+#                       --searchdomain NAME [--guest-gw IP]
 #                       [--boot-wait SECONDS]                      (GATED: clone)
 #   r770-proxmox-e2e.sh deploy    --pve H --vmid V --guest-ip CIDR --guest-user U
 #                       --bundle DIR --install-conf FILE --media-mnt PATH
@@ -28,6 +29,14 @@
 #   --guest-ip CIDR    the clone's static address on B, set by cloud-init
 #   --guest-gw IP      optional, and wrong for an air-gapped run: no gateway
 #                      means no default route
+#   --nameserver IP    the clone's resolver, set by cloud-init. Required: left
+#                      unset, Proxmox copies the HOST's resolv.conf into the
+#                      clone, a LAN resolver it cannot reach, and every lookup
+#                      stalls. Must be on --guest-ip's subnet (the bridge's
+#                      host address is the usual choice) or loopback; off it
+#                      only with --guest-gw, which gives it a route
+#   --searchdomain D   the clone's DNS search domain (e.g. lab). Required for
+#                      the same reason: left unset, the host's is copied
 #   --guest-user U     cloud-init's user; key login, passwordless sudo
 #   --sshkeys PATH     a public key file ON THE PROXMOX HOST, for that user
 #   --media-size GB    the media disk added to the clone (the stand-in USB)
@@ -59,6 +68,7 @@ set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/../scripts/lib/common.sh"
 
 PVE=""; NODE=""; TEMPLATE=""; VMID=""; STORAGE=""; BRIDGE=""; GUEST_IP=""; GUEST_GW=""
+NAMESERVER=""; SEARCHDOMAIN=""
 GUEST_USER=""; SSHKEYS=""; MEDIA_SIZE=""; BUNDLE=""; INSTALL_CONF=""; MEDIA_MNT=""
 MGMT_PEER=""; BOOT_WAIT=600; RUN_ID=""; GUEST=""
 TAG="r770-e2e"
@@ -189,9 +199,19 @@ pv_current() {
     printf 'VMID %s: free on the cluster\n' "$VMID"
 }
 ipconfig() { printf 'ip=%s%s' "$GUEST_IP" "${GUEST_GW:+,gw=$GUEST_GW}"; }
+ip2int() {  # ip2int <a.b.c.d> — the address as one 32-bit integer
+    local a b c d
+    IFS=. read -r a b c d <<< "$1"
+    echo $(( (10#$a << 24) + (10#$b << 16) + (10#$c << 8) + 10#$d ))
+}
+in_cidr() {  # in_cidr <a.b.c.d/n> <a.b.c.d> — true when the address lies inside the CIDR
+    local p=$((10#${1#*/})) m
+    m=$(( (0xFFFFFFFF << (32 - p)) & 0xFFFFFFFF ))
+    [ $(( $(ip2int "${1%/*}") & m )) -eq $(( $(ip2int "$2") & m )) ]
+}
 pv_proposed() {
     echo "qm clone $TEMPLATE $VMID --full 1 --name r770-e2e-$VMID --description r770-e2e-run=$RUN_ID --storage $STORAGE"
-    echo "qm set $VMID --tags $TAG --net0 virtio,bridge=$BRIDGE --ipconfig0 $(ipconfig) --ciuser $GUEST_USER --sshkeys $SSHKEYS --$MEDIA_SLOT $STORAGE:$MEDIA_SIZE,serial=$MEDIA_SERIAL"
+    echo "qm set $VMID --tags $TAG --net0 virtio,bridge=$BRIDGE --ipconfig0 $(ipconfig) --nameserver $NAMESERVER --searchdomain $SEARCHDOMAIN --ciuser $GUEST_USER --sshkeys $SSHKEYS --$MEDIA_SLOT $STORAGE:$MEDIA_SIZE,serial=$MEDIA_SERIAL"
     echo "qm start $VMID   (after every NIC's bridge is proven host-only)"
 }
 cmd_provision() {
@@ -238,6 +258,7 @@ cmd_provision() {
         --description "r770-e2e-run=$RUN_ID" --storage "$STORAGE" \
         || die "qm clone failed — read the line above; if a VM $VMID was left, run: teardown --pve $PVE --vmid $VMID"
     pve_run qm set "$VMID" --tags "$TAG" --net0 "virtio,bridge=$BRIDGE" --ipconfig0 "$(ipconfig)" \
+        --nameserver "$NAMESERVER" --searchdomain "$SEARCHDOMAIN" \
         --ciuser "$GUEST_USER" --sshkeys "$SSHKEYS" "--$MEDIA_SLOT" "$STORAGE:$MEDIA_SIZE,serial=$MEDIA_SERIAL" \
         || die "qm set failed — VM $VMID is left stopped; remove it with: teardown --pve $PVE --vmid $VMID (its run id is in its description)"
     if [ "$DRY" = "1" ]; then
@@ -537,6 +558,8 @@ while [ $# -gt 0 ]; do
         --bridge)         BRIDGE="${2:-}"; shift ;;
         --guest-ip)       GUEST_IP="${2:-}"; shift ;;
         --guest-gw)       GUEST_GW="${2:-}"; shift ;;
+        --nameserver)     NAMESERVER="${2:-}"; shift ;;
+        --searchdomain)   SEARCHDOMAIN="${2:-}"; shift ;;
         --guest-user)     GUEST_USER="${2:-}"; shift ;;
         --sshkeys)        SSHKEYS="${2:-}"; shift ;;
         --media-size)     MEDIA_SIZE="${2:-}"; shift ;;
@@ -562,6 +585,8 @@ valid --storage "$STORAGE" '^[A-Za-z][A-Za-z0-9_-]*$'
 valid --bridge "$BRIDGE" '^[A-Za-z][A-Za-z0-9_.-]{0,14}$'
 valid --guest-ip "$GUEST_IP" '^([0-9]{1,3}\.){3}[0-9]{1,3}/[0-9]{1,2}$'; valid_ipv4 --guest-ip "$GUEST_IP"
 valid --guest-gw "$GUEST_GW" '^([0-9]{1,3}\.){3}[0-9]{1,3}$'; valid_ipv4 --guest-gw "$GUEST_GW"
+valid --nameserver "$NAMESERVER" '^([0-9]{1,3}\.){3}[0-9]{1,3}$'; valid_ipv4 --nameserver "$NAMESERVER"
+valid --searchdomain "$SEARCHDOMAIN" '^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$'
 valid --mgmt-peer "$MGMT_PEER" '^([0-9]{1,3}\.){3}[0-9]{1,3}$'; valid_ipv4 --mgmt-peer "$MGMT_PEER"
 valid --guest-user "$GUEST_USER" '^[a-z_][a-z0-9_-]{0,31}$'
 valid --sshkeys "$SSHKEYS" '^/[A-Za-z0-9._/-]+$'
@@ -573,7 +598,14 @@ case "$SUB" in provision|deploy|verify|teardown|all) ;; *) die "unknown subcomma
 need_arg --pve "$PVE"; need_arg --vmid "$VMID"
 case "$SUB" in provision|all)
     need_arg --node "$NODE"; need_arg --template-vmid "$TEMPLATE"; need_arg --storage "$STORAGE"
-    need_arg --bridge "$BRIDGE"; need_arg --sshkeys "$SSHKEYS"; need_arg --media-size "$MEDIA_SIZE" ;; esac
+    need_arg --bridge "$BRIDGE"; need_arg --sshkeys "$SSHKEYS"; need_arg --media-size "$MEDIA_SIZE"
+    need_arg --nameserver "$NAMESERVER"; need_arg --searchdomain "$SEARCHDOMAIN"
+    [ "$NAMESERVER" = "0.0.0.0" ] && die "--nameserver 0.0.0.0 is the unspecified address, not a resolver (give the bridge's host address, or loopback)"
+    # without --guest-gw the bridge is the clone's whole world: a resolver off its subnet never answers
+    case "$NAMESERVER" in 127.*) ;; *)
+        [ -n "$GUEST_GW" ] || [ -z "$GUEST_IP" ] || in_cidr "$GUEST_IP" "$NAMESERVER" \
+            || die "--nameserver $NAMESERVER is not on --guest-ip $GUEST_IP and there is no --guest-gw: the clone could never reach it (give the bridge's host address, or loopback)" ;;
+    esac ;; esac
 case "$SUB" in provision|deploy|verify|all) need_arg --guest-ip "$GUEST_IP"; need_arg --guest-user "$GUEST_USER" ;; esac
 case "$SUB" in deploy|all) need_arg --bundle "$BUNDLE"; need_arg --install-conf "$INSTALL_CONF"; need_arg --media-mnt "$MEDIA_MNT" ;; esac
 kit_init "r770-proxmox-e2e"

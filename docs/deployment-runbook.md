@@ -904,6 +904,16 @@ Host <a>.<b>.<c>.*             # one pattern per /24 inside --bridge-cidr (/16 t
     ProxyJump <pve-ssh-alias>
 ```
 
+**The clone's resolver is yours to name, never the host's.** Left unset,
+Proxmox's cloud-init copies the host's `resolv.conf` (its LAN resolver and
+search domain) into the clone. That resolver cannot be reached from a host-only
+bridge, so every name lookup in the guest stalls until it times out (seconds
+each, seen on the first live air-gap re-prove). `provision` therefore requires
+`--nameserver` and `--searchdomain` and passes both to `qm set`. The nameserver
+must be on `--guest-ip`'s subnet (usually the bridge's host address from
+`--bridge-cidr`) or loopback. A nameserver off that subnet is refused unless
+`--guest-gw` gives the clone a route to it.
+
 The driver's own options (its per-clone known_hosts file, BatchMode) still
 apply to the guest hop. The Proxmox host needs `AllowTcpForwarding` set to yes
 or local; `bridge` checks this and, when it is refused, stops before changing
@@ -951,6 +961,7 @@ firewall rule on the bridge) is a later hardening step.
     --pve <ssh-host> --node <node> --template-vmid <T> --vmid <V> \
     --storage <storage> --bridge <host-only-bridge> \
     --guest-ip <a.b.c.d/n> --guest-user <user> --sshkeys <path-on-pve> \
+    --nameserver <bridge-host-address> --searchdomain <domain> \
     --media-size <GB> --bundle <bundle-dir> --install-conf <file> \
     --media-mnt <guest-mount-point>        # reads the hypervisor, changes nothing
 # then the same line with --yes instead of --dry-run, or one phase at a time:
