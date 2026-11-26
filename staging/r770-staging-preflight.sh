@@ -32,11 +32,20 @@
 #   1  not ready -- at least one refusal
 #   2  ready with warnings -- disposition each before fetch day
 #
+# Room is checked twice: on the bundle directory, and on the runtime's image
+# store when that is another filesystem (asked of the runtime, never assumed
+# to be /var/lib/docker). A store this host cannot see (Docker Desktop, a
+# remote engine) is a WARN naming where to look, never a silent PASS.
+#
 # Test overrides: PREFLIGHT_OS_RELEASE, PREFLIGHT_BUNDLE_DIR, PREFLIGHT_MIN_GB,
-# PREFLIGHT_SKIP_EGRESS.
+# PREFLIGHT_STORE_MIN_GB, PREFLIGHT_SKIP_EGRESS.
 set -uo pipefail
 
 MIN_GB="${PREFLIGHT_MIN_GB:-150}"
+# The image store, when it is NOT the bundle's filesystem: the pulled images,
+# uncompressed (the fetch compresses about 30 GB of them). An estimate with
+# headroom, not a measurement; the override is how a rehearsal corrects it.
+STORE_MIN_GB="${PREFLIGHT_STORE_MIN_GB:-60}"
 OS_RELEASE="${PREFLIGHT_OS_RELEASE:-/etc/os-release}"
 BUNDLE_DIR="${PREFLIGHT_BUNDLE_DIR:-$(pwd)}"
 SKIP_EGRESS="${PREFLIGHT_SKIP_EGRESS:-0}"
@@ -161,6 +170,44 @@ if [ -n "${AVAIL_K:-}" ] && [ "$AVAIL_K" -gt 0 ] 2>/dev/null; then
     fi
 else
     warn "cannot determine free space on ${BUNDLE_DIR}"
+fi
+
+# ── 5b. Room for the image store ─────────────────────────────────────────────
+# The fetch pulls every image into the runtime's own store before it saves
+# them into the bundle, and that store is often not on the bundle's
+# filesystem: /var/lib/docker on its own disk, or Docker Desktop's data disk,
+# which lives on the Windows drive (rehearsal #9: a full C: while the bundle
+# directory had room). One filesystem holding both is covered by the check
+# above; a separate one needs its own room; one that is not on this host at
+# all cannot be measured from here, and is a WARN that says so.
+if [ -n "$CTR" ]; then
+    case "$CTR" in
+        *podman*) STORE=$("$CTR" info --format '{{.Store.GraphRoot}}' 2>/dev/null) ;;
+        *)        STORE=$("$CTR" info --format '{{.DockerRootDir}}' 2>/dev/null) ;;
+    esac
+    ENGINE_OS=$("$CTR" info --format '{{.OperatingSystem}}' 2>/dev/null || true)
+    STORE=$(printf '%s' "$STORE" | head -1)
+    if [ -z "$STORE" ]; then
+        warn "cannot ask ${CTR} where it keeps images — the image store's free space is unchecked; it needs ${STORE_MIN_GB} GB"
+    elif [[ "$ENGINE_OS" == *"Docker Desktop"* ]] || [ ! -d "$STORE" ]; then
+        warn "${CTR}'s image store (${STORE}${ENGINE_OS:+, ${ENGINE_OS}}) is not on this host's filesystem, so its free space cannot be measured here — the drive that holds the engine's data disk needs ${STORE_MIN_GB} GB free (Docker Desktop: Settings → Resources → Advanced → Disk image location)"
+    else
+        STORE_MNT=$(df -Pk "$STORE" 2>/dev/null | tail -1 | awk '{print $6}')
+        BUNDLE_MNT=$(df -Pk "$BUNDLE_DIR" 2>/dev/null | tail -1 | awk '{print $6}')
+        STORE_K=$(df -Pk "$STORE" 2>/dev/null | tail -1 | awk '{print $4}')
+        if [ -z "$STORE_MNT" ] || ! [ "${STORE_K:-x}" -ge 0 ] 2>/dev/null; then
+            warn "cannot determine free space on ${CTR}'s image store ${STORE}"
+        elif [ "$STORE_MNT" = "$BUNDLE_MNT" ]; then
+            pass "${CTR}'s image store ${STORE} shares ${BUNDLE_DIR}'s filesystem (${STORE_MNT}) — the room above covers both"
+        else
+            STORE_GB=$((STORE_K / 1024 / 1024))
+            if [ "$STORE_GB" -lt "$STORE_MIN_GB" ]; then
+                fail "only ${STORE_GB} GB free on ${CTR}'s image store ${STORE} (${STORE_MNT}) — need at least ${STORE_MIN_GB} GB; the fetch pulls every image there before saving it into the bundle"
+            else
+                pass "${STORE_GB} GB free on ${CTR}'s image store ${STORE} (${STORE_MNT}; need ${STORE_MIN_GB})"
+            fi
+        fi
+    fi
 fi
 
 # ── 6. Host tools used outside containers ────────────────────────────────────

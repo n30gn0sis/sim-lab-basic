@@ -1,6 +1,6 @@
 # Backlog — what was deferred when the project closed
 
-The finish line (`docs/superpowers/plans/2026-11-10-finish-line.md`) is the
+The finish line (`docs/archive/superpowers/plans/2026-11-10-finish-line.md`) is the
 kit installing the real R770 to INSTALLED once, with evidence. Everything the
 plan did not need is listed here, one line each, so nothing is lost and
 nothing is silently promised. New work starts as its own project with its own
@@ -48,7 +48,7 @@ From `docs/rehearsals/2026-11-10-ipsec-wan.md` (IPsec/WAN increment 1 and
 ## Not built
 
 - IPsec spec phases IP5–IP9
-  (`docs/superpowers/specs/2026-09-24-ipsec-scenarios-spec.md`).
+  (`docs/archive/superpowers/specs/2026-09-24-ipsec-scenarios-spec.md`).
 - Licensed appliance definitions: the fetch ships no definition without its
   image; add one to the fetch together with its image.
 - Traffic on a real physical capture port: the gated step exists and was

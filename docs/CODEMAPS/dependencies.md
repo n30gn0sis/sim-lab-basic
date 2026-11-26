@@ -1,4 +1,4 @@
-<!-- Generated: 2026-09-21 | Files scanned: 8 scripts, 20 config files | Token estimate: ~650 -->
+<!-- Generated: 2026-11-20 | Files scanned: 15 scripts/, 34 config/ | Token estimate: ~650 -->
 
 # Dependencies
 

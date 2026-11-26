@@ -1,4 +1,4 @@
-<!-- Generated: 2026-09-21 | Files scanned: 8 scripts, 20 config files | Token estimate: ~800 -->
+<!-- Generated: 2026-11-20 | Files scanned: 15 scripts/, 34 config/ | Token estimate: ~1000 -->
 
 # Pipelines → scripts → subcommands
 
@@ -27,6 +27,23 @@ load and tag-assert their own tarball.
 Required arguments: `--bundle <dir>` always for `full`; `--media`/`--device`
 for its `gate`/`copy` steps.
 
+## The installer (optional)
+
+`scripts/r770-install.sh` takes a bare Ubuntu 24.04 R770 plus the bundle media
+to a proven lab in one re-enterable run. It is a thin sequencer: each step is
+an existing entry point, called with arguments from `/etc/lab/install.conf`.
+
+| Subcommand | Does |
+|---|---|
+| `discover` | prints disks, NICs, addresses, bridges, mounts; writes an empty `install.conf.template` |
+| `wizard` | picks each value from numbered lists of what `discover` found |
+| `plan` | checks `install.conf`, then every gated step under `--dry-run` |
+| `run` | `import` `gns3` `malcolm` `docs` `portal` `dashboards` `validate` `e2e`, stopping at the first FAIL; `--from`/`--to` slice it |
+| `status` | which of those steps this host has finished |
+
+`run` exits `0` only when INSTALLED; `2` is finished with warnings, never
+INSTALLED.
+
 ## Subcommands NOT in any `full`
 
 Each script has more than `full` calls. These are operator-invoked:
@@ -40,7 +57,9 @@ Each script has more than `full` calls. These are operator-invoked:
 | malcolm | `dashboards` `arkime-views` | need a started stack; a failed dashboard import must not fail a deployment that stood every service up |
 | gns3 | `assert-tags` `status` | the tag check alone / read-only |
 | docs | `assert-tags` `status` | the tag check alone / read-only |
-| scenario | `list` `up` `traffic` `down` `status` | an operator tool, not a deployment step: runs the scenario pack on a deployed GNS3 (after `labnet`); not gated — it touches only the GNS3 projects it imported |
+| scenario | `list` `up` `traffic` `record` `verify` `ingest` `down` `status` `check` | an operator tool, not a deployment step: runs the scenario pack on a deployed GNS3 (after `labnet`); `record` captures a run, `verify` judges it with tshark, `ingest` drops its captures into Malcolm, `check` judges a live run in Arkime; not gated — it touches only the GNS3 projects it imported |
+| e2e | (one command) | a test runner: `validate`, then every scenario `up` → `traffic` → `down`, then every `check`; one report, not gated |
+| capture-ports | `apply` 🔒 `status` | Malcolm's `capture` step calls `apply`; standalone for re-checking physical capture ports |
 | wan | `apply` `show` `clear` | an operator tool, not a deployment step: HTB rate plus netem from `config/wan/profiles/*.conf` on `lab-tapN` only, refusing any other name; not gated, it records what it applied under `/run/r770-wan/` |
 | portal | `ca` `cert` `htpasswd` `nginx` | the whole front door is optional and hand-run — see above |
 | portal | `status`, `--print-sans` | read-only |
@@ -48,7 +67,8 @@ Each script has more than `full` calls. These are operator-invoked:
 ## The gates
 
 `apt` (sources rewrite) · `phone-home` (timers, snapd) · `docker` (engine
-install) · `gns3 service` (the unit) · `gns3 labnet` (the lab bridge) ·
+install) · `malcolm capture` (physical capture ports) · `gns3 service` (the unit) ·
+`gns3 labnet` (the lab bridge) ·
 `portal nginx` (the site set).
 `--non-interactive` without `--yes` stops at the first one, on purpose.
 

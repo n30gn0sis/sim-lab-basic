@@ -1,4 +1,4 @@
-<!-- Generated: 2026-09-21 | Files scanned: 72 tracked | Token estimate: ~700 -->
+<!-- Generated: 2026-11-20 | Files scanned: 15 scripts/, 5 staging/, 34 config/ | Token estimate: ~950 -->
 
 # Architecture
 
@@ -25,31 +25,47 @@ STAGING HOST (internet)                     R770 (air-gapped, Ubuntu 24.04)
 `staging/` never runs on the R770, and `scripts/` never calls `staging/`
 (`tests/no-legacy-manifest.bats`).
 
-## Three layers on the R770 side
+## Four layers on the R770 side
 
 ```
+r770-install.sh  run   optional thin sequencer over existing entry points, from install.conf:
+  │                    import gns3 malcolm docs portal dashboards validate e2e (--from to re-enter)
+  ▼
 r770-malcolm-deploy.sh full   r770-gns3-deploy.sh full   r770-docs-deploy.sh full
   │ own STEPS array             │ own STEPS array          │ own STEPS array
   │ run_step()/step_index()     │ run_step()/step_index()  │ run_step()/step_index()
   ▼                             ▼                          ▼
                  (independent; each brings its own bundle in from the media)
 r770-import-bundle.sh  ◄── shared bundle-prep steps, idempotent in any order
+r770-capture-ports.sh          physical capture ports silenced (Malcolm's capture step calls it)
 r770-portal-deploy.sh          optional front door, run by hand after Malcolm
 r770-validate.sh               read-only checks, run at any point
   │ every one sources ↓
   ▼
 scripts/lib/common.sh     the only seam that touches the host
+
+operator tools, after a deployment (not part of any full):
+r770-scenario.sh   the scenario pack in GNS3: up, traffic/record, down, verify, ingest, check
+r770-wan.sh        WAN impairment on lab-tapN only
+r770-e2e.sh        validate → every scenario up/traffic/down → check, one report
+  r770-scenario.sh and r770-malcolm-deploy.sh also source
+  scripts/lib/expect.sh (expect.txt row → Arkime/KQL query) and
+  scripts/lib/malcolm-api.sh (Dashboards/Arkime APIs via 127.0.0.1:8443)
 ```
 
-`scripts/r770-airgap-check.sh` is read-only and stands outside every pipeline;
-`r770-validate.sh` folds its rows in under the `airgap` area.
+`r770-install.sh` holds no pipeline logic: each of its steps calls an
+existing entry point with arguments read from `install.conf`, and every
+pipeline still runs on its own without it. `scripts/r770-airgap-check.sh` is
+read-only and stands outside every pipeline; `r770-validate.sh` folds its rows
+in under the `airgap` area.
 
 ## Three independent `full` pipelines, one shared prep
 
 `r770-malcolm-deploy.sh full`, `r770-gns3-deploy.sh full` and
 `r770-docs-deploy.sh full` each hold their own `STEPS=(...)` array and step
-through it with `common.sh`'s `run_step()`/`step_index()` — there is no outer
-orchestrator holding a combined stage list. All three begin with the same
+through it with `common.sh`'s `run_step()`/`step_index()` — no outer
+script holds a combined step list (`r770-install.sh` sequences whole entry
+points, never their steps). All three begin with the same
 bundle-prep steps (`preflight gate copy apt phone-home docker files`, all
 against `r770-import-bundle.sh`) before diverging into their own `load` and
 pipeline-specific steps. Every one of those shared steps is idempotent

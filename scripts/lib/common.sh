@@ -118,7 +118,7 @@ common_flag() {
 # ── step orchestration ──────────────────────────────────────────────────────
 # step_index <array-name> <target> — index of <target> in the named array
 # (passed by name, via nameref), or return 1 if absent. Generalizes
-# r770-deploy.sh's old stage_index() for use by more than one script.
+# the retired r770-deploy.sh's stage_index() for use by more than one script.
 step_index() {
     local -n _arr=$1; local target=$2 i
     for i in "${!_arr[@]}"; do [ "${_arr[$i]}" = "$target" ] && { echo "$i"; return 0; }; done
@@ -129,10 +129,10 @@ step_index() {
 # 0 continue; 2 warn (collected into the caller's WARNED_STEPS, gated on
 # KIT_YES / a prompt / KIT_NON_INTERACTIVE exactly like every other gate);
 # anything else dies naming the step to resume with. Generalizes
-# r770-deploy.sh's old child(). Caller declares WARNED_STEPS="" before its
+# the retired r770-deploy.sh's child(). Caller declares WARNED_STEPS="" before its
 # first call and reads it after the loop to report warnings.
 #
-# <cmd...> runs in a subshell ( ), not bare. r770-deploy.sh's child() always
+# <cmd...> runs in a subshell ( ), not bare. That child() always
 # ran a SEPARATE script (a new process), so that script's own die()/footer()
 # `exit` only ever ended that process. A "full" pipeline now also runs a few
 # steps in-process, as this script's own cmd_* functions — and those end in

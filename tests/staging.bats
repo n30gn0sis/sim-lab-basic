@@ -167,3 +167,62 @@ real_bundle() {
         grep -qw -- "$d" <<< "$defs" || { echo "lost: $d"; false; }
     done
 }
+
+# ── the preflight's room checks ─────────────────────────────────────────────
+# Run under the stubbed PATH: docker, df and the host probes answer from knobs,
+# egress is skipped, and nothing reaches a real engine. STORE_* describe the
+# image store, BUNDLE_* the bundle directory's filesystem (df -Pk, in KiB).
+preflight_env() {
+    load helpers/stubs
+    kit_test_env
+    export PF_STORE="$BATS_TEST_TMPDIR/store"; mkdir -p "$PF_STORE"
+    export PF_BUNDLE="$BATS_TEST_TMPDIR/bundle"; mkdir -p "$PF_BUNDLE"
+    printf 'ID=ubuntu\nVERSION_ID="24.04"\n' > "$BATS_TEST_TMPDIR/os-release"
+    stub docker '
+case "$*" in
+    --version)                            echo "Docker version 0.0.0-fixture" ;;
+    "info --format {{.DockerRootDir}}")   echo "${STORE_ROOT-$PF_STORE}" ;;
+    "info --format {{.OperatingSystem}}") echo "${ENGINE_OS:-Ubuntu 24.04 LTS}" ;;
+    info)                                 exit 0 ;;
+esac'
+    stub df '
+if [ "${!#}" = "$PF_STORE" ]; then k=${STORE_K:-209715200}; m=${STORE_MNT:-/var/lib/docker}
+else k=${BUNDLE_K:-209715200}; m=${BUNDLE_MNT:-/}; fi
+printf "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/x 1 1 %s 1%% %s\n" "$k" "$m"'
+    stub systemd-detect-virt 'echo kvm'
+    stub curl 'exit 0'; stub pigz 'exit 0'
+}
+preflight() {
+    PREFLIGHT_OS_RELEASE="$BATS_TEST_TMPDIR/os-release" PREFLIGHT_BUNDLE_DIR="$PF_BUNDLE" \
+        PREFLIGHT_SKIP_EGRESS=1 kit_run ./staging/r770-staging-preflight.sh
+}
+
+@test "preflight: an image store on its own filesystem with too little room is a refusal" {
+    preflight_env
+    STORE_K=$((20 * 1024 * 1024)) run preflight
+    echo "$output"; [ "$status" -eq 1 ]
+    [[ "$output" == *"FAIL  only 20 GB free on docker's image store $PF_STORE (/var/lib/docker) — need at least 60 GB"* ]]
+    [[ "$output" == *"PASS  200 GB free on $PF_BUNDLE"* ]]
+}
+
+@test "preflight: an image store on its own filesystem with room passes, and one sharing the bundle's is covered once" {
+    preflight_env
+    run preflight
+    echo "$output"; [ "$status" -eq 0 ]
+    [[ "$output" == *"PASS  200 GB free on docker's image store $PF_STORE (/var/lib/docker; need 60)"* ]]
+    STORE_MNT=/ STORE_K=1 run preflight
+    echo "$output"; [ "$status" -eq 0 ]
+    [[ "$output" == *"PASS  docker's image store $PF_STORE shares $PF_BUNDLE's filesystem (/) — the room above covers both"* ]]
+}
+
+@test "preflight: a store it cannot see (Docker Desktop, a path not on this host) is a WARN naming where to look, never a PASS" {
+    preflight_env
+    ENGINE_OS="Docker Desktop" run preflight
+    echo "$output"; [ "$status" -eq 2 ]
+    [[ "$output" == *"WARN  docker's image store ($PF_STORE, Docker Desktop) is not on this host's filesystem"*"Disk image location"* ]]
+    ! grep -q '^PASS .*image store' <<< "$output"
+    STORE_ROOT="$BATS_TEST_TMPDIR/not-here" run preflight
+    [ "$status" -eq 2 ]; [[ "$output" == *"WARN  docker's image store ($BATS_TEST_TMPDIR/not-here, Ubuntu 24.04 LTS) is not on this host's filesystem"* ]]
+    STORE_ROOT="" run preflight
+    [ "$status" -eq 2 ]; [[ "$output" == *"WARN  cannot ask docker where it keeps images"* ]]
+}
