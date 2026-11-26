@@ -13,7 +13,7 @@ Requires `shellcheck` and `bats` (>= 1.10): `sudo apt-get -y install shellcheck 
 | Suite | Covers |
 |---|---|
 | `lint.bats` | shellcheck (no exclusions, `staging/` and `harness/` included) and `bash -n` over every script and helper, the PowerShell helper parsing (skipped without `pwsh`); scripts executable |
-| `staging.bats` | staging/ runs as a set: the fetch's stages and `--list`, `--pack` (four scripts + kit), the verifier round trip with and without kit/; the pack output is gitignored |
+| `staging.bats` | staging/ runs as a set: the fetch's stages and `--list`, `--pack` (four scripts + kit), the verifier round trip with and without kit/; the pack output is gitignored; the preflight's image-store room check (stubbed `docker`/`df`): its own filesystem short of room FAILs, with room PASSes, sharing the bundle's is covered once, and a store it cannot see (Docker Desktop, a path not here, a runtime that will not say) is a WARN, never a PASS |
 | `common.bats` | the library's contract: `KIT_ROOT`, dry-run, gates, `render`, `assert_edit`, image lists, `bundle_verify` calling the bundle's own verifier, secrets |
 | `import-bundle.bats` | gate on the bundle's verifier, refusals, the APT rewrite and its automatic restore, docker assertions, the incomplete-load regression, file routing |
 | `malcolm-deploy.bats` | the seven load/assert-tags cases, plus flag assertion, rendered-config replay, the rebind's idempotence and drift refusal, secrets never printed, start via Malcolm's script |

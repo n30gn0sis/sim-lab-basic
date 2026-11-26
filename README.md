@@ -97,7 +97,7 @@ reference PCAPs, `--impair`, timed `--events`, ground truth under `gt/`),
 `verify` (tshark over the run directory) and `ingest` (the captures into
 Malcolm, tagged by run id); and `scripts/r770-wan.sh` (netem WAN profiles on a
 kit TAP). See the runbook's "IPsec & simulated-WAN scenarios" section and
-`docs/superpowers/plans/2026-10-07-ipsec-wan-scenarios.md`.
+`docs/archive/superpowers/plans/2026-10-07-ipsec-wan-scenarios.md`.
 
 Exit **0** every step clean · **2** finished with warnings to disposition ·
 **1** a step refused or failed — fix it, then rerun with `--from <step>`
@@ -144,6 +144,7 @@ need what on the box first — each step checks its own prerequisites and refuse
 | `docs/secrets-locations.md` | Where every generated credential lives, by location and mode only |
 | `docs/wiki/` | The analyst wiki source, built by `scripts/r770-docs-deploy.sh` and served at `docs.lab` on the R770 |
 | `docs/CODEMAPS/` | Token-lean maps for getting oriented fast: `architecture.md` (the two hosts, the three pipelines plus the front door, what `common.sh` owns), `stages.md` (pipeline → script → `full` step sequence → operator-invoked extras, and which steps are gated), `dependencies.md` (the bundle layout, packages required but never installed, the loopback port map). They name owners rather than restating them |
+| `docs/archive/` | Finished design specs and implementation plans, kept for the reasoning behind a decision. Not procedure: where one disagrees with the runbook or a script, the runbook and the script win |
 | `tests/` | `./tests/run.sh` — shellcheck with no exclusions, and bats suites that stub every host tool and write into a fake root. Offline, read-only, never a real bundle |
 | `.claude/settings.json` | Agent guardrails for a session opened in this kit: destructive disk commands, `curl`/`wget`/`pip install`/`docker pull`/`snap` denied; every kit script is allowed by name |
 | `CLAUDE.md` | Operating rules for an agent working in this kit |

@@ -556,9 +556,9 @@ is a FAIL.
 ## IPsec & simulated-WAN scenarios (rehearsed 2026-11-10)
 
 The IPsec & WAN scenario spec is filed as
-`docs/superpowers/specs/2026-09-24-ipsec-scenarios-spec.md`; how the kit as
-built carries it out is `docs/superpowers/specs/2026-10-07-ipsec-wan-scenarios-kit-design.md`,
-and the work is sequenced in `docs/superpowers/plans/2026-10-07-ipsec-wan-scenarios.md`.
+`docs/archive/superpowers/specs/2026-09-24-ipsec-scenarios-spec.md`; how the kit as
+built carries it out is `docs/archive/superpowers/specs/2026-10-07-ipsec-wan-scenarios-kit-design.md`,
+and the work is sequenced in `docs/archive/superpowers/plans/2026-10-07-ipsec-wan-scenarios.md`.
 Status: rehearsed 2026-11-10 on VM 9770, bundle `bundle-20261110`, with open
 findings — `docs/rehearsals/2026-11-10-ipsec-wan.md`. `record` (its captures,
 idle tail, run directory, `--impair` and `--events`, and the ground truth under
