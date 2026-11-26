@@ -931,6 +931,13 @@ the fingerprint against the host's console
 prints a `Host <a>.<b>.<c>.*` / `ProxyJump` stanza, for reaching a guest by
 hand from your own ssh config. The driver does not need it.
 
+The file is written mode 0600 by `harness/lib/ssh-config.sh`, which
+`harness/r770-staging-vm.sh` uses too. Run from a directory (or set
+`KIT_EVIDENCE_DIR` to one) whose path holds only `A-Z a-z 0-9 . _ / -`: ssh
+cannot quote a `"` or `%` in the file, and ProxyJump hands `-F <path>` to a
+shell unquoted, so a space, `$`, `;` or backtick would break the jump. Such a path is
+refused before any ssh.
+
 **The clone's resolver is yours to name, never the host's.** Left unset,
 Proxmox's cloud-init copies the host's `resolv.conf` (its LAN resolver and
 search domain) into the clone. That resolver cannot be reached from a host-only
@@ -1035,8 +1042,25 @@ an argument, is gated (current · proposed · rollback), and is never part of
     --image <path-to-noble-img> --disk-size 300 --memory 8192 --cores 4 \
     --guest-user <user> --sshkeys /root/r770-e2e.pub --ip dhcp      # or --ip <a.b.c.d/n> --gw <gw>
 # then the same line without --dry-run; then, from the operator machine:
-#   ./harness/r770-staging-vm.sh start --pve <ssh-host> --vmid <S>   # gated: current · proposed · rollback
+#   ./harness/r770-staging-vm.sh start --pve <pve-address> --pve-user <user> \
+#       --identity <abs-path-to-key> --vmid <S>                       # gated: current · proposed · rollback
 ```
+
+`harness/r770-staging-vm.sh` reaches the hypervisor and the guest the same way
+the E2E driver does: its own per-run ssh config,
+`r770-evidence/r770-staging-vm-<pve>-<S>.ssh_config`, rewritten from the
+arguments on every run (mode 0600, no secret), and every ssh through it with
+`ssh -F`, so `~/.ssh/config` is never used and nothing in `~/.ssh` is
+written; the hypervisor's host key is still checked against your
+`~/.ssh/known_hosts`, by design. Every subcommand takes
+`--pve --pve-user --identity --vmid`. The ones that talk to the guest
+(`airgap`, `wait-ssh`, `tunnel`) add `--mgmt-host <guest-address>` and
+`--guest-user <user>`: the guest is reached only by ProxyJump through
+`r770-staging-pve`, its host key kept in
+`r770-evidence/r770-staging-vm-<pve>-<S>.known_hosts` (accepted on first
+contact, then checked; a rollback keeps the guest's keys, so the file is kept).
+The same dedicated key opens both; the guest needs its public half in the
+guest user's `authorized_keys`.
 
 Its one disk holds the OS, the container image store and the bundle; under
 200 GB is a WARN. A host-only `--bridge` is a WARN: the VM would reach the

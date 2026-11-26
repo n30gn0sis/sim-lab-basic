@@ -617,7 +617,7 @@ cmd_staging_vm() {
     else fail "VM $VMID does not read back with description $STG_DESC (qm config)"; fi
     if printf '%s\n' "$cfg" | grep -q 'cloudinit'; then pass "cloud-init drive present"; else fail "no cloud-init drive in VM $VMID's config"; fi
     if printf '%s\n' "$cfg" | grep -q '^ipconfig0:'; then pass "net0 has its ipconfig ($(stg_ipconfig))"; else fail "net0 has no ipconfig0"; fi
-    note "next, from the operator's machine: harness/r770-staging-vm.sh start --pve <ssh-host> --vmid $VMID;"
+    note "next, from the operator's machine: harness/r770-staging-vm.sh start --pve <pve-address> --pve-user <user> --identity <key> --vmid $VMID;"
     note "then, inside it: install Docker CE, clone the kit, and run staging/r770-staging-preflight.sh"
     footer "staging-vm"
 }

@@ -79,11 +79,16 @@
 # accepted blind), and the guest's address, reached only by ProxyJump through
 # that alias (the host-only bridge has no route) and checked against the
 # clone's own known_hosts. It names the key file and holds no secret; teardown
-# removes it with the run's marker.
+# removes it with the run's marker. Written mode 0600 by harness/lib/ssh-config.sh,
+# shared with r770-staging-vm.sh; an evidence directory whose path holds anything
+# but [A-Za-z0-9._/-] is refused (ProxyJump passes -F to a shell unquoted).
 set -uo pipefail
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=../scripts/lib/common.sh
 . "$(dirname "${BASH_SOURCE[0]}")/../scripts/lib/common.sh"
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=lib/ssh-config.sh
+. "$(dirname "${BASH_SOURCE[0]}")/lib/ssh-config.sh"
 
 PVE=""; PVE_USER=""; IDENTITY=""; NODE=""; TEMPLATE=""; VMID=""; STORAGE=""; BRIDGE=""; GUEST_IP=""; GUEST_GW=""
 NAMESERVER=""; SEARCHDOMAIN=""
@@ -131,29 +136,12 @@ td_hint() { printf 'teardown --pve %s --pve-user %s --identity %s --vmid %s' "$P
 # run (a file left on disk is never trusted). Written under --dry-run too: the
 # dry run still reads the hypervisor, and the file changes nothing anywhere.
 write_ssh_config() {
-    local tmp
     SSHCFG=$(ssh_config)
-    case "$SSHCFG" in *'"'*|*%*) die "the evidence directory $STATE_DIR holds a '\"' or '%' — ssh_config cannot name files there" ;; esac
-    mkdir -p "$STATE_DIR" || die "cannot create $STATE_DIR"
-    tmp="$SSHCFG.tmp.$$"
-    ( umask 077
-      printf '# Written by r770-proxmox-e2e.sh for VM %s on %s, from its arguments, on every\n' "$VMID" "$PVE"
-      printf '# run; read only through ssh -F. It names the key file and holds no secret.\n'
-      printf 'Host %s\n' "$PVE_ALIAS"
-      printf '    HostName %s\n    User %s\n' "$PVE" "$PVE_USER"
-      printf '    IdentityFile "%s"\n    IdentitiesOnly yes\n' "$IDENTITY"
-      printf '    BatchMode yes\n    ConnectTimeout 10\n'
-      printf '    StrictHostKeyChecking yes\n'      # the hypervisor's key: the operator's known_hosts, as already trusted
-      if [ -n "$GUEST_IP" ]; then
-          printf 'Host %s\n' "${GUEST_IP%/*}"
-          printf '    ProxyJump %s\n' "$PVE_ALIAS"   # the host-only bridge has no route: only through the hypervisor
-          printf '    IdentityFile "%s"\n    IdentitiesOnly yes\n' "$IDENTITY"
-          printf '    BatchMode yes\n    ConnectTimeout 10\n    ServerAliveInterval 30\n'
-          printf '    StrictHostKeyChecking accept-new\n'
-          printf '    UserKnownHostsFile "%s"\n' "$(known_hosts)"
-      fi ) > "$tmp" || { rm -f "$tmp"; die "cannot write the run's ssh config $SSHCFG"; }
-    mv -f "$tmp" "$SSHCFG" || { rm -f "$tmp"; die "cannot write the run's ssh config $SSHCFG"; }
-    note "ssh config for this run: $SSHCFG"
+    if [ -n "$GUEST_IP" ]; then
+        ssh_config_write "$SSHCFG" r770-proxmox-e2e.sh "$PVE_ALIAS" "$PVE" "$PVE_USER" "$IDENTITY" "${GUEST_IP%/*}" "$(known_hosts)"
+    else
+        ssh_config_write "$SSHCFG" r770-proxmox-e2e.sh "$PVE_ALIAS" "$PVE" "$PVE_USER" "$IDENTITY"
+    fi
 }
 marker() { printf '%s/r770-proxmox-e2e-%s-%s.run' "$STATE_DIR" "$PVE" "$VMID"; }
 

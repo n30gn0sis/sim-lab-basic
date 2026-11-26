@@ -6,7 +6,7 @@
 setup() { cd "$BATS_TEST_DIRNAME/.."; }
 
 @test "every kit script is shellcheck-clean with no exclusions" {
-    run shellcheck -x scripts/*.sh scripts/lib/*.sh harness/*.sh tests/run.sh
+    run shellcheck -x scripts/*.sh scripts/lib/*.sh harness/*.sh harness/lib/*.sh tests/run.sh
     echo "$output"
     [ "$status" -eq 0 ]
 }
@@ -39,7 +39,7 @@ setup() { cd "$BATS_TEST_DIRNAME/.."; }
 }
 
 @test "every shell script parses" {
-    for f in scripts/*.sh scripts/lib/*.sh staging/*.sh harness/*.sh tests/run.sh; do
+    for f in scripts/*.sh scripts/lib/*.sh staging/*.sh harness/*.sh harness/lib/*.sh tests/run.sh; do
         run bash -n "$f"
         echo "$f: $output"
         [ "$status" -eq 0 ]

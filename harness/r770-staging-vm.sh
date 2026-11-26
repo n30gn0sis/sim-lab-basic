@@ -5,20 +5,26 @@
 # R770. Every change to the VM is one `qm` command sent over ssh to the
 # hypervisor; nothing here destroys a VM, a disk or a snapshot.
 #
-#   r770-staging-vm.sh status    --pve H --vmid N
-#   r770-staging-vm.sh rollback  --pve H --vmid N --snapshot NAME        (GATED: discards the VM's state)
-#   r770-staging-vm.sh start     --pve H --vmid N                     (GATED unless already running)
-#   r770-staging-vm.sh stop      --pve H --vmid N                     (GATED unless already stopped)
-#   r770-staging-vm.sh snapshot  --pve H --vmid N --snapshot NAME [--description TEXT]
-#   r770-staging-vm.sh airgap on|off --pve H --vmid N --wan-net netN --mgmt-host G --probe IP:PORT
-#                                                  (GATED unless the NIC is already as asked)
-#   r770-staging-vm.sh wait-ssh SECONDS --mgmt-host G
-#   r770-staging-vm.sh tunnel    --mgmt-host G --local-port N           (foreground; Ctrl-C ends it)
+#   Every subcommand takes LOGIN = --pve H --pve-user U --identity KEY --vmid N
+#   and the guest ones add GUEST = --mgmt-host G --guest-user U.
 #
-#   --pve H        the hypervisor's ssh host (key login; never a password)
+#   r770-staging-vm.sh status    LOGIN
+#   r770-staging-vm.sh rollback  LOGIN --snapshot NAME        (GATED: discards the VM's state)
+#   r770-staging-vm.sh start     LOGIN                        (GATED unless already running)
+#   r770-staging-vm.sh stop      LOGIN                        (GATED unless already stopped)
+#   r770-staging-vm.sh snapshot  LOGIN --snapshot NAME [--description TEXT]
+#   r770-staging-vm.sh airgap on|off LOGIN GUEST --wan-net netN --probe IP:PORT
+#                                                  (GATED unless the NIC is already as asked)
+#   r770-staging-vm.sh wait-ssh SECONDS LOGIN GUEST
+#   r770-staging-vm.sh tunnel    LOGIN GUEST --local-port N  (foreground; Ctrl-C ends it)
+#
+#   --pve H        the hypervisor's address or name (key login; never a password)
+#   --pve-user U   the account on it the key logs in to
+#   --identity KEY the dedicated key's private half on this machine (absolute path)
 #   --vmid N       the VM
 #   --wan-net netN the VM's internet-facing NIC, as `status` names it; airgap sets it link-down
-#   --mgmt-host G  the guest's ssh host, reached on a NIC airgap does not touch
+#   --mgmt-host G  the guest's management address, on a NIC airgap does not touch
+#   --guest-user U the guest account the same key logs in to
 #   --probe IP:PORT an outside address the guest reaches when it is NOT air-gapped
 #   --yes / --non-interactive / --dry-run   as everywhere in the kit
 #
@@ -40,14 +46,32 @@
 # code is a FAIL ("probe could not be run"). An empty read-back is a FAIL
 # ("could not read"). A guest that cannot be asked is a FAIL, never a pass.
 #
+# ssh: every run writes its own ssh config, r770-evidence/r770-staging-vm-
+# <pve>-<vmid>.ssh_config, from the arguments alone, and every ssh call goes
+# through it with -F, so the operator's ~/.ssh/config is neither read nor
+# changed. Its alias r770-staging-pve is the hypervisor (its key checked
+# against the operator's known_hosts, never accepted blind); the guest, when a
+# subcommand needs it, is reached only by ProxyJump through that alias and
+# checked against its own r770-staging-vm-<pve>-<vmid>.known_hosts, kept across
+# runs (a rollback keeps the guest's host keys). The file is mode 0600, names
+# the key and holds no secret (harness/lib/ssh-config.sh, shared with
+# r770-proxmox-e2e.sh); an evidence directory whose path holds anything but
+# [A-Za-z0-9._/-] is refused.
+#
 # Nothing is defaulted: the VM, the hypervisor and the snapshot are arguments
 # the operator takes from `status` and `qm list`, never names this script picks.
 set -uo pipefail
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=../scripts/lib/common.sh
 . "$(dirname "${BASH_SOURCE[0]}")/../scripts/lib/common.sh"
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=lib/ssh-config.sh
+. "$(dirname "${BASH_SOURCE[0]}")/lib/ssh-config.sh"
 
-PVE=""; VMID=""; SNAP=""; DESC=""; WAN_NET=""; MGMT=""; PROBE=""; LPORT=""
+PVE=""; PVE_USER=""; IDENTITY=""; VMID=""; SNAP=""; DESC=""; WAN_NET=""; MGMT=""; GUEST_USER=""; PROBE=""; LPORT=""
+PVE_ALIAS="r770-staging-pve"    # the hypervisor's Host in the per-run ssh config
+STATE_DIR="${KIT_EVIDENCE_DIR:-$PWD/r770-evidence}"
+SSHCFG=""                       # this run's ssh config: every ssh below goes through it
 usage() { usage_from_header 3; exit 0; }
 
 need_arg() {  # need_arg <flag> <value> — die naming the flag when the value is empty
@@ -65,8 +89,9 @@ valid_probe_range() {  # the shape was checked; now the octets (0-255) and the p
     done
     { [ "$((10#$port))" -ge 1 ] && [ "$((10#$port))" -le 65535 ]; } || die "--probe '$PROBE' is not acceptable (the port must be 1-65535)"
 }
-pve()     { ssh -o BatchMode=yes -o ConnectTimeout=10 "$PVE" "$@"; }          # reads
-pve_run() { run ssh -o BatchMode=yes -o ConnectTimeout=10 "$PVE" "$@"; }      # changes; honours --dry-run
+pve()     { ssh -F "$SSHCFG" "$PVE_ALIAS" "$@"; }          # reads
+pve_run() { run ssh -F "$SSHCFG" "$PVE_ALIAS" "$@"; }      # changes; honours --dry-run
+login() { printf -- '--pve %s --pve-user %s --identity %s --vmid %s' "$PVE" "$PVE_USER" "$IDENTITY" "$VMID"; }  # for rollback hints
 vm_state() { pve qm status "$VMID" 2>/dev/null | awk '/^status:/ { print $2 }'; }
 snap_exists() {  # snap_exists <name>
     pve qm listsnapshot "$VMID" 2>/dev/null \
@@ -116,7 +141,7 @@ cmd_start() {
     state_or_die
     if [ "$STATE" = "running" ]; then pass "VM $VMID already running"; footer "start"; fi
     gate "start VM $VMID" power_current start_proposed \
-        "r770-staging-vm.sh stop --pve $PVE --vmid $VMID — shuts the guest down cleanly again"
+        "r770-staging-vm.sh stop $(login) — shuts the guest down cleanly again"
     pve_run qm start "$VMID" || die "qm start failed"
     if [ "$DRY" = "1" ]; then note "DRY-RUN: VM $VMID would be started"; else pass "VM $VMID started"; fi
     footer "start"
@@ -126,7 +151,7 @@ cmd_stop() {
     state_or_die
     if [ "$STATE" = "stopped" ]; then pass "VM $VMID already stopped"; footer "stop"; fi
     gate "stop VM $VMID" power_current stop_proposed \
-        "r770-staging-vm.sh start --pve $PVE --vmid $VMID — boots it again"
+        "r770-staging-vm.sh start $(login) — boots it again"
     pve_run qm shutdown "$VMID" --timeout 180 || die "qm shutdown failed or timed out — the guest did not power off"
     if [ "$DRY" = "1" ]; then note "DRY-RUN: VM $VMID would be shut down"; else pass "VM $VMID shut down"; fi
     footer "stop"
@@ -141,7 +166,7 @@ cmd_snapshot() {
     footer "snapshot"
 }
 
-guest() { ssh -o BatchMode=yes -o ConnectTimeout=5 "$MGMT" "$@"; }
+guest() { ssh -F "$SSHCFG" "$GUEST_USER@$MGMT" "$@"; }
 net_value() { pve qm config "$VMID" --current | sed -n "s/^${WAN_NET}: //p"; }
 probe() { guest "timeout 5 bash -c 'exec 3<>/dev/tcp/${PROBE%:*}/${PROBE##*:}'"; }
 AG_CUR=""; AG_TARGET=""
@@ -151,13 +176,13 @@ airgap_gate() {  # airgap_gate on|off — the question before the one qm set tha
     local back=off title="air-gap VM $VMID ($WAN_NET link-down)"
     [ "$1" = "off" ] && { back=on; title="reconnect VM $VMID ($WAN_NET link-up)"; }
     gate "$title" ag_current ag_proposed \
-        "r770-staging-vm.sh airgap $back --pve $PVE --vmid $VMID --wan-net $WAN_NET --mgmt-host $MGMT --probe $PROBE — sets $WAN_NET back to an equivalent $WAN_NET value (Proxmox may reorder its keys), and proves it with the same probe"
+        "r770-staging-vm.sh airgap $back $(login) --wan-net $WAN_NET --mgmt-host $MGMT --guest-user $GUEST_USER --probe $PROBE — sets $WAN_NET back to an equivalent $WAN_NET value (Proxmox may reorder its keys), and proves it with the same probe"
 }
 
 cmd_airgap() {
     local want="${ARGS[0]:-}" cur target now prc was_down=0
     case "$want" in on|off) ;; *) die "airgap needs on or off" ;; esac
-    need_arg --wan-net "$WAN_NET"; need_arg --mgmt-host "$MGMT"; need_arg --probe "$PROBE"
+    need_arg --wan-net "$WAN_NET"; need_arg --probe "$PROBE"
     cur=$(net_value)
     [ -n "$cur" ] || die "VM $VMID has no $WAN_NET, or its config could not be read (see: status)"
     [[ "$cur" =~ ^[A-Za-z0-9=:,._-]+$ ]] || die "$WAN_NET's value '$cur' holds a character this script will not send through a shell"
@@ -225,7 +250,6 @@ cmd_airgap() {
 cmd_wait_ssh() {
     local secs="${ARGS[0]:-}" deadline
     [[ "$secs" =~ ^[0-9]+$ ]] || die "wait-ssh needs a number of seconds"
-    need_arg --mgmt-host "$MGMT"
     deadline=$((SECONDS + secs))
     while :; do
         if guest true 2>/dev/null; then pass "guest answers on $MGMT"; footer "wait-ssh"; fi
@@ -238,9 +262,9 @@ cmd_wait_ssh() {
 
 cmd_tunnel() {
     local rc
-    need_arg --mgmt-host "$MGMT"; need_arg --local-port "$LPORT"
+    need_arg --local-port "$LPORT"
     note "https on 127.0.0.1:$LPORT -> $MGMT's 443; Ctrl-C ends it"
-    run ssh -N -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -L "127.0.0.1:${LPORT}:127.0.0.1:443" "$MGMT"; rc=$?
+    run ssh -F "$SSHCFG" -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -L "127.0.0.1:${LPORT}:127.0.0.1:443" "$GUEST_USER@$MGMT"; rc=$?
     if [ "$DRY" = "1" ]; then
         note "DRY-RUN: the tunnel would be opened"
     else
@@ -262,6 +286,9 @@ while [ $# -gt 0 ]; do
     case "$1" in
         -h|--help)     usage ;;
         --pve)         PVE="${2:-}"; shift ;;
+        --pve-user)    PVE_USER="${2:-}"; shift ;;
+        --identity)    IDENTITY="${2:-}"; shift ;;
+        --guest-user)  GUEST_USER="${2:-}"; shift ;;
         --vmid)        VMID="${2:-}"; shift ;;
         --snapshot)    SNAP="${2:-}"; shift ;;
         --description) DESC="${2:-}"; shift ;;
@@ -279,6 +306,9 @@ SELF="r770-staging-vm"
 # These regexes are the shell-safety guarantee for every value interpolated into
 # a remote command: loosening one needs the remote quoting re-audited.
 valid --pve "$PVE" '^[A-Za-z0-9][A-Za-z0-9._-]*$'
+valid --pve-user "$PVE_USER" '^[a-z_][a-z0-9_-]{0,31}$'
+valid --identity "$IDENTITY" '^/[A-Za-z0-9._/-]+$'
+valid --guest-user "$GUEST_USER" '^[a-z_][a-z0-9_-]{0,31}$'
 valid --vmid "$VMID" '^[0-9]+$'
 valid --snapshot "$SNAP" '^[A-Za-z][A-Za-z0-9_-]{1,39}$'
 valid --description "$DESC" '^[A-Za-z0-9 ._,-]+$'
@@ -287,12 +317,28 @@ valid --mgmt-host "$MGMT" '^[A-Za-z0-9][A-Za-z0-9._-]*$'
 valid --probe "$PROBE" '^([0-9]{1,3}\.){3}[0-9]{1,3}:[0-9]{1,5}$'
 valid_probe_range
 valid --local-port "$LPORT" '^[0-9]{2,5}$'
-kit_init "r770-staging-vm"
 case "$SUB" in
-    status|rollback|start|stop|snapshot)
-        no_extra 0; need_arg --pve "$PVE"; need_arg --vmid "$VMID"; "cmd_$SUB" ;;
-    airgap)   no_extra 1; need_arg --pve "$PVE"; need_arg --vmid "$VMID"; cmd_airgap ;;
-    wait-ssh) no_extra 1; cmd_wait_ssh ;;
-    tunnel)   no_extra 0; cmd_tunnel ;;
+    status|rollback|start|stop|snapshot|tunnel) no_extra 0 ;;
+    airgap|wait-ssh) no_extra 1 ;;
     *) die "unknown subcommand: $SUB (try --help)" ;;
+esac
+need_arg --pve "$PVE"; need_arg --vmid "$VMID"; need_arg --pve-user "$PVE_USER"; need_arg --identity "$IDENTITY"
+GUESTWARD=0
+case "$SUB" in airgap|wait-ssh|tunnel) GUESTWARD=1; need_arg --mgmt-host "$MGMT"; need_arg --guest-user "$GUEST_USER" ;; esac
+{ [ -f "$IDENTITY" ] && [ -r "$IDENTITY" ]; } || die "--identity $IDENTITY: no such readable file on this machine"
+head -1 "$IDENTITY" | grep -qE '^-----BEGIN [A-Z ]*PRIVATE KEY-----' \
+    || die "--identity $IDENTITY is not a private key (give the key file itself, not its .pub)"
+kit_init "r770-staging-vm"
+SSHCFG="$STATE_DIR/r770-staging-vm-$PVE-$VMID.ssh_config"
+if [ "$GUESTWARD" = 1 ]; then
+    ssh_config_write "$SSHCFG" r770-staging-vm.sh "$PVE_ALIAS" "$PVE" "$PVE_USER" "$IDENTITY" \
+        "$MGMT" "$STATE_DIR/r770-staging-vm-$PVE-$VMID.known_hosts"
+else
+    ssh_config_write "$SSHCFG" r770-staging-vm.sh "$PVE_ALIAS" "$PVE" "$PVE_USER" "$IDENTITY"
+fi
+case "$SUB" in
+    status|rollback|start|stop|snapshot) "cmd_$SUB" ;;
+    airgap)   cmd_airgap ;;
+    wait-ssh) cmd_wait_ssh ;;
+    tunnel)   cmd_tunnel ;;
 esac
