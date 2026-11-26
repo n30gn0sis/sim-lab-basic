@@ -70,10 +70,11 @@
 # gives the capture stand-in no address. scsi9 is left free for the media disk.
 #
 # Reaching a guest: the guests sit on a bridge with no physical port, so the
-# operator's machine cannot route to them, and is not meant to. bridge prints
-# the ssh_config stanza (ProxyJump through this host) that lets
-# r770-proxmox-e2e.sh's plain `ssh <user>@<guest-ip>` arrive; that needs
-# AllowTcpForwarding in this host's sshd, which bridge checks. No route is
+# operator's machine cannot route to them, and is not meant to.
+# r770-proxmox-e2e.sh reaches them by ssh ProxyJump through this host, from
+# an ssh config it writes for each run; bridge prints the same stanza for
+# reaching a guest by hand. Both need AllowTcpForwarding in this host's sshd,
+# which bridge checks. No route is
 # added, and the bridge's stanza turns IPv4 forwarding off on it (and IPv6 off
 # altogether): bridge then FAILs unless forwarding is off there and no NAT rule
 # names the bridge or its subnet, so the guests stay unable to leave the host.
@@ -185,13 +186,14 @@ host_patterns() {  # ssh_config Host patterns covering --bridge-cidr: one a.b.c.
     echo "${out# }"
 }
 jump_hint() {
-    note "On the OPERATOR'S machine, in ~/.ssh/config, so that the E2E driver's plain"
-    note "'ssh <user>@<guest-ip>' goes through this host (give each clone an address in $BRIDGE_CIDR):"
+    note "The E2E driver writes its own ssh config for each run (ProxyJump through this host): add nothing for it."
+    note "To reach a guest BY HAND from the operator's machine, in your own ssh config (each clone has an address in $BRIDGE_CIDR):"
     note "  Host $(host_patterns)"
     note "      ProxyJump <your ssh alias for $NODE>"
     [ "$((10#${BRIDGE_CIDR#*/}))" -gt 24 ] \
         && note "(a /${BRIDGE_CIDR#*/} is narrower than the pattern: addresses beside it in that /24 would jump through this host too)"
     note "No route to the subnet, and forwarding is off on $BRIDGE: the guests stay unable to leave this host."
+    note "Give each clone this host's bridge address as its resolver, never the LAN's: provision ... --nameserver ${BRIDGE_CIDR%/*} --searchdomain <domain>"
 }
 
 # ── bridge ──────────────────────────────────────────────────────────────────
@@ -615,7 +617,7 @@ cmd_staging_vm() {
     else fail "VM $VMID does not read back with description $STG_DESC (qm config)"; fi
     if printf '%s\n' "$cfg" | grep -q 'cloudinit'; then pass "cloud-init drive present"; else fail "no cloud-init drive in VM $VMID's config"; fi
     if printf '%s\n' "$cfg" | grep -q '^ipconfig0:'; then pass "net0 has its ipconfig ($(stg_ipconfig))"; else fail "net0 has no ipconfig0"; fi
-    note "next, from the operator's machine: harness/r770-staging-vm.sh start --pve <ssh-host> --vmid $VMID;"
+    note "next, from the operator's machine: harness/r770-staging-vm.sh start --pve <pve-address> --pve-user <user> --identity <key> --vmid $VMID;"
     note "then, inside it: install Docker CE, clone the kit, and run staging/r770-staging-preflight.sh"
     footer "staging-vm"
 }
@@ -637,7 +639,7 @@ cmd_all() {
         skip "dry run: nothing was prepared — rerun without --dry-run to prepare it"
         footer "all"
     fi
-    pass "this host is prepared for r770-proxmox-e2e.sh (--bridge $BRIDGE --sshkeys $SSHKEYS --template-vmid $TEMPLATE)"
+    pass "this host is prepared for r770-proxmox-e2e.sh (--bridge $BRIDGE --sshkeys $SSHKEYS --template-vmid $TEMPLATE --nameserver ${BRIDGE_CIDR%/*} --searchdomain <domain>)"
     footer "all"
 }
 

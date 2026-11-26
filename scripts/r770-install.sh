@@ -278,11 +278,20 @@ summary_open() {
     } > "$LOGDIR.md"
 }
 # logged <name> <cmd...> — a child's output to the terminal and to $LOGDIR/<name>.log
-# shellcheck disable=SC2317  # reached only through run_step "$@", which shellcheck cannot follow
 logged() {
     local name=$1; shift
     "$@" 2>&1 | tee -a "$LOGDIR/$name.log"
     return "${PIPESTATUS[0]}"
+}
+# step_logged <step> <name> <cmd...> — one logged child as one step of run.
+# The child runs here, in a subshell, exactly as run_step would run it, and
+# run_step judges its exit code (0 / 2 / 1). Calling logged by name here,
+# rather than passing it through run_step's "$@", is what lets shellcheck see
+# that it is used.
+step_logged() {
+    local step=$1 rc=0; shift
+    ( logged "$@" ) || rc=$?
+    run_step "$step" exit "$rc"
 }
 on_exit() {
     local rc=$? why
@@ -296,7 +305,6 @@ on_exit() {
 # a fresh host docker and unzip arrive later from the bundle, and there is no
 # earlier bundle to roll back to. Any other warning still counts.
 FIRST_INSTALL_WARNS='tool not yet present: (docker|unzip)|no previous bundle under /srv/bundles'
-# shellcheck disable=SC2317  # reached only through run_step "$@", which shellcheck cannot follow
 import_preflight() {
     local rc=0
     logged import-preflight "$IMPORT" preflight --bundle "$CONF_BUNDLE" || rc=$?
@@ -307,29 +315,29 @@ import_preflight() {
     return "$rc"
 }
 step_body() {  # step_body <step> — the children of one step
-    local lb s a; lb=$(local_bundle)
+    local lb s a rc; lb=$(local_bundle)
     local -a args after_import=()
     # import already ran preflight, gate and copy once: the pipelines start at apt
     stamped install.import && after_import=(--from apt)
     case "$1" in
         import)
-                 run_step import import_preflight
-                 run_step import logged import-gate "$IMPORT" gate --bundle "$CONF_BUNDLE" --media "$CONF_MEDIA" --device "$CONF_DEVICE"
+                 rc=0; ( import_preflight ) || rc=$?; run_step import exit "$rc"
+                 step_logged import import-gate "$IMPORT" gate --bundle "$CONF_BUNDLE" --media "$CONF_MEDIA" --device "$CONF_DEVICE"
                  # no --media: copy would unmount it, and this script is running from it
-                 run_step import logged import-copy "$IMPORT" copy --bundle "$CONF_BUNDLE" ;;
-        gns3)    run_step gns3 logged gns3 "$GNS3" full "${after_import[@]}" --bundle "$lb" ;;
-        malcolm) run_step malcolm logged malcolm "$MALCOLM" full "${after_import[@]}" --bundle "$lb" --capture-ifs "$CONF_CAPTURE_IFS" ;;
-        docs)    run_step docs logged docs "$DOCS" full "${after_import[@]}" --bundle "$lb" ;;
-        portal)  for s in ca cert htpasswd nginx; do run_step portal logged "portal-$s" "$PORTAL" "$s"; done ;;
+                 step_logged import import-copy "$IMPORT" copy --bundle "$CONF_BUNDLE" ;;
+        gns3)    step_logged gns3 gns3 "$GNS3" full "${after_import[@]}" --bundle "$lb" ;;
+        malcolm) step_logged malcolm malcolm "$MALCOLM" full "${after_import[@]}" --bundle "$lb" --capture-ifs "$CONF_CAPTURE_IFS" ;;
+        docs)    step_logged docs docs "$DOCS" full "${after_import[@]}" --bundle "$lb" ;;
+        portal)  for s in ca cert htpasswd nginx; do step_logged portal "portal-$s" "$PORTAL" "$s"; done ;;
         dashboards)
                  args=(); [ -n "$CONF_INDEX_PATTERN" ] && args=(--index-pattern "$CONF_INDEX_PATTERN")
-                 run_step dashboards logged dashboards "$MALCOLM" dashboards "${args[@]}"
-                 run_step dashboards logged arkime-views "$MALCOLM" arkime-views ;;
+                 step_logged dashboards dashboards "$MALCOLM" dashboards "${args[@]}"
+                 step_logged dashboards arkime-views "$MALCOLM" arkime-views ;;
         validate)
                  args=(--capture-ifs "$CONF_CAPTURE_IFS" --lab-bridge "$CONF_LAB_BRIDGE" --mgmt-if "$CONF_MGMT_IF" --mgmt-cidr "$CONF_MGMT_CIDR")
                  for a in $CONF_VALIDATE_AREAS; do args+=(--area "$a"); done
-                 run_step validate logged validate "$VALIDATE" "${args[@]}" --out "$LOGDIR" ;;
-        e2e)     run_step e2e logged e2e "$E2E" --bundle "$lb" --capture-ifs "$CONF_CAPTURE_IFS" --lab-bridge "$CONF_LAB_BRIDGE" --skip-validate --out "$LOGDIR" ;;
+                 step_logged validate validate "$VALIDATE" "${args[@]}" --out "$LOGDIR" ;;
+        e2e)     step_logged e2e e2e "$E2E" --bundle "$lb" --capture-ifs "$CONF_CAPTURE_IFS" --lab-bridge "$CONF_LAB_BRIDGE" --skip-validate --out "$LOGDIR" ;;
     esac
 }
 # handoff <next-step> — carry on in the local copy's own installer, so

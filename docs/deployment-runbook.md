@@ -893,16 +893,60 @@ data disk with serial `r770e2edata`, plus `/var/lib/containerd`, as in the
       `MEDIA` and `DEVICE` empty: the harness fills them from each clone it makes.
 
 **Reaching the guest: ssh ProxyJump through the Proxmox host, not a route.**
-The driver runs a plain `ssh <guest-user>@<guest-ip>` from the operator
-machine. A bridge with no physical port cannot be routed to, and is not meant
-to be. The Proxmox host holds an address on it (`--bridge-cidr`); give each
-clone `--guest-ip` in that subnet and no `--guest-gw`. Then, on the operator
-machine, in `~/.ssh/config` (`bridge` prints this stanza):
+A bridge with no physical port cannot be routed to, and is not meant to be.
+The Proxmox host holds an address on it (`--bridge-cidr`); give each clone
+`--guest-ip` in that subnet and no `--guest-gw`. The driver reaches the clone
+by ProxyJump through the host, from an ssh config **it writes for each run**:
+`r770-evidence/r770-proxmox-e2e-<pve>-<V>.ssh_config`, rewritten from the
+arguments on every run and removed by `teardown`. Every ssh the driver makes
+goes through it with `ssh -F`, so `~/.ssh/config` is never read and never
+edited, and nothing needs adding to it. The file looks like this:
 
 ```
-Host <a>.<b>.<c>.*             # one pattern per /24 inside --bridge-cidr (/16 to /30 accepted)
-    ProxyJump <pve-ssh-alias>
+Host r770-e2e-pve                       # the hypervisor
+    HostName <--pve>
+    User <--pve-user>
+    IdentityFile "<--identity>"         # the key's path only: the file holds no secret
+    IdentitiesOnly yes
+    BatchMode yes
+    ConnectTimeout 10
+    StrictHostKeyChecking yes           # checked against your known_hosts, never accepted blind
+Host <--guest-ip's address>             # the clone, and only through the hypervisor
+    ProxyJump r770-e2e-pve
+    IdentityFile "<--identity>"
+    IdentitiesOnly yes
+    BatchMode yes
+    ConnectTimeout 10
+    ServerAliveInterval 30
+    StrictHostKeyChecking accept-new    # a new clone, a new host key: its own known_hosts
+    UserKnownHostsFile "r770-evidence/r770-proxmox-e2e-<pve>-<V>.known_hosts"
 ```
+
+`--identity` is the dedicated key's private half on the operator machine,
+an absolute path; its public half is the one `key` installed as `--sshkeys`,
+so the same key opens the host and the clone. The Proxmox host's own key must
+already be in your `known_hosts`. Connect once by hand with that key and check
+the fingerprint against the host's console
+(`ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` there). `bridge` still
+prints a `Host <a>.<b>.<c>.*` / `ProxyJump` stanza, for reaching a guest by
+hand from your own ssh config. The driver does not need it.
+
+The file is written mode 0600 by `harness/lib/ssh-config.sh`, which
+`harness/r770-staging-vm.sh` uses too. Run from a directory (or set
+`KIT_EVIDENCE_DIR` to one) whose path holds only `A-Z a-z 0-9 . _ / -`: ssh
+cannot quote a `"` or `%` in the file, and ProxyJump hands `-F <path>` to a
+shell unquoted, so a space, `$`, `;` or backtick would break the jump. Such a path is
+refused before any ssh.
+
+**The clone's resolver is yours to name, never the host's.** Left unset,
+Proxmox's cloud-init copies the host's `resolv.conf` (its LAN resolver and
+search domain) into the clone. That resolver cannot be reached from a host-only
+bridge, so every name lookup in the guest stalls until it times out (seconds
+each, seen on the first live air-gap re-prove). `provision` therefore requires
+`--nameserver` and `--searchdomain` and passes both to `qm set`. The nameserver
+must be on `--guest-ip`'s subnet (usually the bridge's host address from
+`--bridge-cidr`) or loopback. A nameserver off that subnet is refused unless
+`--guest-gw` gives the clone a route to it.
 
 The driver's own options (its per-clone known_hosts file, BatchMode) still
 apply to the guest hop. The Proxmox host needs `AllowTcpForwarding` set to yes
@@ -948,9 +992,10 @@ firewall rule on the bridge) is a later hardening step.
 
 ```bash
 ./harness/r770-proxmox-e2e.sh all --dry-run \
-    --pve <ssh-host> --node <node> --template-vmid <T> --vmid <V> \
+    --pve <pve-address> --pve-user <user> --identity <abs-path-to-key>     --node <node> --template-vmid <T> --vmid <V> \
     --storage <storage> --bridge <host-only-bridge> \
     --guest-ip <a.b.c.d/n> --guest-user <user> --sshkeys <path-on-pve> \
+    --nameserver <bridge-host-address> --searchdomain <domain> \
     --media-size <GB> --bundle <bundle-dir> --install-conf <file> \
     --media-mnt <guest-mount-point>        # reads the hypervisor, changes nothing
 # then the same line with --yes instead of --dry-run, or one phase at a time:
@@ -979,8 +1024,9 @@ firewall rule on the bridge) is a later hardening step.
   (`--destroy-unreferenced-disks 0`). A volume of that VMID still on the
   storage afterwards is reported as a WARN and left for you to judge. Guest evidence lands as `r770-proxmox-e2e-<V>-*.tar` in
   `r770-evidence/` before anything is destroyed.
-- If a run is cut short, run `teardown --pve <ssh-host> --vmid <V>` from the
-  same machine. The marker is what lets it act.
+- If a run is cut short, run `teardown --pve <pve-address> --pve-user <user>
+  --identity <key> --vmid <V>` from the same machine. The marker is what lets
+  it act.
 
 **A staging host on the same Proxmox, if you have none.** The bundle the
 E2E run installs is cut on an internet-connected staging host, which is not
@@ -996,8 +1042,25 @@ an argument, is gated (current · proposed · rollback), and is never part of
     --image <path-to-noble-img> --disk-size 300 --memory 8192 --cores 4 \
     --guest-user <user> --sshkeys /root/r770-e2e.pub --ip dhcp      # or --ip <a.b.c.d/n> --gw <gw>
 # then the same line without --dry-run; then, from the operator machine:
-#   ./harness/r770-staging-vm.sh start --pve <ssh-host> --vmid <S>
+#   ./harness/r770-staging-vm.sh start --pve <pve-address> --pve-user <user> \
+#       --identity <abs-path-to-key> --vmid <S>                       # gated: current · proposed · rollback
 ```
+
+`harness/r770-staging-vm.sh` reaches the hypervisor and the guest the same way
+the E2E driver does: its own per-run ssh config,
+`r770-evidence/r770-staging-vm-<pve>-<S>.ssh_config`, rewritten from the
+arguments on every run (mode 0600, no secret), and every ssh through it with
+`ssh -F`, so `~/.ssh/config` is never used and nothing in `~/.ssh` is
+written; the hypervisor's host key is still checked against your
+`~/.ssh/known_hosts`, by design. Every subcommand takes
+`--pve --pve-user --identity --vmid`. The ones that talk to the guest
+(`airgap`, `wait-ssh`, `tunnel`) add `--mgmt-host <guest-address>` and
+`--guest-user <user>`: the guest is reached only by ProxyJump through
+`r770-staging-pve`, its host key kept in
+`r770-evidence/r770-staging-vm-<pve>-<S>.known_hosts` (accepted on first
+contact, then checked; a rollback keeps the guest's keys, so the file is kept).
+The same dedicated key opens both; the guest needs its public half in the
+guest user's `authorized_keys`.
 
 Its one disk holds the OS, the container image store and the bundle; under
 200 GB is a WARN. A host-only `--bridge` is a WARN: the VM would reach the
