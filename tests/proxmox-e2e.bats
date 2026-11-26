@@ -611,3 +611,21 @@ changed() { grep -E 'pve qm (clone|set|start|stop|destroy) ' "$STUB_LOG"; }
     ! grep -q 198.51.100.66 "$SSHCFG"
     grep -q '^    HostName pve$' "$SSHCFG"
 }
+
+@test "the per-run ssh config is mode 0600, even over a looser file left on disk" {
+    mkdir -p "$KIT_EVIDENCE_DIR"; printf 'Host x\n' > "$SSHCFG"; chmod 644 "$SSHCFG"
+    run e2e provision "${PV[@]}" --dry-run
+    echo "$output"; [ "$status" -eq 0 ]
+    [ "$(stat -c %a "$SSHCFG")" = 600 ]
+    [ -z "$(find "$KIT_EVIDENCE_DIR" -name '*.tmp.*')" ]
+}
+
+@test "an evidence directory ssh cannot carry through ProxyJump (space, \$, ;, quote, %) is refused before any ssh" {
+    for d in "with space" 'dollar$x' 'semi;colon' 'quo"te' 'per%cent'; do
+        KIT_EVIDENCE_DIR="$BATS_TEST_TMPDIR/$d" run e2e provision "${PV[@]}" --dry-run
+        echo "$d: $output"
+        [ "$status" -eq 1 ]; [[ "$output" == *"[A-Za-z0-9._/-]"* ]]
+        [ ! -e "$BATS_TEST_TMPDIR/$d/r770-proxmox-e2e-pve-9771.ssh_config" ]
+    done
+    ! grep -q '^ssh' "$STUB_LOG"
+}
